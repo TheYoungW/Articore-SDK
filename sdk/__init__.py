@@ -505,6 +505,8 @@ class ArxDCanArm:
         self,
         positions: Sequence[float],
         *,
+        velocities: Sequence[float] | None = None,
+        velocity_limits: Sequence[float] | None = None,
         torques: Sequence[float] | None = None,
         mode: str | None = None,
         require_enabled: bool = True,
@@ -520,6 +522,29 @@ class ArxDCanArm:
             joint.name: float(value)
             for joint, value in zip(self.config.arm_joints, positions)
         }
+        velocity_target: np.ndarray | None = None
+        if velocities is not None:
+            if len(velocities) != len(self.config.arm_joints):
+                raise ValueError(
+                    f"expected {len(self.config.arm_joints)} joint velocities, "
+                    f"got {len(velocities)}"
+                )
+            if any(not math.isfinite(float(value)) for value in velocities):
+                raise ValueError("joint velocities must be finite")
+            velocity_target = np.asarray(velocities, dtype=np.float64)
+        velocity_limit_target: np.ndarray | None = None
+        if velocity_limits is not None:
+            if len(velocity_limits) != len(self.config.arm_joints):
+                raise ValueError(
+                    f"expected {len(self.config.arm_joints)} joint velocity limits, "
+                    f"got {len(velocity_limits)}"
+                )
+            if any(
+                not math.isfinite(float(value)) or float(value) <= 0.0
+                for value in velocity_limits
+            ):
+                raise ValueError("joint velocity limits must be finite and positive")
+            velocity_limit_target = np.asarray(velocity_limits, dtype=np.float64)
         torque_target: np.ndarray | None = None
         if torques is not None:
             if len(torques) != len(self.config.arm_joints):
@@ -531,14 +556,20 @@ class ArxDCanArm:
                 raise ValueError("joint torques must be finite")
             torque_target = np.asarray(torques, dtype=np.float64)
         active_mode = (mode or self._mode).strip().lower().replace("_", "")
-        if active_mode in ("posvel", "pv") and torque_target is not None:
-            raise ValueError("torques are only supported in MIT mode")
+        if active_mode in ("posvel", "pv"):
+            if velocity_target is not None:
+                raise ValueError("target velocities are only supported in MIT mode")
+            if torque_target is not None:
+                raise ValueError("torques are only supported in MIT mode")
+        if active_mode == "mit" and velocity_limit_target is not None:
+            raise ValueError("velocity limits are only supported in PV mode")
         try:
             if active_mode in ("posvel", "pv"):
                 if self._mode != "posvel":
                     self.configure_mode("posvel")
                 self.robot.arm.send_pos_vel(
                     np.array([target[joint.name] for joint in self.config.arm_joints]),
+                    vlim=velocity_limit_target,
                     strict=True,
                 )
                 self._record_successful_command(
@@ -552,6 +583,7 @@ class ArxDCanArm:
                     self.configure_mode("mit")
                 self.robot.arm.send_mit(
                     np.array([target[joint.name] for joint in self.config.arm_joints]),
+                    vel=velocity_target,
                     tau=torque_target,
                     strict=True,
                 )

@@ -41,7 +41,9 @@ class FakeGroup:
         self.enabled = False
         self.mode_calls: list[str] = []
         self.sent_pos_vel: list[np.ndarray] = []
+        self.sent_pos_vel_limits: list[np.ndarray | None] = []
         self.sent_mit: list[np.ndarray] = []
+        self.sent_mit_velocities: list[np.ndarray | None] = []
         self.sent_mit_torques: list[np.ndarray | None] = []
 
     def mode_pos_vel(self) -> bool:
@@ -55,15 +57,22 @@ class FakeGroup:
     def enable(self) -> None:
         self.enabled = True
 
-    def send_pos_vel(self, target, *, strict=True) -> None:
+    def send_pos_vel(self, target, *, vlim=None, strict=True) -> None:
         if self.send_error is not None:
             raise self.send_error
         self.sent_pos_vel.append(np.asarray(target, dtype=np.float64).copy())
+        self.sent_pos_vel_limits.append(
+            None if vlim is None else np.asarray(vlim, dtype=np.float64).copy()
+        )
 
     def send_mit(self, target, *, strict=True, **kwargs) -> None:
         if self.send_error is not None:
             raise self.send_error
         self.sent_mit.append(np.asarray(target, dtype=np.float64).copy())
+        velocity = kwargs.get("vel")
+        self.sent_mit_velocities.append(
+            None if velocity is None else np.asarray(velocity, dtype=np.float64).copy()
+        )
         torque = kwargs.get("tau")
         self.sent_mit_torques.append(
             None if torque is None else np.asarray(torque, dtype=np.float64).copy()
@@ -198,15 +207,24 @@ def test_joint_positions_use_configured_control_mode(mode: str) -> None:
     arm.configure()
     arm.enable()
     try:
+        velocities = [0.3] if mode == "mit" else None
+        velocity_limits = [0.2] if mode == "pv" else None
         torques = [0.1] if mode == "mit" else None
-        arm.send_joint_positions([0.25], torques=torques)
+        arm.send_joint_positions(
+            [0.25],
+            velocities=velocities,
+            velocity_limits=velocity_limits,
+            torques=torques,
+        )
 
         assert robot.arm.mode_calls == [mode]
         if mode == "pv":
             np.testing.assert_allclose(robot.arm.sent_pos_vel[-1], [0.25])
+            np.testing.assert_allclose(robot.arm.sent_pos_vel_limits[-1], [0.2])
             assert robot.arm.sent_mit == []
         else:
             np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.25])
+            np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.3])
             np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.1])
             assert robot.arm.sent_pos_vel == []
     finally:
@@ -228,6 +246,36 @@ def test_pv_mode_rejects_mit_torques() -> None:
     try:
         with pytest.raises(ValueError, match="only supported in MIT mode"):
             arm.send_joint_positions([0.25], torques=[0.1])
+    finally:
+        arm.close()
+
+
+@pytest.mark.parametrize(
+    ("mode", "kwargs", "message"),
+    [
+        ("pv", {"velocities": [0.1]}, "only supported in MIT mode"),
+        ("mit", {"velocity_limits": [0.1]}, "only supported in PV mode"),
+    ],
+)
+def test_control_modes_reject_other_mode_velocity_parameter(
+    mode: str,
+    kwargs: dict,
+    message: str,
+) -> None:
+    config = ArxDCanConfig(
+        arm_control_mode=mode,
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        with pytest.raises(ValueError, match=message):
+            arm.send_joint_positions([0.25], **kwargs)
     finally:
         arm.close()
 

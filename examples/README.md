@@ -51,12 +51,19 @@ python examples/example_03_clear_faults.py \
 控制模式通过 `--mode` 选择：`pv` 是默认值，对应电机的 POS_VEL 模式；`mit`
 对应 MIT 模式。PV 使用配置文件中的位置环、速度环和速度限制参数，MIT 使用各
 关节配置的 `kp/kd`，还可通过 `--torques` 设置六个关节各自的前馈力矩（N·m）。
-未提供力矩时 MIT 默认发送六个零；PV 模式不接受 `--torques`。模式会在电机使能
-前完成配置。
+PV 可用 `--velocity-limits` 覆盖六个关节的最大速度，MIT 可用 `--velocities`
+设置六个目标速度；这两个命令行参数的单位都是 deg/s，但控制语义不同。未提供时，
+PV 使用 YAML 中各关节的 `vlim`（rad/s），MIT 的目标速度和力矩均默认为零。模式会
+在电机使能前完成配置。
+
+注意：MIT 的 `--velocities` 是控制公式中 `kd(v_des-v)` 的目标速度，不是最大速度
+限制。示例 04 会直接发送位置目标；如果需要限制整个运动过程的速度，应使用示例 07
+生成插值轨迹，而不是只修改 MIT 的目标速度。
 
 ```bash
 python examples/example_04_send_position.py \
   --positions "0,-20,-20,0,0,0" \
+  --velocity-limits "120,120,120,90,90,90" \
   --port /dev/ttyACM0
 ```
 
@@ -66,6 +73,7 @@ python examples/example_04_send_position.py \
 python examples/example_04_send_position.py \
   --positions "0,-20,-20,0,0,0" \
   --mode mit \
+  --velocities "0,0,0,0,0,0" \
   --torques "0,0,0,0,0,0" \
   --port /dev/ttyACM0
 ```

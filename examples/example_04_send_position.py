@@ -25,10 +25,29 @@ def parse_torques(text: str) -> tuple[float, ...]:
     return values
 
 
+def parse_velocities_degrees(
+    text: str,
+    *,
+    require_positive: bool = False,
+) -> tuple[float, ...]:
+    values = tuple(float(value) for value in text.split(",") if value.strip())
+    if len(values) != 6:
+        raise ValueError(
+            f"expected 6 comma-separated joint velocities, got {len(values)}"
+        )
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("joint velocities must be finite")
+    if require_positive and any(value <= 0.0 for value in values):
+        raise ValueError("PV velocity limits must be positive")
+    return tuple(math.radians(value) for value in values)
+
+
 def hold_target(
     arm,
     target: tuple[float, ...],
     *,
+    velocities: tuple[float, ...] | None = None,
+    velocity_limits: tuple[float, ...] | None = None,
     torques: tuple[float, ...] | None = None,
     seconds: float,
     hz: float,
@@ -36,15 +55,37 @@ def hold_target(
     period = 1.0 / max(1.0, hz)
     deadline = None if seconds <= 0.0 else time.monotonic() + seconds
     while deadline is None or time.monotonic() < deadline:
-        arm.send_joint_positions(target, torques=torques)
+        arm.send_joint_positions(
+            target,
+            velocities=velocities,
+            velocity_limits=velocity_limits,
+            torques=torques,
+        )
         time.sleep(period)
 
 
 def main(args: argparse.Namespace) -> None:
     target = parse_positions_degrees(args.positions)
+    velocities = (
+        None
+        if args.velocities is None
+        else parse_velocities_degrees(args.velocities)
+    )
+    velocity_limits = (
+        None
+        if args.velocity_limits is None
+        else parse_velocities_degrees(
+            args.velocity_limits,
+            require_positive=True,
+        )
+    )
     torques = None if args.torques is None else parse_torques(args.torques)
+    if args.mode != "mit" and velocities is not None:
+        raise ValueError("--velocities can only be used with --mode mit")
     if args.mode != "mit" and torques is not None:
         raise ValueError("--torques can only be used with --mode mit")
+    if args.mode != "pv" and velocity_limits is not None:
+        raise ValueError("--velocity-limits can only be used with --mode pv")
     arm = ArxDCanArm(
         port=args.port,
         baud=args.baud,
@@ -54,7 +95,12 @@ def main(args: argparse.Namespace) -> None:
         arm.connect()
         arm.configure()
         arm.enable()
-        arm.send_joint_positions(target, torques=torques)
+        arm.send_joint_positions(
+            target,
+            velocities=velocities,
+            velocity_limits=velocity_limits,
+            torques=torques,
+        )
         print(f"control mode: {args.mode.upper()}", flush=True)
         print(
             "sent(deg):",
@@ -67,6 +113,10 @@ def main(args: argparse.Namespace) -> None:
                 " ".join(f"{value:+.3f}" for value in torques),
                 flush=True,
             )
+        if velocities is not None:
+            print(f"MIT target velocities(deg/s): {args.velocities}", flush=True)
+        if velocity_limits is not None:
+            print(f"PV velocity limits(deg/s): {args.velocity_limits}", flush=True)
 
         if args.hold_seconds <= 0.0:
             print(
@@ -83,6 +133,8 @@ def main(args: argparse.Namespace) -> None:
         hold_target(
             arm,
             target,
+            velocities=velocities,
+            velocity_limits=velocity_limits,
             torques=torques,
             seconds=args.hold_seconds,
             hz=args.hz,
@@ -109,6 +161,20 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("pv", "mit"),
         default="pv",
         help="Motor control mode: pv (default) or mit",
+    )
+    parser.add_argument(
+        "--velocities",
+        help=(
+            "Six comma-separated MIT target velocities in deg/s; "
+            "MIT only, default: all zero"
+        ),
+    )
+    parser.add_argument(
+        "--velocity-limits",
+        help=(
+            "Six comma-separated positive PV maximum velocities in deg/s; "
+            "PV only, default: values from YAML"
+        ),
     )
     parser.add_argument(
         "--torques",

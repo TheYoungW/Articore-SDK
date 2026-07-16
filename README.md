@@ -28,9 +28,11 @@ python examples/example_01_scan_ids.py --port /dev/ttyACM0
 python examples/example_02_read_state.py --port /dev/ttyACM0
 python examples/example_03_clear_faults.py --port /dev/ttyACM0
 python examples/example_04_send_position.py \
-  --positions "0,-20,-20,0,0,0" --port /dev/ttyACM0
+  --positions "0,-20,-20,0,0,0" \
+  --velocity-limits "120,120,120,90,90,90" --port /dev/ttyACM0
 python examples/example_04_send_position.py \
   --positions "0,-20,-20,0,0,0" --mode mit \
+  --velocities "0,0,0,0,0,0" \
   --torques "0,0,0,0,0,0" --port /dev/ttyACM0
 python examples/example_05_gripper_open_close.py --port /dev/ttyACM0
 python examples/example_06_benchmark_read_rate.py \
@@ -45,7 +47,11 @@ python examples/example_09_diagnose_status.py --port /dev/ttyACM0
 刷新目标。它通过 `--mode pv`（默认）使用 POS_VEL 位置速度模式，也可通过
 `--mode mit` 使用 MIT 模式；MIT 的 `kp/kd` 和 PV 的环路参数均读取
 `config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的前馈力矩，单位
-为 N·m，未提供时默认为全零；PV 模式不接受该参数。使用 `Ctrl+C` 会失能全部电机，停止前必须托住机械臂；
+为 N·m，并用 `--velocities` 传入六个目标速度；PV 用 `--velocity-limits` 覆盖配置
+中的六个最大速度。速度命令行参数单位均为 deg/s。MIT 的速度和力矩未提供时默认
+为全零，PV 未提供限速时使用 YAML 中各关节的 `vlim`。MIT 目标速度是阻尼项输入，
+不是最大速度限制；需要严格控制运动速度时应使用示例 07 生成插值轨迹。使用
+`Ctrl+C` 会失能全部电机，停止前必须托住机械臂；
 只有显式传入正数 `--hold-seconds` 时才会定时退出。平滑轨迹使用示例 07，直接回零
 使用示例 08。
 
