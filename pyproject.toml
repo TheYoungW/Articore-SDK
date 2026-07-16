@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arx-d-can"
+version = "0.2.0"
+description = "Standalone ARX-D-CAN Python SDK for Damiao motors over USB2CAN."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "motor-drive-layer==0.5.1",
+  "numpy>=1.23",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dynamics = [
+  "pin>=3.0",
+]
+dev = [
+  "pytest>=7.0",
+]
+
+[tool.setuptools]
+include-package-data = false
+packages = [
+  "arx_d_can",
+  "arx_d_can.actuator",
+  "arx_d_can.controllers",
+  "arx_d_can.driver",
+  "arx_d_can.dynamics",
+  "arx_d_can.examples",
+  "arx_d_can.kinematics",
+  "arx_d_can.sdk",
+  "arx_d_can.service_tools",
+  "arx_d_can.trajectory",
+]
+package-dir = { "arx_d_can" = "." }
+
+[tool.setuptools.package-data]
+arx_d_can = ["config/*.yaml", "examples/README.md", "models/*.urdf"]

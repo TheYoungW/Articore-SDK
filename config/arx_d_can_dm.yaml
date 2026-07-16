@@ -1,0 +1,142 @@
+name: ARX-D-CAN
+urdf_path: models/Alicia_M_1_2_follower_ARX.urdf
+end_effector_frame: tool0
+
+channel: /dev/ttyACM0
+baud: 1000000
+rate: 500
+
+safety:
+  watchdog_enabled: true
+  command_timeout_s: 0.25
+  enable_grace_s: 2.0
+  watchdog_poll_s: 0.02
+  watchdog_action: safe_hold
+  safe_hold_hz: 100.0
+  feedback_fault_threshold: 3
+
+groups:
+  arm:
+    joints: [joint1, joint2, joint3, joint4, joint5, joint6]
+  gripper:
+    joints: [gripper]
+
+gripper_mapping:
+  closed_value: 0.0
+  open_value: 3.0
+
+gripper_force_control:
+  enabled: false
+  close_speed: 1.0
+  contact_torque: 0.8
+  overload_torque: 1.5
+  motion_window_s: 0.2
+  stall_movement: 0.01
+  min_position_error: 0.05
+  contact_hold_s: 0.2
+  overload_hold_s: 0.05
+  hold_offset: 0.08
+  retreat_distance: 0.15
+  max_step_interval_s: 0.05
+  overload_retreat_interval_s: 0.1
+  hold_kp: 2.0
+  hold_kd: 0.5
+
+joints:
+  - name: joint1
+    motor_id: 0x01
+    feedback_id: 0x11
+    model: "4340P"
+    MIT:
+      kp: 120.0
+      kd: 8.0
+    POS_VEL:
+      vel_kp: 0.0125
+      vel_ki: 0.004
+      pos_kp: 150.0
+      pos_ki: 0.5
+      vlim: 5.0
+
+  - name: joint2
+    motor_id: 0x02
+    feedback_id: 0x12
+    model: "4340P"
+    MIT:
+      kp: 120.0
+      kd: 8.0
+    POS_VEL:
+      vel_kp: 0.0125
+      vel_ki: 0.004
+      pos_kp: 150.0
+      pos_ki: 0.5
+      vlim: 5.0
+
+  - name: joint3
+    motor_id: 0x03
+    feedback_id: 0x13
+    model: "4340P"
+    MIT:
+      kp: 120.0
+      kd: 8.0
+    POS_VEL:
+      vel_kp: 0.0125
+      vel_ki: 0.004
+      pos_kp: 150.0
+      pos_ki: 0.5
+      vlim: 5.0
+
+  - name: joint4
+    motor_id: 0x04
+    feedback_id: 0x14
+    model: "4310"
+    MIT:
+      kp: 18.0
+      kd: 2.0
+    POS_VEL:
+      vel_kp: 0.0008
+      vel_ki: 0.002
+      pos_kp: 80.0
+      pos_ki: 1.0
+      vlim: 3.0
+
+  - name: joint5
+    motor_id: 0x05
+    feedback_id: 0x15
+    model: "4310"
+    MIT:
+      kp: 18.0
+      kd: 2.0
+    POS_VEL:
+      vel_kp: 0.0008
+      vel_ki: 0.002
+      pos_kp: 50.0
+      pos_ki: 1.0
+      vlim: 3.0
+
+  - name: joint6
+    motor_id: 0x06
+    feedback_id: 0x16
+    model: "4310"
+    MIT:
+      kp: 18.0
+      kd: 2.0
+    POS_VEL:
+      vel_kp: 0.0008
+      vel_ki: 0.002
+      pos_kp: 50.0
+      pos_ki: 1.0
+      vlim: 3.0
+
+  - name: gripper
+    motor_id: 0x07
+    feedback_id: 0x17
+    model: "4310"
+    MIT:
+      kp: 4.0
+      kd: 0.5
+    POS_VEL:
+      vel_kp: 0.0008
+      vel_ki: 0.002
+      pos_kp: 50.0
+      pos_ki: 1.0
+      vlim: 3.0
