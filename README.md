@@ -29,6 +29,9 @@ python examples/example_02_read_state.py --port /dev/ttyACM0
 python examples/example_03_clear_faults.py --port /dev/ttyACM0
 python examples/example_04_send_position.py \
   --positions "0,-20,-20,0,0,0" --port /dev/ttyACM0
+python examples/example_04_send_position.py \
+  --positions "0,-20,-20,0,0,0" --mode mit \
+  --torques "0,0,0,0,0,0" --port /dev/ttyACM0
 python examples/example_05_gripper_open_close.py --port /dev/ttyACM0
 python examples/example_06_benchmark_read_rate.py \
   --port /dev/ttyACM0 --target-hz 500 --seconds 5
@@ -39,8 +42,12 @@ python examples/example_09_diagnose_status.py --port /dev/ttyACM0
 ```
 
 `example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续
-刷新目标。使用 `Ctrl+C` 会失能全部电机，停止前必须托住机械臂；只有显式传入
-正数 `--hold-seconds` 时才会定时退出。平滑轨迹使用示例 07，直接回零使用示例 08。
+刷新目标。它通过 `--mode pv`（默认）使用 POS_VEL 位置速度模式，也可通过
+`--mode mit` 使用 MIT 模式；MIT 的 `kp/kd` 和 PV 的环路参数均读取
+`config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的前馈力矩，单位
+为 N·m，未提供时默认为全零；PV 模式不接受该参数。使用 `Ctrl+C` 会失能全部电机，停止前必须托住机械臂；
+只有显式传入正数 `--hold-seconds` 时才会定时退出。平滑轨迹使用示例 07，直接回零
+使用示例 08。
 
 ## 安全机制
 

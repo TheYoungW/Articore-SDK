@@ -48,9 +48,25 @@ python examples/example_03_clear_faults.py \
 只有明确传入正数时，才会在指定时间后退出并整臂失能。需要平滑轨迹时使用
 示例 07，直接回零时使用示例 08。
 
+控制模式通过 `--mode` 选择：`pv` 是默认值，对应电机的 POS_VEL 模式；`mit`
+对应 MIT 模式。PV 使用配置文件中的位置环、速度环和速度限制参数，MIT 使用各
+关节配置的 `kp/kd`，还可通过 `--torques` 设置六个关节各自的前馈力矩（N·m）。
+未提供力矩时 MIT 默认发送六个零；PV 模式不接受 `--torques`。模式会在电机使能
+前完成配置。
+
 ```bash
 python examples/example_04_send_position.py \
   --positions "0,-20,-20,0,0,0" \
+  --port /dev/ttyACM0
+```
+
+使用 MIT 模式：
+
+```bash
+python examples/example_04_send_position.py \
+  --positions "0,-20,-20,0,0,0" \
+  --mode mit \
+  --torques "0,0,0,0,0,0" \
   --port /dev/ttyACM0
 ```
 

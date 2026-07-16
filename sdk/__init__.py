@@ -13,7 +13,7 @@ import numpy as np
 
 from ..actuator import ArxDCan, JointCfg, load_cfg
 from ..driver import build_scan_command, parse_scan_ids
-from ..gripper_force_control import (
+from .gripper_force_control import (
     GripperControlState,
     GripperForceControlConfig,
     GripperForceController,
@@ -75,7 +75,7 @@ class ArxDCanConfig:
     arm_control_mode: str = "posvel"
     arm_joints: tuple[JointMotorConfig, ...] = ()
     gripper: JointMotorConfig | None = None
-    gripper_open_value: float = 5.0
+    gripper_open_value: float = 2.64
     gripper_closed_value: float = 0.0
     gripper_force_control_enabled: bool = False
     gripper_force_control: GripperForceControlConfig = field(
@@ -151,7 +151,7 @@ def default_config(
         arm_joints=tuple(joints_by_name[name] for name in arm_names),
         gripper=joints_by_name.get(gripper_names[0]) if gripper_names else None,
         gripper_closed_value=float(gripper_mapping.get("closed_value", 0.0)),
-        gripper_open_value=float(gripper_mapping.get("open_value", 5.0)),
+        gripper_open_value=float(gripper_mapping.get("open_value", 2.64)),
         gripper_force_control_enabled=_config_bool(
             force_control.get("enabled", False),
             name="gripper_force_control.enabled",
@@ -505,6 +505,7 @@ class ArxDCanArm:
         self,
         positions: Sequence[float],
         *,
+        torques: Sequence[float] | None = None,
         mode: str | None = None,
         require_enabled: bool = True,
     ) -> None:
@@ -519,7 +520,19 @@ class ArxDCanArm:
             joint.name: float(value)
             for joint, value in zip(self.config.arm_joints, positions)
         }
+        torque_target: np.ndarray | None = None
+        if torques is not None:
+            if len(torques) != len(self.config.arm_joints):
+                raise ValueError(
+                    f"expected {len(self.config.arm_joints)} joint torques, "
+                    f"got {len(torques)}"
+                )
+            if any(not math.isfinite(float(value)) for value in torques):
+                raise ValueError("joint torques must be finite")
+            torque_target = np.asarray(torques, dtype=np.float64)
         active_mode = (mode or self._mode).strip().lower().replace("_", "")
+        if active_mode in ("posvel", "pv") and torque_target is not None:
+            raise ValueError("torques are only supported in MIT mode")
         try:
             if active_mode in ("posvel", "pv"):
                 if self._mode != "posvel":
@@ -539,6 +552,7 @@ class ArxDCanArm:
                     self.configure_mode("mit")
                 self.robot.arm.send_mit(
                     np.array([target[joint.name] for joint in self.config.arm_joints]),
+                    tau=torque_target,
                     strict=True,
                 )
                 self._record_successful_command(
@@ -606,6 +620,18 @@ class ArxDCanArm:
             return
         if not self.enable_gripper:
             raise RuntimeError("ARX-D-CAN gripper is disabled; create ArxDCanArm(enable_gripper=True)")
+        target = float(value)
+        if not math.isfinite(target):
+            raise ValueError("gripper motor value must be finite")
+        lower = min(
+            self.config.gripper_closed_value,
+            self.config.gripper_open_value,
+        )
+        upper = max(
+            self.config.gripper_closed_value,
+            self.config.gripper_open_value,
+        )
+        target = min(max(target, lower), upper)
         with self._gripper_command_lock:
             if require_enabled and not self._enabled:
                 raise RuntimeError("ARX-D-CAN arm is not enabled")
@@ -616,7 +642,7 @@ class ArxDCanArm:
                 if len(position) != 1 or len(torque) != 1:
                     raise RuntimeError("gripper feedback must contain exactly one motor")
                 command = self._gripper_force_controller.update(
-                    requested_position=float(value),
+                    requested_position=target,
                     actual_position=float(position[0]),
                     actual_torque=float(torque[0]),
                     now=time.monotonic(),
@@ -638,13 +664,13 @@ class ArxDCanArm:
                 return
             try:
                 self.robot.gripper.send_mit(
-                    np.array([float(value)]),
+                    np.array([target]),
                     strict=True,
                 )
             except Exception as exc:
                 self._trip_fault(f"gripper command failed: {exc}")
                 raise
-            self._record_successful_command(gripper_position=float(value))
+            self._record_successful_command(gripper_position=target)
 
     def _require_connected(self) -> None:
         if not self._connected:

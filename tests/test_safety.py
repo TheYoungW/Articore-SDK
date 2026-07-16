@@ -39,13 +39,17 @@ class FakeGroup:
     def __init__(self) -> None:
         self.send_error = None
         self.enabled = False
+        self.mode_calls: list[str] = []
         self.sent_pos_vel: list[np.ndarray] = []
         self.sent_mit: list[np.ndarray] = []
+        self.sent_mit_torques: list[np.ndarray | None] = []
 
     def mode_pos_vel(self) -> bool:
+        self.mode_calls.append("pv")
         return True
 
     def mode_mit(self) -> bool:
+        self.mode_calls.append("mit")
         return True
 
     def enable(self) -> None:
@@ -56,10 +60,14 @@ class FakeGroup:
             raise self.send_error
         self.sent_pos_vel.append(np.asarray(target, dtype=np.float64).copy())
 
-    def send_mit(self, target, *, strict=True, **_kwargs) -> None:
+    def send_mit(self, target, *, strict=True, **kwargs) -> None:
         if self.send_error is not None:
             raise self.send_error
         self.sent_mit.append(np.asarray(target, dtype=np.float64).copy())
+        torque = kwargs.get("tau")
+        self.sent_mit_torques.append(
+            None if torque is None else np.asarray(torque, dtype=np.float64).copy()
+        )
 
 
 class FakeRobot:
@@ -172,6 +180,88 @@ def test_send_failure_disables_and_latches_fault() -> None:
         assert arm.faulted
         assert not arm.enabled
         assert robot.estop_calls >= 1
+    finally:
+        arm.close()
+
+
+@pytest.mark.parametrize("mode", ["pv", "mit"])
+def test_joint_positions_use_configured_control_mode(mode: str) -> None:
+    config = ArxDCanConfig(
+        arm_control_mode=mode,
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        torques = [0.1] if mode == "mit" else None
+        arm.send_joint_positions([0.25], torques=torques)
+
+        assert robot.arm.mode_calls == [mode]
+        if mode == "pv":
+            np.testing.assert_allclose(robot.arm.sent_pos_vel[-1], [0.25])
+            assert robot.arm.sent_mit == []
+        else:
+            np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.25])
+            np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.1])
+            assert robot.arm.sent_pos_vel == []
+    finally:
+        arm.close()
+
+
+def test_pv_mode_rejects_mit_torques() -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="pv",
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        with pytest.raises(ValueError, match="only supported in MIT mode"):
+            arm.send_joint_positions([0.25], torques=[0.1])
+    finally:
+        arm.close()
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        (-0.1, 0.0),
+        (1.32, 1.32),
+        (2.64, 2.64),
+        (3.0, 2.64),
+    ],
+)
+def test_gripper_motor_value_is_clamped_to_mechanical_range(
+    requested: float,
+    expected: float,
+) -> None:
+    config = ArxDCanConfig(
+        arm_joints=(JOINT,),
+        gripper=GRIPPER,
+        gripper_closed_value=0.0,
+        gripper_open_value=2.64,
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config, enable_gripper=True)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        arm.set_gripper_motor_value(requested)
+
+        np.testing.assert_allclose(robot.gripper.sent_mit[-1], [expected])
     finally:
         arm.close()
 

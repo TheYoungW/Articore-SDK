@@ -23,7 +23,7 @@ groups:
 
 gripper_mapping:
   closed_value: 0.0
-  open_value: 3.0
+  open_value: 2.64
 
 gripper_force_control:
   enabled: false
