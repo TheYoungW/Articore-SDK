@@ -7,7 +7,7 @@
 ## 安装
 
 ```bash
-cd arx_d_can
+cd Articore-SDK
 python -m pip install .
 ```
 
@@ -24,30 +24,31 @@ python -m pip install ".[dynamics]"
 ## 使用顺序
 
 ```bash
-python examples/example_01_scan_ids.py --port /dev/ttyACM0
-python examples/example_02_read_state.py --port /dev/ttyACM0
-python examples/example_03_clear_faults.py --port /dev/ttyACM0
-python examples/example_04_send_position.py \
+python -m arx_d_can.examples.example_01_scan_ids --port /dev/ttyACM0
+python -m arx_d_can.examples.example_02_read_state --port /dev/ttyACM0
+python -m arx_d_can.examples.example_03_clear_faults --port /dev/ttyACM0
+python -m arx_d_can.examples.example_04_send_position \
   --positions "0,-20,-20,0,0,0" \
   --velocity-limits "120,120,120,90,90,90" --port /dev/ttyACM0
-python examples/example_04_send_position.py \
+python -m arx_d_can.examples.example_04_send_position \
   --positions "0,-20,-20,0,0,0" --mode mit \
   --velocities "0,0,0,0,0,0" \
   --torques "0,0,0,0,0,0" --port /dev/ttyACM0
-python examples/example_05_gripper_open_close.py --port /dev/ttyACM0
-python examples/example_06_benchmark_read_rate.py \
+python -m arx_d_can.examples.example_05_gripper_open_close --port /dev/ttyACM0
+python -m arx_d_can.examples.example_06_benchmark_read_rate \
   --port /dev/ttyACM0 --target-hz 500 --seconds 5
-python examples/example_07_send_joint_trajectory.py \
+python -m arx_d_can.examples.example_07_send_joint_trajectory \
   "0,-60,-60,0,0,0" --port /dev/ttyACM0 --return-zero
-python examples/example_08_return_zero.py --port /dev/ttyACM0
-python examples/example_09_diagnose_status.py --port /dev/ttyACM0
+python -m arx_d_can.examples.example_08_return_zero --port /dev/ttyACM0
+python -m arx_d_can.examples.example_09_diagnose_status --port /dev/ttyACM0
 ```
 
 `example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续
 刷新目标。它通过 `--mode pv`（默认）使用 POS_VEL 位置速度模式，也可通过
 `--mode mit` 使用 MIT 模式；MIT 的 `kp/kd` 和 PV 的环路参数均读取
-`config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的前馈力矩，单位
-为 N·m，并用 `--velocities` 传入六个目标速度；PV 用 `--velocity-limits` 覆盖配置
+`src/arx_d_can/config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的
+前馈力矩，单位为 N·m，并用 `--velocities` 传入六个目标速度；PV 用
+`--velocity-limits` 覆盖配置
 中的六个最大速度。速度命令行参数单位均为 deg/s。MIT 的速度和力矩未提供时默认
 为全零，PV 未提供限速时使用 YAML 中各关节的 `vlim`。MIT 目标速度是阻尼项输入，
 不是最大速度限制；需要严格控制运动速度时应使用示例 07 生成插值轨迹。使用
@@ -66,7 +67,8 @@ python examples/example_09_diagnose_status.py --port /dev/ttyACM0
   调用 `clear_fault()`、`configure()`、`enable()`。
 - `close()` 总是停止看门狗、尝试失能所有电机并关闭总线。
 
-看门狗参数位于 `config/arx_d_can_dm.yaml` 的 `safety`。它是进程内软件看门狗，
+看门狗参数位于 `src/arx_d_can/config/arx_d_can_dm.yaml` 的 `safety`。它是进程内
+软件看门狗，
 能处理控制线程卡住或上游停止发命令；它不能覆盖整机掉电、Python 进程被强制
 杀死或 USB2CAN 硬件失效。`SAFE_HOLD` 也不是安全认证功能，生产设备仍需要物理
 急停、电机侧通信超时，以及垂直负载场景需要的机械制动或防坠机构。
@@ -96,29 +98,28 @@ finally:
 需要输入精确确认文字才会逐关节写入并验证：
 
 ```bash
-python service_tools/zero_current_position.py --port /dev/ttyACM0
-python service_tools/zero_current_position.py \
+python -m arx_d_can.service_tools.zero_current_position --port /dev/ttyACM0
+python -m arx_d_can.service_tools.zero_current_position \
   --port /dev/ttyACM0 --confirm SET-ZERO
 ```
 
 默认只调 6 个手臂关节；夹爪另加 `--include-gripper`。其他维护工具：
 
 ```bash
-python service_tools/change_damiao_id.py --port /dev/ttyACM0
-python service_tools/joint_load_probe.py \
+python -m arx_d_can.service_tools.change_damiao_id --port /dev/ttyACM0
+python -m arx_d_can.service_tools.joint_load_probe \
   --port /dev/ttyACM0 --joint 4 --amplitude-deg 10 --csv /tmp/joint4.csv
 ```
 
 ## 配置
 
 硬件 ID、反馈 ID、控制增益、夹爪映射和安全参数位于
-`config/arx_d_can_dm.yaml`。VR/ROS 上层已经负责工作空间和 URDF 关节限位；SDK
-安全层负责通信故障、命令超时保持和退出失能。
+`src/arx_d_can/config/arx_d_can_dm.yaml`。VR/ROS 上层已经负责工作空间和 URDF
+关节限位；SDK 安全层负责通信故障、命令超时保持和退出失能。
 
 ## 开发验证
 
-该仓库根目录本身映射为 Python 的 `arx_d_can` 包。直接从检出目录运行测试时，
-需要把 pytest 的根目录指定为 `tests`：
+源码采用标准的 `src/arx_d_can` 包布局。安装开发依赖后可直接运行测试和构建：
 
 ```bash
 python -m pip install ".[dev]"
