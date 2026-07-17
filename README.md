@@ -94,13 +94,18 @@ finally:
 
 ## 维护工具
 
-维护工具与普通示例分开。调零默认只读取和检查，不写电机；机械臂必须静止，且
-需要输入精确确认文字才会逐关节写入并验证：
+维护工具与普通示例分开。调零命令会先确认机械臂静止，再把当前位置逐关节写为
+零位并验证：
 
 ```bash
 python -m arx_d_can.service_tools.zero_current_position --port /dev/ttyACM0
-python -m arx_d_can.service_tools.zero_current_position \
-  --port /dev/ttyACM0 --confirm SET-ZERO
+```
+
+相同的安全调零流程也提供了编号示例：
+
+```bash
+python -m arx_d_can.examples.example_10_set_zero_current_position \
+  --port /dev/ttyACM0
 ```
 
 默认只调 6 个手臂关节；夹爪另加 `--include-gripper`。其他维护工具：

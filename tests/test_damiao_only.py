@@ -285,6 +285,11 @@ def test_zero_tool_requests_feedback_for_selected_actuators(
         def connect(self):
             pass
 
+        def set_zero(self, *, joint_names, verify_tolerance):
+            captured["joint_names"] = list(joint_names)
+            captured["verify_tolerance"] = verify_tolerance
+            return tuple(joint_names)
+
         def close(self):
             pass
 
@@ -310,10 +315,12 @@ def test_zero_tool_requests_feedback_for_selected_actuators(
         stationary_hz=20.0,
         max_velocity=0.05,
         max_movement=0.01,
-        confirm="",
         verify_tolerance=0.02,
     )
 
     zero_tool.main(args)
 
     assert captured["enable_gripper"] is include_gripper
+    assert captured["joint_names"] == (
+        ["joint1", "gripper"] if include_gripper else ["joint1"]
+    )

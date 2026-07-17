@@ -14,9 +14,6 @@ except ModuleNotFoundError:
     )
 
 
-CONFIRM_TEXT = "SET-ZERO"
-
-
 def read_complete_state(arm, *, attempts: int, interval: float):
     last_error: RuntimeError | None = None
     for attempt in range(1, attempts + 1):
@@ -97,15 +94,6 @@ def main(args: argparse.Namespace) -> None:
         if state.gripper is not None:
             print(f"  {state.gripper.name}: {state.gripper.position:+.6f} rad")
 
-        if args.confirm != CONFIRM_TEXT:
-            print("")
-            print("zero was NOT written.")
-            print(
-                f"Place the arm at the mechanical zero pose, then add "
-                f"--confirm {CONFIRM_TEXT}."
-            )
-            return
-
         joint_names = list(state.arm.names)
         if args.include_gripper:
             if state.gripper is None:
@@ -120,15 +108,12 @@ def main(args: argparse.Namespace) -> None:
         arm.close()
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Write current stationary ARX-D-CAN motor positions as zero."
-    )
-    parser.add_argument(
-        "--confirm",
-        default="",
-        help=f"Actually write zero positions; required value: {CONFIRM_TEXT}",
-    )
+def build_parser(
+    *,
+    description: str = "Write current stationary ARX-D-CAN motor positions as zero.",
+) -> argparse.ArgumentParser:
+    """Build the shared safe-zero command-line interface."""
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--include-gripper",
         action="store_true",
@@ -140,4 +125,12 @@ if __name__ == "__main__":
     parser.add_argument("--max-movement", type=float, default=0.01)
     parser.add_argument("--verify-tolerance", type=float, default=0.02)
     add_connection_arguments(parser)
-    main(parser.parse_args())
+    return parser
+
+
+def cli() -> None:
+    main(build_parser().parse_args())
+
+
+if __name__ == "__main__":
+    cli()
