@@ -41,6 +41,10 @@ python -m arx_d_can.examples.example_07_send_joint_trajectory \
   "0,-60,-60,0,0,0" --port /dev/ttyACM0 --return-zero
 python -m arx_d_can.examples.example_08_return_zero --port /dev/ttyACM0
 python -m arx_d_can.examples.example_09_diagnose_status --port /dev/ttyACM0
+python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
+  record trajectory.json --seconds 10 --hz 100 --port /dev/ttyACM0
+python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
+  replay trajectory.json --port /dev/ttyACM0
 ```
 
 `example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续

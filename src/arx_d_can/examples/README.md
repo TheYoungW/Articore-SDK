@@ -165,3 +165,27 @@ python -m arx_d_can.examples.example_10_set_zero_current_position \
 
 默认不调夹爪；如需同时将夹爪当前位置设为零，增加 `--include-gripper`。调零会修改
 电机持久零点，执行前必须托稳机械臂并确认各关节处于正确的机械零位。
+
+## 11 录制和回放轨迹
+
+录制时不会使能电机，可手动拖动机械臂。默认以 100 Hz 录制 10 秒，频率最高
+500 Hz，六个关节和夹爪位置保存在 JSON 文件中：
+
+```bash
+python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
+  record trajectory.json \
+  --seconds 10 \
+  --hz 100 \
+  --port /dev/ttyACM0
+```
+
+回放不需要再指定频率，会自动按照文件中记录的频率执行：
+
+```bash
+python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
+  replay trajectory.json \
+  --port /dev/ttyACM0
+```
+
+回放会直接发送记录的第一个机械臂和夹爪位置。执行前应托稳机械臂，确认当前位置与
+夹爪开合程度接近轨迹起点，并确保整条轨迹没有碰撞和夹伤风险。
