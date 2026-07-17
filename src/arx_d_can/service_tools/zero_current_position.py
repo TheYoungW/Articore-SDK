@@ -14,6 +14,16 @@ except ModuleNotFoundError:
     )
 
 
+VERIFY_SAMPLES = 3
+
+
+def named_positions(state) -> dict[str, float]:
+    positions = dict(zip(state.arm.names, state.arm.positions))
+    if state.gripper is not None:
+        positions[state.gripper.name] = state.gripper.position
+    return positions
+
+
 def read_complete_state(arm, *, attempts: int, interval: float):
     last_error: RuntimeError | None = None
     for attempt in range(1, attempts + 1):
@@ -94,16 +104,32 @@ def main(args: argparse.Namespace) -> None:
         if state.gripper is not None:
             print(f"  {state.gripper.name}: {state.gripper.position:+.6f} rad")
 
+        before_positions = named_positions(state)
         joint_names = list(state.arm.names)
         if args.include_gripper:
             if state.gripper is None:
                 raise RuntimeError("gripper feedback is unavailable")
             joint_names.append(state.gripper.name)
+        for name in joint_names:
+            if abs(before_positions[name]) <= args.verify_tolerance:
+                print(
+                    f"warning: {name} was already near zero; position feedback "
+                    "alone cannot prove that the zero command was executed"
+                )
         completed = arm.set_zero(
             joint_names=joint_names,
             verify_tolerance=args.verify_tolerance,
+            verify_velocity=args.max_velocity,
+            verify_samples=VERIFY_SAMPLES,
         )
-        print("zero position written and verified:", ", ".join(completed))
+        verified = read_complete_state(arm, attempts=10, interval=0.05)
+        after_positions = named_positions(verified)
+        print(f"zero position written and verified with {VERIFY_SAMPLES} fresh samples:")
+        for name in completed:
+            print(
+                f"  {name}: {before_positions[name]:+.6f} -> "
+                f"{after_positions[name]:+.6f} rad"
+            )
     finally:
         arm.close()
 

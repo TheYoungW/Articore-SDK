@@ -156,7 +156,8 @@ python -m arx_d_can.examples.example_09_diagnose_status \
 
 该示例不会驱动机械臂运动，而是把当前静止位置写入电机作为新的零位。运行前确认
 机械臂已经放在机械零位并保持静止；命令会检查反馈和静止状态，然后直接写入六个
-机械臂关节并逐个验证：
+机械臂关节。每个电机写入后必须连续收到 3 帧状态正常、位置接近零且速度接近零的
+新反馈，才判定调零成功：
 
 ```bash
 python -m arx_d_can.examples.example_10_set_zero_current_position \

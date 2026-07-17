@@ -71,11 +71,17 @@ class FakeZeroMotor:
         feedback=True,
         status_code=0,
         clear_error=None,
+        velocity=0.0,
+        zero_feedback=None,
     ):
         self.position = position
+        self.velocity = velocity
         self.feedback = feedback
         self.status_code = status_code
         self.clear_error_exception = clear_error
+        self.zero_feedback = list(zero_feedback or ())
+        self.zero_feedback_index = 0
+        self.fresh_requests = 0
         self.clear_error_calls = 0
         self.zero_writes = 0
 
@@ -88,7 +94,18 @@ class FakeZeroMotor:
 
     def request_fresh_state(self, timeout_ms=50):
         del timeout_ms
+        self.fresh_requests += 1
         self.request_feedback()
+        if self.zero_writes and self.zero_feedback:
+            index = min(self.zero_feedback_index, len(self.zero_feedback) - 1)
+            self.zero_feedback_index += 1
+            position, velocity, status_code = self.zero_feedback[index]
+            return SimpleNamespace(
+                pos=position,
+                vel=velocity,
+                torq=0.0,
+                status_code=status_code,
+            )
         return self.get_state()
 
     def get_state(self):
@@ -96,7 +113,7 @@ class FakeZeroMotor:
             return None
         return SimpleNamespace(
             pos=self.position,
-            vel=0.0,
+            vel=self.velocity,
             torq=0.0,
             status_code=self.status_code,
         )
@@ -163,7 +180,52 @@ def test_zero_writes_and_verifies_selected_motor(monkeypatch):
 
     assert completed == ("joint1",)
     assert first.zero_writes == 1
+    assert first.fresh_requests == 4  # one preflight plus three verification frames
     assert second.zero_writes == 0
+
+
+def test_zero_rejects_any_nonzero_consecutive_feedback_sample(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    motor = FakeZeroMotor(
+        position=0.4,
+        zero_feedback=[
+            (0.0, 0.0, 0),
+            (0.03, 0.0, 0),
+            (0.0, 0.0, 0),
+        ],
+    )
+    arm = make_zero_arm(motor)
+
+    with pytest.raises(RuntimeError, match=r"fresh sample 2/3.*position=\+0.030000"):
+        arm.set_zero(poll_max=2, poll_interval=0.0)
+
+
+def test_zero_rejects_feedback_velocity_after_write(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    motor = FakeZeroMotor(
+        position=-0.4,
+        zero_feedback=[(0.0, 0.06, 0)],
+    )
+    arm = make_zero_arm(motor)
+
+    with pytest.raises(RuntimeError, match=r"velocity=\+0.060000"):
+        arm.set_zero(poll_max=2, poll_interval=0.0)
+
+
+def test_zero_rejects_any_faulted_verification_frame(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    motor = FakeZeroMotor(
+        position=0.4,
+        zero_feedback=[
+            (0.0, 0.0, 0),
+            (0.0, 0.0, 8),
+            (0.0, 0.0, 0),
+        ],
+    )
+    arm = make_zero_arm(motor)
+
+    with pytest.raises(RuntimeError, match=r"fresh sample 2/3: motor status=8"):
+        arm.set_zero(poll_max=2, poll_interval=0.0)
 
 
 def test_clear_errors_clears_and_verifies_every_selected_motor(monkeypatch):
@@ -285,10 +347,23 @@ def test_zero_tool_requests_feedback_for_selected_actuators(
         def connect(self):
             pass
 
-        def set_zero(self, *, joint_names, verify_tolerance):
+        def set_zero(
+            self,
+            *,
+            joint_names,
+            verify_tolerance,
+            verify_velocity,
+            verify_samples,
+        ):
             captured["joint_names"] = list(joint_names)
             captured["verify_tolerance"] = verify_tolerance
+            captured["verify_velocity"] = verify_velocity
+            captured["verify_samples"] = verify_samples
             return tuple(joint_names)
+
+        def read_state(self, *, request_feedback=True):
+            del request_feedback
+            return state
 
         def close(self):
             pass
@@ -324,3 +399,5 @@ def test_zero_tool_requests_feedback_for_selected_actuators(
     assert captured["joint_names"] == (
         ["joint1", "gripper"] if include_gripper else ["joint1"]
     )
+    assert captured["verify_velocity"] == 0.05
+    assert captured["verify_samples"] == 3

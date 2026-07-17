@@ -99,7 +99,8 @@ finally:
 ## 维护工具
 
 维护工具与普通示例分开。调零命令会先确认机械臂静止，再把当前位置逐关节写为
-零位并验证：
+零位。每个电机写入后必须连续收到 3 帧新反馈，且状态正常、位置接近零、速度接近
+零，才判定成功：
 
 ```bash
 python -m arx_d_can.service_tools.zero_current_position --port /dev/ttyACM0

@@ -608,14 +608,18 @@ class ArxDCanArm:
         *,
         joint_names: Sequence[str] | None = None,
         verify_tolerance: float = 0.02,
+        verify_velocity: float = 0.05,
+        verify_samples: int = 3,
     ) -> tuple[str, ...]:
-        """Write current positions as zero and verify each selected motor."""
+        """Write current positions as zero and verify consecutive fresh states."""
         self._require_operational()
         if self._enabled:
             raise RuntimeError("disable the arm before writing motor zero positions")
         return self.robot.set_zero(
             joint_names=list(joint_names) if joint_names is not None else None,
             verify_tolerance=verify_tolerance,
+            verify_velocity=verify_velocity,
+            verify_samples=verify_samples,
         )
 
     def set_gripper(

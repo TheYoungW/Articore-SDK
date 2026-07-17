@@ -756,8 +756,17 @@ class ArxDCan:
         poll_max: int = 20,
         poll_interval: float = 0.05,
         verify_tolerance: float = 0.02,
+        verify_velocity: float = 0.05,
+        verify_samples: int = 3,
     ) -> tuple[str, ...]:
-        """Set selected motor positions to zero and verify every write."""
+        """Set selected motor positions to zero and verify fresh feedback."""
+        if verify_samples < 1:
+            raise ValueError("verify_samples must be at least 1")
+        if not np.isfinite(verify_tolerance) or verify_tolerance < 0.0:
+            raise ValueError("verify_tolerance must be finite and non-negative")
+        if not np.isfinite(verify_velocity) or verify_velocity < 0.0:
+            raise ValueError("verify_velocity must be finite and non-negative")
+
         self.disable_all()
         time.sleep(0.3)
 
@@ -769,9 +778,15 @@ class ArxDCan:
         if not targets:
             raise ValueError("at least one joint must be selected for zeroing")
 
-        # Validate every target before starting this non-atomic operation.
+        # Validate every target before starting this non-atomic operation and
+        # retain the pre-zero state for meaningful verification errors.
+        before_states = {}
         for jc in targets:
-            self._wait_for_healthy_state(jc, poll_max, poll_interval)
+            before_states[jc.name] = self._wait_for_healthy_state(
+                jc,
+                poll_max,
+                poll_interval,
+            )
 
         completed: list[str] = []
         for jc in targets:
@@ -783,13 +798,43 @@ class ArxDCan:
                     f"zeroing failed for {jc.name}; completed={completed}: {exc}"
                 ) from exc
             time.sleep(0.1)
-            state = self._wait_for_healthy_state(jc, poll_max, poll_interval)
-            if abs(float(state.pos)) > verify_tolerance:
-                raise RuntimeError(
-                    f"zero verification failed for {jc.name}: "
-                    f"position={state.pos:+.6f} rad, tolerance={verify_tolerance:.6f}; "
-                    f"completed={completed}"
-                )
+            before = before_states[jc.name]
+            for sample_index in range(1, verify_samples + 1):
+                try:
+                    state = motor.request_fresh_state(timeout_ms=50)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"zero verification failed for {jc.name} at fresh sample "
+                        f"{sample_index}/{verify_samples}: feedback unavailable; "
+                        f"completed={completed}: {exc}"
+                    ) from exc
+                if state is None:
+                    raise RuntimeError(
+                        f"zero verification failed for {jc.name} at fresh sample "
+                        f"{sample_index}/{verify_samples}: feedback unavailable; "
+                        f"completed={completed}"
+                    )
+                if state.status_code != 0:
+                    raise RuntimeError(
+                        f"zero verification failed for {jc.name} at fresh sample "
+                        f"{sample_index}/{verify_samples}: "
+                        f"motor status={state.status_code}; completed={completed}"
+                    )
+                position = float(state.pos)
+                velocity = float(state.vel)
+                if (
+                    abs(position) > verify_tolerance
+                    or abs(velocity) > verify_velocity
+                ):
+                    raise RuntimeError(
+                        f"zero verification failed for {jc.name} at fresh sample "
+                        f"{sample_index}/{verify_samples}: "
+                        f"before_position={float(before.pos):+.6f} rad, "
+                        f"position={position:+.6f} rad "
+                        f"(limit {verify_tolerance:.6f}), "
+                        f"velocity={velocity:+.6f} rad/s "
+                        f"(limit {verify_velocity:.6f}); completed={completed}"
+                    )
             completed.append(jc.name)
         return tuple(completed)
 
