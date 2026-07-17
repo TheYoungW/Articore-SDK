@@ -84,9 +84,18 @@ class FakeZeroMotor:
         self.fresh_requests = 0
         self.clear_error_calls = 0
         self.zero_writes = 0
+        self.enable_calls = 0
+        self.disable_calls = 0
 
     def disable(self):
-        pass
+        self.disable_calls += 1
+        if self.status_code in (0, 1):
+            self.status_code = 0
+
+    def enable(self):
+        self.enable_calls += 1
+        if self.status_code == 0:
+            self.status_code = 1
 
     def request_feedback(self):
         if not self.feedback:
@@ -260,6 +269,52 @@ def test_clear_errors_attempts_remaining_motors_after_one_failure(monkeypatch):
 
     assert first.clear_error_calls == 1
     assert second.clear_error_calls == 1
+
+
+def test_joint_group_enable_verifies_every_motor(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    first = FakeZeroMotor()
+    second = FakeZeroMotor()
+    arm = make_zero_arm(first, second)
+    group = JointGroup(
+        "arm",
+        ["joint1", "joint2"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.enable(poll_max=2, poll_interval=0.0)
+
+    assert first.status_code == 1
+    assert second.status_code == 1
+    assert first.fresh_requests == 1
+    assert second.fresh_requests == 1
+
+
+def test_joint_group_enable_rejects_faulted_motor_and_rolls_back(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    first = FakeZeroMotor()
+    second = FakeZeroMotor(status_code=12)
+    arm = make_zero_arm(first, second)
+    group = JointGroup(
+        "arm",
+        ["joint1", "joint2"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"not all motors entered ENABLED state: joint2: .*status=12",
+    ):
+        group.enable(poll_max=2, poll_interval=0.0)
+
+    assert first.status_code == 0
+    assert second.status_code == 12
+    assert first.disable_calls >= 1
+    assert second.disable_calls >= 1
 
 
 @pytest.mark.parametrize("status_code", [0, 1])

@@ -251,10 +251,32 @@ class JointGroup:
 
     # ── 使能 / 失能 ────────────────────────────────────────────────────
 
-    def enable(self) -> None:
+    def enable(
+        self,
+        poll_max: int = 20,
+        poll_interval: float = 0.05,
+    ) -> None:
+        """Enable every motor and verify that each reports ENABLED."""
         for jc in self._jcfgs:
             self._mm[jc.name].enable()
         time.sleep(0.05)
+
+        errors = []
+        for jc in self._jcfgs:
+            try:
+                self._wait_for_enabled_state(jc, poll_max, poll_interval)
+            except Exception as exc:
+                errors.append(f"{jc.name}: {exc}")
+        if not errors:
+            return
+
+        try:
+            self.disable()
+        except Exception as exc:
+            errors.append(f"rollback disable: {exc}")
+        raise RuntimeError(
+            "not all motors entered ENABLED state: " + "; ".join(errors)
+        )
 
     def disable(self) -> None:
         errors = []
@@ -318,6 +340,29 @@ class JointGroup:
         detail = f", last_error={last_error}" if last_error is not None else ""
         raise RuntimeError(
             f"disabled feedback unavailable after clear_error, status={status}{detail}"
+        )
+
+    def _wait_for_enabled_state(
+        self,
+        jc: JointCfg,
+        poll_max: int,
+        poll_interval: float,
+    ):
+        motor = self._mm[jc.name]
+        last_state = None
+        last_error = None
+        for _ in range(max(1, poll_max)):
+            try:
+                last_state = motor.request_fresh_state(timeout_ms=50)
+                if last_state is not None and last_state.status_code == 1:
+                    return last_state
+            except Exception as exc:
+                last_error = exc
+            time.sleep(max(0.0, poll_interval))
+        status = None if last_state is None else last_state.status_code
+        detail = f", last_error={last_error}" if last_error is not None else ""
+        raise RuntimeError(
+            f"enabled feedback unavailable, status={status}{detail}"
         )
 
     # ── 模式切换 ────────────────────────────────────────────────────────

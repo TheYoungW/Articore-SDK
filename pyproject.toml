@@ -36,7 +36,5 @@ packages = [
   "arx_d_can.service_tools",
   "arx_d_can.trajectory",
 ]
-package-dir = { "" = "src" }
-
 [tool.setuptools.package-data]
 arx_d_can = ["config/*.yaml", "examples/README.md", "models/*.urdf"]

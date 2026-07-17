@@ -50,7 +50,7 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
 `example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续
 刷新目标。它通过 `--mode pv`（默认）使用 POS_VEL 位置速度模式，也可通过
 `--mode mit` 使用 MIT 模式；MIT 的 `kp/kd` 和 PV 的环路参数均读取
-`src/arx_d_can/config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的
+`arx_d_can/config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的
 前馈力矩，单位为 N·m，并用 `--velocities` 传入六个目标速度；PV 用
 `--velocity-limits` 覆盖配置
 中的六个最大速度。速度命令行参数单位均为 deg/s。MIT 的速度和力矩未提供时默认
@@ -71,7 +71,7 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
   调用 `clear_fault()`、`configure()`、`enable()`。
 - `close()` 总是停止看门狗、尝试失能所有电机并关闭总线。
 
-看门狗参数位于 `src/arx_d_can/config/arx_d_can_dm.yaml` 的 `safety`。它是进程内
+看门狗参数位于 `arx_d_can/config/arx_d_can_dm.yaml` 的 `safety`。它是进程内
 软件看门狗，
 能处理控制线程卡住或上游停止发命令；它不能覆盖整机掉电、Python 进程被强制
 杀死或 USB2CAN 硬件失效。`SAFE_HOLD` 也不是安全认证功能，生产设备仍需要物理
@@ -124,12 +124,12 @@ python -m arx_d_can.service_tools.joint_load_probe \
 ## 配置
 
 硬件 ID、反馈 ID、控制增益、夹爪映射和安全参数位于
-`src/arx_d_can/config/arx_d_can_dm.yaml`。VR/ROS 上层已经负责工作空间和 URDF
+`arx_d_can/config/arx_d_can_dm.yaml`。VR/ROS 上层已经负责工作空间和 URDF
 关节限位；SDK 安全层负责通信故障、命令超时保持和退出失能。
 
 ## 开发验证
 
-源码采用标准的 `src/arx_d_can` 包布局。安装开发依赖后可直接运行测试和构建：
+源码采用根目录 `arx_d_can/` 包布局。安装开发依赖后可直接运行测试和构建：
 
 ```bash
 python -m pip install ".[dev]"

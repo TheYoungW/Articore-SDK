@@ -115,11 +115,20 @@ python -m arx_d_can.examples.example_07_send_joint_trajectory \
 ## 08 全部电机直接回到零位
 
 直接向六个机械臂关节发送 `0°`，夹爪默认也发送电机 `0°`。该示例不做插值，
-只发送位置命令，不会修改电机零点标定。默认持续刷新零目标，按 `Ctrl+C` 后
-全部失能。夹爪零位对应闭合，运行前必须确保夹爪内没有物体：
+只发送位置命令，不会修改电机零点标定。使能后会逐轴验证 `ENABLED` 反馈，运行中
+每秒打印实际关节角并监测电机故障。默认持续刷新零目标，按 `Ctrl+C` 后全部失能。
+夹爪零位对应闭合，运行前必须确保夹爪内没有物体：
 
 ```bash
 python -m arx_d_can.examples.example_08_return_zero --port /dev/ttyACM0
+```
+
+可用 `--velocity-limit` 设置六轴统一的 PV 最大速度（单位 `deg/s`），例如：
+
+```bash
+python -m arx_d_can.examples.example_08_return_zero \
+  --port /dev/ttyACM0 \
+  --velocity-limit 15
 ```
 
 目标会直接交给电机位置控制器；运行前必须确认当前位置到零位之间没有碰撞风险。
