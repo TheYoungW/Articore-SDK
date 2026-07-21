@@ -44,16 +44,24 @@ def sine_target(*, center: float, amplitude: float, elapsed: float, period: floa
     return center + amplitude * math.sin(2.0 * math.pi * elapsed / period)
 
 
-def parse_optional_prepose(text: str) -> tuple[float, ...] | None:
+def parse_optional_prepose(
+    text: str,
+    *,
+    expected_count: int = 6,
+) -> tuple[float, ...] | None:
     if not text.strip():
         return None
-    return parse_joint_positions(text)
+    return parse_joint_positions(text, expected_count=expected_count)
 
 
-def return_zero_target(*, disabled: bool) -> tuple[float, ...] | None:
+def return_zero_target(
+    *,
+    disabled: bool,
+    joint_count: int = 6,
+) -> tuple[float, ...] | None:
     if disabled:
         return None
-    return (0.0,) * 6
+    return (0.0,) * joint_count
 
 
 def next_tick_delay(*, next_tick: float, period: float, now: float) -> tuple[float, float]:
@@ -106,20 +114,21 @@ def write_csv(path: Path, samples: list[Sample]) -> None:
 
 
 def run_probe(args: argparse.Namespace) -> list[Sample]:
-    joint_index = args.joint - 1
-    if not 0 <= joint_index < 6:
-        raise SystemExit("--joint must be in 1..6")
     amplitude = math.radians(args.amplitude_deg)
     duration = max(0.0, args.cycles * args.period)
     period = 1.0 / max(1.0, args.hz)
     samples: list[Sample] = []
     arm = make_arm(args)
+    joint_count = len(arm.joint_names)
+    joint_index = args.joint - 1
+    if not 0 <= joint_index < joint_count:
+        raise SystemExit(f"--joint must be in 1..{joint_count}")
     try:
         arm.connect()
         arm.configure()
         arm.enable()
         initial_state = arm.read_state(request_feedback=True)
-        prepose = parse_optional_prepose(args.prepose)
+        prepose = parse_optional_prepose(args.prepose, expected_count=joint_count)
         base = list(initial_state.arm.positions if prepose is None else prepose)
         center = base[joint_index] if args.center_rad is None else float(args.center_rad)
         print(
@@ -171,7 +180,10 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
             target[joint_index] = center
             interpolate_joint_positions(arm, current, target, seconds=args.return_seconds, hz=args.hz)
 
-        zero_target = return_zero_target(disabled=args.no_return_zero)
+        zero_target = return_zero_target(
+            disabled=args.no_return_zero,
+            joint_count=joint_count,
+        )
         if zero_target is not None:
             current = arm.read_state(request_feedback=True).arm.positions
             print("returning all arm joints to zero")
@@ -214,7 +226,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prepose",
         default=DEFAULT_PREPOSE,
-        help="Optional six-joint pose before probing; empty string disables",
+        help="Optional full-arm pose before probing; empty string disables",
     )
     parser.add_argument("--prepose-seconds", type=float, default=4.0)
     parser.add_argument("--move-seconds", type=float, default=2.0, help="Move to center before probing")

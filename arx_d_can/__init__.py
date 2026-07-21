@@ -9,7 +9,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-from .actuator import ArxDCan, JointCfg, JointGroup, load_cfg
+from .actuator import ArxDCan, JointCfg, JointGroup, available_models, load_cfg
 from .sdk import (
     ArxDCanArm,
     ArxDCanConfig,
@@ -43,6 +43,7 @@ __all__ = [
     "JointState",
     "MotorState",
     "actuator",
+    "available_models",
     "controllers",
     "default_config",
     "dynamics",

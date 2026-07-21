@@ -184,12 +184,15 @@ def print_summary(diagnostics: list[MotorDiagnostic], *, temperature_warning: fl
 
 
 def main(args: argparse.Namespace) -> None:
-    config = load_cfg(args.hardware_config or None)
+    config = load_cfg(args.config_path, model=args.arm_model)
     joints: list[JointCfg] = list(config["joints"])
     if args.arm_only:
         joints = [joint for joint in joints if joint.name != "gripper"]
 
-    controller = Controller.from_dm_serial(args.port, args.baud)
+    controller = Controller.from_dm_serial(
+        args.port or str(config["channel"]),
+        args.baud or int(config["baud"]),
+    )
     motors = []
     try:
         for joint in joints:
@@ -229,7 +232,15 @@ if __name__ == "__main__":
     parser.add_argument("--timeout-ms", type=int, default=100)
     parser.add_argument("--temperature-warning", type=float, default=80.0)
     parser.add_argument("--arm-only", action="store_true", help="Do not inspect the gripper")
-    parser.add_argument("--hardware-config", default="")
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument("--arm-model", default=None)
+    profile.add_argument(
+        "--config-path",
+        "--hardware-config",
+        dest="config_path",
+        default=None,
+        help="Custom arm hardware YAML",
+    )
+    parser.add_argument("--port", default=None, help="Override profile USB2CAN serial port")
+    parser.add_argument("--baud", type=int, default=None, help="Override profile serial baudrate")
     main(parser.parse_args())

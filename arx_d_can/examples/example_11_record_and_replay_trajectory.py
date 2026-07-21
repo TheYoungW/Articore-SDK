@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
 DEFAULT_HZ = 100.0
@@ -32,19 +33,48 @@ def run_at_hz(count: int, hz: float, action) -> None:
         action(index)
 
 
-def save_trajectory(path: Path, hz: float, positions: list[list[float]]) -> None:
+def save_trajectory(
+    path: Path,
+    hz: float,
+    positions: list[list[float]],
+    *,
+    joint_names: tuple[str, ...] | None = None,
+) -> None:
+    data: dict[str, object] = {"hz": hz, "positions": positions}
+    if joint_names is not None:
+        data["joint_names"] = list(joint_names)
     path.write_text(
-        json.dumps({"hz": hz, "positions": positions}),
+        json.dumps(data),
         encoding="utf-8",
     )
 
 
-def load_trajectory(path: Path) -> tuple[float, list[list[float]]]:
+def load_trajectory(
+    path: Path,
+    *,
+    expected_joint_names: tuple[str, ...] | None = None,
+) -> tuple[float, list[list[float]]]:
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("trajectory file must contain a JSON object")
     hz = parse_hz(str(data["hz"]))
     positions = [[float(value) for value in point] for point in data["positions"]]
-    if not positions or any(len(point) != 7 for point in positions):
-        raise ValueError("trajectory must contain six arm joints and one gripper position")
+    if not positions:
+        raise ValueError("trajectory must contain at least one sample")
+    width = len(positions[0])
+    if width < 2 or any(len(point) != width for point in positions):
+        raise ValueError(
+            "trajectory samples must have one value per arm joint plus one gripper value"
+        )
+    joint_names = data.get("joint_names")
+    if joint_names is not None:
+        if not isinstance(joint_names, list) or len(joint_names) + 1 != width:
+            raise ValueError("trajectory joint_names do not match the recorded samples")
+        if expected_joint_names is not None and tuple(joint_names) != expected_joint_names:
+            raise ValueError(
+                f"trajectory joints {tuple(joint_names)!r} do not match selected model "
+                f"joints {expected_joint_names!r}"
+            )
     return hz, positions
 
 
@@ -66,26 +96,44 @@ def record(arm: ArxDCanArm, *, seconds: float, hz: float) -> list[list[float]]:
 
 
 def replay(arm: ArxDCanArm, *, hz: float, positions: list[list[float]]) -> None:
+    if not positions:
+        raise ValueError("trajectory must contain at least one sample")
+    joint_count = len(getattr(arm, "joint_names", ())) or len(positions[0]) - 1
+    expected_width = joint_count + 1
+    if any(len(point) != expected_width for point in positions):
+        raise ValueError(
+            f"trajectory has {len(positions[0]) - 1} arm joints, "
+            f"but the selected model has {joint_count}"
+        )
+
     def send(index: int) -> None:
-        arm.send_joint_positions(positions[index][:6])
-        arm.set_gripper_motor_value(positions[index][6])
+        arm.send_joint_positions(positions[index][:joint_count])
+        arm.set_gripper_motor_value(positions[index][joint_count])
 
     run_at_hz(len(positions), hz, send)
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = ArxDCanArm(port=args.port, baud=args.baud, enable_gripper=True)
+    arm = ArxDCanArm(enable_gripper=True, **arm_kwargs(args))
     try:
         arm.connect()
         if args.command == "record":
             if args.seconds <= 0.0:
                 raise ValueError("seconds must be greater than 0")
             positions = record(arm, seconds=args.seconds, hz=args.hz)
-            save_trajectory(args.file, args.hz, positions)
+            save_trajectory(
+                args.file,
+                args.hz,
+                positions,
+                joint_names=arm.joint_names,
+            )
             print(f"saved {len(positions)} samples at {args.hz:g} Hz to {args.file}")
             return
 
-        hz, positions = load_trajectory(args.file)
+        hz, positions = load_trajectory(
+            args.file,
+            expected_joint_names=arm.joint_names,
+        )
         arm.configure()
         arm.enable()
         print(f"replaying {len(positions)} samples at {hz:g} Hz")
@@ -107,8 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     replay_parser.add_argument("file", type=Path, help="Input JSON trajectory")
 
     for command in (record_parser, replay_parser):
-        command.add_argument("--port", default="/dev/ttyACM0")
-        command.add_argument("--baud", type=int, default=1_000_000)
+        add_connection_arguments(command)
     return parser
 
 

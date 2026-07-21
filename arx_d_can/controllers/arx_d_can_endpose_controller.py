@@ -97,8 +97,15 @@ class ArxDCanEndPose:
 
         self._n = self._arm_group.num_joints
         self._dt = dt
-        self._model = load_robot_model()
-        self._end_frame_id = get_end_effector_frame_id(self._model)
+        if arx_d_can.urdf_path is None:
+            raise ValueError(
+                f"model {arx_d_can.model!r} does not define urdf_path"
+            )
+        self._model = load_robot_model(arx_d_can.urdf_path)
+        self._end_frame_id = get_end_effector_frame_id(
+            self._model,
+            arx_d_can.end_effector_frame,
+        )
         self._data = self._model.createData()
 
         self._traj_params = TrajPlanParams(dt=dt, profile=profile)

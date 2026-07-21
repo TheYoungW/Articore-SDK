@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ def print_result(result: BenchmarkResult) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = ArxDCanArm(port=args.port, baud=args.baud)
+    arm = ArxDCanArm(**arm_kwargs(args))
     try:
         arm.connect()
         if args.warmup_seconds > 0.0:
@@ -133,6 +134,5 @@ if __name__ == "__main__":
         action="store_true",
         help="Read cached state only; default requests fresh motor feedback each sample",
     )
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())

@@ -5,6 +5,7 @@ import math
 import time
 from argparse import ArgumentParser, Namespace
 from collections.abc import Sequence
+from pathlib import Path
 
 from arx_d_can import ArxDCanArm
 
@@ -16,29 +17,68 @@ ZERO_ARM_POSITION = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
 def add_connection_arguments(parser: ArgumentParser) -> None:
-    parser.add_argument("--port", default=DEFAULT_PORT, help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="USB2CAN serial baudrate")
-
-
-def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> ArxDCanArm:
-    return ArxDCanArm(
-        port=DEFAULT_PORT if args is None else args.port,
-        baud=DEFAULT_BAUD if args is None else args.baud,
-        control_mode="posvel",
-        enable_gripper=enable_gripper,
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument(
+        "--arm-model",
+        default=None,
+        help="Built-in arm model profile name; default: models.yaml default_model",
+    )
+    profile.add_argument(
+        "--config-path",
+        type=Path,
+        default=None,
+        help="Custom arm hardware YAML; cannot be combined with --arm-model",
+    )
+    parser.add_argument(
+        "--port",
+        default=None,
+        help=f"USB2CAN serial port; default: profile value ({DEFAULT_PORT} for arx_d_can)",
+    )
+    parser.add_argument(
+        "--baud",
+        type=int,
+        default=None,
+        help=f"USB2CAN serial baudrate; default: profile value ({DEFAULT_BAUD} for arx_d_can)",
     )
 
 
-def parse_joint_positions(text: str) -> tuple[float, ...]:
+def arm_kwargs(args: Namespace) -> dict:
+    return {
+        "model": getattr(args, "arm_model", None),
+        "config_path": getattr(args, "config_path", None),
+        "port": getattr(args, "port", None),
+        "baud": getattr(args, "baud", None),
+    }
+
+
+def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> ArxDCanArm:
+    kwargs = (
+        {"port": DEFAULT_PORT, "baud": DEFAULT_BAUD}
+        if args is None
+        else arm_kwargs(args)
+    )
+    return ArxDCanArm(control_mode="posvel", enable_gripper=enable_gripper, **kwargs)
+
+
+def parse_joint_positions(text: str, *, expected_count: int = 6) -> tuple[float, ...]:
     values = tuple(float(value) for value in text.split(",") if value.strip())
-    if len(values) != 6:
-        raise ValueError(f"expected 6 comma-separated joint positions, got {len(values)}")
+    if len(values) != expected_count:
+        raise ValueError(
+            f"expected {expected_count} comma-separated joint positions, got {len(values)}"
+        )
     return values
 
 
-def parse_joint_positions_degrees(text: str) -> tuple[float, ...]:
-    """Parse six user-facing degree values and return SDK-facing radians."""
-    return tuple(math.radians(value) for value in parse_joint_positions(text))
+def parse_joint_positions_degrees(
+    text: str,
+    *,
+    expected_count: int = 6,
+) -> tuple[float, ...]:
+    """Parse user-facing degree values and return SDK-facing radians."""
+    return tuple(
+        math.radians(value)
+        for value in parse_joint_positions(text, expected_count=expected_count)
+    )
 
 
 def send_for_seconds(

@@ -9,7 +9,8 @@ import time
 
 from arx_d_can import ArxDCanArm
 from arx_d_can.examples.common import (
-    ZERO_ARM_POSITION,
+    add_connection_arguments,
+    arm_kwargs,
     parse_joint_positions_degrees,
 )
 from arx_d_can.trajectory import JointPositionPoint, plan_joint_position_trajectory
@@ -96,9 +97,12 @@ def print_stats(label: str, stats: ExecutionStats) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
-    target = parse_joint_positions_degrees(args.positions)
-
-    arm = ArxDCanArm(port=args.port, baud=args.baud)
+    arm = ArxDCanArm(**arm_kwargs(args))
+    target = parse_joint_positions_degrees(
+        args.positions,
+        expected_count=len(arm.joint_names),
+    )
+    zero_position = (0.0,) * len(arm.joint_names)
     try:
         arm.connect()
         arm.configure()
@@ -128,7 +132,7 @@ def main(args: argparse.Namespace) -> None:
         if args.return_zero:
             inbound = plan_joint_position_trajectory(
                 reached.arm.positions,
-                ZERO_ARM_POSITION,
+                zero_position,
                 duration=args.return_seconds,
                 hz=args.hz,
                 profile=args.profile,
@@ -136,7 +140,7 @@ def main(args: argparse.Namespace) -> None:
             print_stats("return", execute_trajectory(arm, inbound))
             hold_target(
                 arm,
-                ZERO_ARM_POSITION,
+                zero_position,
                 seconds=args.zero_hold_seconds,
                 hz=args.hz,
             )
@@ -150,7 +154,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Execute a smooth ARX-D-CAN joint trajectory at 500 Hz by default."
     )
-    parser.add_argument("positions", help="Six comma-separated joint targets in degrees")
+    parser.add_argument("positions", help="Comma-separated joint targets in degrees")
     parser.add_argument("--duration", type=float, default=6.0)
     parser.add_argument("--hz", type=float, default=500.0)
     parser.add_argument("--profile", choices=("min_jerk", "linear"), default="min_jerk")
@@ -158,6 +162,5 @@ if __name__ == "__main__":
     parser.add_argument("--return-zero", action="store_true")
     parser.add_argument("--return-seconds", type=float, default=6.0)
     parser.add_argument("--zero-hold-seconds", type=float, default=2.0)
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())

@@ -7,6 +7,7 @@ import math
 import time
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
 def print_state(arm, *, sample_index: int | None = None) -> None:
@@ -32,7 +33,7 @@ def print_state(arm, *, sample_index: int | None = None) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = ArxDCanArm(port=args.port, baud=args.baud)
+    arm = ArxDCanArm(**arm_kwargs(args))
     try:
         arm.connect()
         if not args.watch:
@@ -54,6 +55,5 @@ if __name__ == "__main__":
     parser.add_argument("--watch", action="store_true", help="Continuously print state")
     parser.add_argument("--hz", type=float, default=10.0, help="Print frequency in watch mode")
     parser.add_argument("--count", type=int, default=0, help="Stop after N samples in watch mode; 0 means forever")
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())

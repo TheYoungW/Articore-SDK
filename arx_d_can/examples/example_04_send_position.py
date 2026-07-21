@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 04: send one six-joint target in PV or MIT mode."""
+"""Example 04: send one arm-joint target in PV or MIT mode."""
 from __future__ import annotations
 
 import argparse
@@ -7,19 +7,24 @@ import math
 import time
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
-def parse_positions_degrees(text: str) -> tuple[float, ...]:
+def parse_positions_degrees(text: str, *, expected_count: int = 6) -> tuple[float, ...]:
     values = tuple(float(value) for value in text.split(",") if value.strip())
-    if len(values) != 6:
-        raise ValueError(f"expected 6 comma-separated joint positions, got {len(values)}")
+    if len(values) != expected_count:
+        raise ValueError(
+            f"expected {expected_count} comma-separated joint positions, got {len(values)}"
+        )
     return tuple(math.radians(value) for value in values)
 
 
-def parse_torques(text: str) -> tuple[float, ...]:
+def parse_torques(text: str, *, expected_count: int = 6) -> tuple[float, ...]:
     values = tuple(float(value) for value in text.split(",") if value.strip())
-    if len(values) != 6:
-        raise ValueError(f"expected 6 comma-separated joint torques, got {len(values)}")
+    if len(values) != expected_count:
+        raise ValueError(
+            f"expected {expected_count} comma-separated joint torques, got {len(values)}"
+        )
     if any(not math.isfinite(value) for value in values):
         raise ValueError("joint torques must be finite")
     return values
@@ -29,11 +34,12 @@ def parse_velocities_degrees(
     text: str,
     *,
     require_positive: bool = False,
+    expected_count: int = 6,
 ) -> tuple[float, ...]:
     values = tuple(float(value) for value in text.split(",") if value.strip())
-    if len(values) != 6:
+    if len(values) != expected_count:
         raise ValueError(
-            f"expected 6 comma-separated joint velocities, got {len(values)}"
+            f"expected {expected_count} comma-separated joint velocities, got {len(values)}"
         )
     if any(not math.isfinite(value) for value in values):
         raise ValueError("joint velocities must be finite")
@@ -65,11 +71,18 @@ def hold_target(
 
 
 def main(args: argparse.Namespace) -> None:
-    target = parse_positions_degrees(args.positions)
+    arm = ArxDCanArm(
+        control_mode=args.mode,
+        **arm_kwargs(args),
+    )
+    # The fallback keeps simple third-party test doubles compatible. Real SDK
+    # instances always expose joint_names from the selected model profile.
+    joint_count = len(getattr(arm, "joint_names", ())) or 6
+    target = parse_positions_degrees(args.positions, expected_count=joint_count)
     velocities = (
         None
         if args.velocities is None
-        else parse_velocities_degrees(args.velocities)
+        else parse_velocities_degrees(args.velocities, expected_count=joint_count)
     )
     velocity_limits = (
         None
@@ -77,20 +90,20 @@ def main(args: argparse.Namespace) -> None:
         else parse_velocities_degrees(
             args.velocity_limits,
             require_positive=True,
+            expected_count=joint_count,
         )
     )
-    torques = None if args.torques is None else parse_torques(args.torques)
+    torques = (
+        None
+        if args.torques is None
+        else parse_torques(args.torques, expected_count=joint_count)
+    )
     if args.mode != "mit" and velocities is not None:
         raise ValueError("--velocities can only be used with --mode mit")
     if args.mode != "mit" and torques is not None:
         raise ValueError("--torques can only be used with --mode mit")
     if args.mode != "pv" and velocity_limits is not None:
         raise ValueError("--velocity-limits can only be used with --mode pv")
-    arm = ArxDCanArm(
-        port=args.port,
-        baud=args.baud,
-        control_mode=args.mode,
-    )
     try:
         arm.connect()
         arm.configure()
@@ -190,8 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep refreshing the final target; 0 holds forever (default)",
     )
     parser.add_argument("--hz", type=float, default=100.0, help="Target refresh frequency")
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     return parser
 
 

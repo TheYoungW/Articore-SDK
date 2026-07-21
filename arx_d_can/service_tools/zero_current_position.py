@@ -143,7 +143,7 @@ def build_parser(
     parser.add_argument(
         "--include-gripper",
         action="store_true",
-        help="Also zero the gripper; default only zeros the six arm joints",
+        help="Also zero the gripper; default only zeros the configured arm joints",
     )
     parser.add_argument("--stationary-seconds", type=float, default=1.0)
     parser.add_argument("--stationary-hz", type=float, default=20.0)

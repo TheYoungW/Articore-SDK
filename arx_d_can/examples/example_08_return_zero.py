@@ -7,14 +7,13 @@ import math
 import time
 
 from arx_d_can import ArxDCanArm
-
-
-ZERO_ARM_POSITION = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
 def hold_zero(
     arm: ArxDCanArm,
     *,
+    zero_position: tuple[float, ...],
     include_gripper: bool,
     velocity_limits: tuple[float, ...] | None,
     seconds: float,
@@ -27,7 +26,7 @@ def hold_zero(
     reached = False
     while deadline is None or time.monotonic() < deadline:
         arm.send_joint_positions(
-            ZERO_ARM_POSITION,
+            zero_position,
             velocity_limits=velocity_limits,
         )
         if include_gripper:
@@ -56,16 +55,16 @@ def hold_zero(
 
 def main(args: argparse.Namespace) -> None:
     include_gripper = not args.arm_only
+    arm = ArxDCanArm(
+        enable_gripper=include_gripper,
+        **arm_kwargs(args),
+    )
+    zero_position = (0.0,) * len(arm.joint_names)
     velocity_limits = None
     if args.velocity_limit is not None:
         if not math.isfinite(args.velocity_limit) or args.velocity_limit <= 0.0:
             raise ValueError("--velocity-limit must be finite and positive")
-        velocity_limits = (math.radians(args.velocity_limit),) * 6
-    arm = ArxDCanArm(
-        port=args.port,
-        baud=args.baud,
-        enable_gripper=include_gripper,
-    )
+        velocity_limits = (math.radians(args.velocity_limit),) * len(arm.joint_names)
     try:
         arm.connect()
         arm.configure()
@@ -77,6 +76,7 @@ def main(args: argparse.Namespace) -> None:
             print("holding continuously; press Ctrl+C to disable all motors", flush=True)
         hold_zero(
             arm,
+            zero_position=zero_position,
             include_gripper=include_gripper,
             velocity_limits=velocity_limits,
             seconds=args.hold_seconds,
@@ -111,15 +111,14 @@ if __name__ == "__main__":
         type=float,
         default=None,
         help=(
-            "PV maximum velocity applied to all six arm joints in deg/s; "
+            "PV maximum velocity applied to all arm joints in deg/s; "
             "default: per-joint values from YAML"
         ),
     )
     parser.add_argument(
         "--arm-only",
         action="store_true",
-        help="Return only the six arm joints; do not connect to or move the gripper",
+        help="Return only the arm joints; do not connect to or move the gripper",
     )
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())

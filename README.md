@@ -1,7 +1,7 @@
 # ARX-D-CAN Python SDK
 
-独立的 ARX-D-CAN Python SDK，通过 USB2CAN 串口控制 6 个 Damiao 关节电机和
-可选夹爪。默认串口为 `/dev/ttyACM0`，波特率为 `1000000`，控制模式为
+独立的 ARX-D-CAN Python SDK，通过 USB2CAN 串口控制 Damiao 关节电机和
+可选夹爪。默认机型包含 6 个机械臂关节；默认串口为 `/dev/ttyACM0`，波特率为 `1000000`，控制模式为
 `POS_VEL`。
 
 ## 安装
@@ -50,10 +50,10 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
 `example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续
 刷新目标。它通过 `--mode pv`（默认）使用 POS_VEL 位置速度模式，也可通过
 `--mode mit` 使用 MIT 模式；MIT 的 `kp/kd` 和 PV 的环路参数均读取
-`arx_d_can/config/arx_d_can_dm.yaml`。MIT 还可用 `--torques` 传入六个关节的
-前馈力矩，单位为 N·m，并用 `--velocities` 传入六个目标速度；PV 用
+所选机型的硬件 YAML。MIT 还可用 `--torques` 传入每个关节的
+前馈力矩，单位为 N·m，并用 `--velocities` 传入每个关节的目标速度；PV 用
 `--velocity-limits` 覆盖配置
-中的六个最大速度。速度命令行参数单位均为 deg/s。MIT 的速度和力矩未提供时默认
+中的各关节最大速度。速度命令行参数单位均为 deg/s。MIT 的速度和力矩未提供时默认
 为全零，PV 未提供限速时使用 YAML 中各关节的 `vlim`。MIT 目标速度是阻尼项输入，
 不是最大速度限制；需要严格控制运动速度时应使用示例 07 生成插值轨迹。使用
 `Ctrl+C` 会失能全部电机，停止前必须托住机械臂；
@@ -96,6 +96,35 @@ finally:
     arm.close()
 ```
 
+## 多机型配置
+
+SDK 不再在代码中假定机械臂必须是 6 轴。关节数量、顺序、电机 ID、反馈 ID、
+电机型号、MIT/PV 参数、夹爪和 URDF 都来自一个机型 YAML；高层 SDK 与低层驱动
+共用同一次解析结果，避免两层加载到不同配置。
+
+内置机型在 `arx_d_can/config/models.yaml` 注册。以后增加一种随 SDK 发布的机械臂：
+
+1. 复制 `arx_d_can/config/arx_d_can_dm.yaml`，创建该机型自己的 YAML，并修改
+   `groups.arm.joints`、`groups.gripper`、各电机参数和 URDF。
+2. 在 `models.yaml` 的 `models` 中增加 `机型名: YAML文件名`。
+3. 通过 `ArxDCanArm(model="机型名")` 或示例参数 `--arm-model 机型名` 选择。
+
+```python
+from arx_d_can import ArxDCanArm, available_models
+
+print(available_models())
+arm = ArxDCanArm(model="arx_d_can", port="/dev/ttyACM0")
+```
+
+只是本地测试新机械臂时，不必修改注册表，直接传外部 YAML：
+
+```python
+arm = ArxDCanArm(config_path="/path/to/my_arm.yaml")
+```
+
+对应的示例命令为 `--config-path /path/to/my_arm.yaml`。`--arm-model` 与
+`--config-path` 互斥；没有指定时使用 `models.yaml` 的 `default_model`。
+
 ## 维护工具
 
 维护工具与普通示例分开。调零命令会先确认机械臂静止，再把当前位置逐关节写为
@@ -113,7 +142,7 @@ python -m arx_d_can.examples.example_10_set_zero_current_position \
   --port /dev/ttyACM0
 ```
 
-默认只调 6 个手臂关节；夹爪另加 `--include-gripper`。其他维护工具：
+默认只调所选机型的手臂关节；夹爪另加 `--include-gripper`。其他维护工具：
 
 ```bash
 python -m arx_d_can.service_tools.change_damiao_id --port /dev/ttyACM0
@@ -123,7 +152,8 @@ python -m arx_d_can.service_tools.joint_load_probe \
 
 ## 配置
 
-硬件 ID、反馈 ID、控制增益、夹爪映射和安全参数位于
+默认机型列表位于 `arx_d_can/config/models.yaml`；每种机械臂的硬件 ID、反馈 ID、
+控制增益、关节分组、夹爪映射和安全参数位于各自的硬件 YAML。默认机型使用
 `arx_d_can/config/arx_d_can_dm.yaml`。VR/ROS 上层已经负责工作空间和 URDF
 关节限位；SDK 安全层负责通信故障、命令超时保持和退出失能。
 

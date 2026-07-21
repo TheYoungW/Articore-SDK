@@ -1,7 +1,7 @@
 """ARX-D-CAN 分组控制系统 — JointGroup 架构。
 
 配置驱动的硬件抽象层：
-  - 所有参数均在 config/arx_d_can.yaml 中定义（hardware_yaml 指定硬件配置文件）
+  - config/models.yaml 注册内置机型，每种机械臂使用独立硬件 YAML
   - 关节按 groups 分组，每组独立控制模式
   - 统一 loop 中按组顺序同步发送，防止总线争用
 
@@ -32,8 +32,9 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+import math
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import yaml
@@ -42,25 +43,76 @@ from ..driver import CallError, Controller, Mode
 
 _CFG_DIR = Path(__file__).resolve().parents[1] / "config"
 _GLOBAL_CFG = _CFG_DIR / "arx_d_can.yaml"
+_MODEL_REGISTRY = _CFG_DIR / "models.yaml"
 _HEALTHY_DAMIAO_STATUS_CODES = frozenset((0x0, 0x1))  # disabled, enabled
 
 
-def _resolve_hw_cfg_path(hw_yaml: str | None = None) -> Path:
-    if hw_yaml is None:
-        if not _GLOBAL_CFG.exists():
-            raise FileNotFoundError(f"{_GLOBAL_CFG} not found")
-        data = yaml.safe_load(_GLOBAL_CFG.read_text())
-        hw_yaml = data.get("hardware_yaml") if data else None
-        if not hw_yaml:
-            raise ValueError("hardware_yaml not set in arx_d_can.yaml")
+def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
+    if not path.is_file():
+        raise FileNotFoundError(f"{description} not found: {path}")
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{description} must contain a YAML mapping: {path}")
+    return data
 
-    p = Path(hw_yaml)
-    if p.is_absolute():
-        return p
-    path = _CFG_DIR / hw_yaml
-    if path.exists():
-        return path
-    raise FileNotFoundError(f"hardware config not found: {path}")
+
+def _load_model_registry() -> dict[str, Any]:
+    if _MODEL_REGISTRY.is_file():
+        data = _read_yaml_mapping(_MODEL_REGISTRY, description="model registry")
+        models = data.get("models")
+        if not isinstance(models, dict) or not models:
+            raise ValueError("models.yaml must define a non-empty 'models' mapping")
+        default_model = data.get("default_model")
+        if not isinstance(default_model, str) or default_model not in models:
+            raise ValueError("models.yaml default_model must reference a registered model")
+        return data
+
+    # Backward compatibility for installations that only contain arx_d_can.yaml.
+    legacy = _read_yaml_mapping(_GLOBAL_CFG, description="legacy hardware selector")
+    hardware_yaml = legacy.get("hardware_yaml")
+    if not isinstance(hardware_yaml, str) or not hardware_yaml:
+        raise ValueError("hardware_yaml not set in arx_d_can.yaml")
+    return {
+        "default_model": "arx_d_can",
+        "models": {"arx_d_can": hardware_yaml},
+    }
+
+
+def available_models() -> tuple[str, ...]:
+    """Return the built-in model profile names in deterministic order."""
+    return tuple(sorted(str(name) for name in _load_model_registry()["models"]))
+
+
+def _resolve_hw_cfg_path(
+    hw_yaml: str | Path | None = None,
+    *,
+    model: str | None = None,
+) -> tuple[Path, str | None]:
+    if hw_yaml is not None and model is not None:
+        raise ValueError("model and config_path are mutually exclusive")
+
+    selected_model = model
+    if hw_yaml is None:
+        registry = _load_model_registry()
+        selected_model = selected_model or str(registry["default_model"])
+        models = registry["models"]
+        if selected_model not in models:
+            choices = ", ".join(sorted(str(name) for name in models))
+            raise ValueError(
+                f"unknown arm model {selected_model!r}; available models: {choices}"
+            )
+        hw_yaml = str(models[selected_model])
+
+    path = Path(hw_yaml).expanduser()
+    if path.is_absolute():
+        resolved = path
+    elif path.is_file():
+        resolved = path.resolve()
+    else:
+        resolved = (_CFG_DIR / path).resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"hardware config not found: {resolved}")
+    return resolved, selected_model
 
 
 # --------------------------------------------------------------------------
@@ -82,40 +134,162 @@ class JointCfg:
     vlim: float = 0.0
 
 
-def load_cfg(hw_yaml: str | None = None) -> dict:
-    hw_path = _resolve_hw_cfg_path(hw_yaml)
+def _finite(value: Any, *, field: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field} must be finite")
+    return parsed
 
-    with open(hw_path, "r") as f:
-        data = yaml.safe_load(f)
 
-    joints = []
-    for j in data.get("joints", []):
+def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
+    if value in (None, ""):
+        return None
+    path = Path(str(value)).expanduser()
+    candidates = [path] if path.is_absolute() else [hw_path.parent / path, _CFG_DIR.parent / path]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    raise FileNotFoundError(f"URDF not found for {hw_path}: {value}")
+
+
+def _optional_mapping(data: dict[str, Any], field: str) -> dict[str, Any]:
+    value = data.get(field, {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be a mapping")
+    return value
+
+
+def _validate_groups(groups: Any, joints: list[JointCfg], *, path: Path) -> dict[str, Any]:
+    if not isinstance(groups, dict) or not groups:
+        raise ValueError(f"hardware config must define non-empty groups: {path}")
+    known = {joint.name for joint in joints}
+    normalized: dict[str, Any] = {}
+    referenced: set[str] = set()
+    for group_name, group_data in groups.items():
+        if not isinstance(group_data, dict):
+            raise ValueError(f"group {group_name!r} must be a mapping")
+        names = group_data.get("joints")
+        if not isinstance(names, list):
+            raise ValueError(f"group {group_name!r} must define a joints list")
+        names = [str(name) for name in names]
+        if len(names) != len(set(names)):
+            raise ValueError(f"group {group_name!r} contains duplicate joints")
+        unknown = set(names).difference(known)
+        if unknown:
+            raise ValueError(
+                f"group {group_name!r} references unknown joints: "
+                + ", ".join(sorted(unknown))
+            )
+        duplicates = referenced.intersection(names)
+        if duplicates:
+            raise ValueError(
+                "joints may belong to only one configured group: "
+                + ", ".join(sorted(duplicates))
+            )
+        referenced.update(names)
+        normalized[str(group_name)] = {**group_data, "joints": names}
+    arm_names = normalized.get("arm", {}).get("joints", [])
+    if not arm_names:
+        raise ValueError("hardware config must define at least one joint in groups.arm")
+    gripper_names = normalized.get("gripper", {}).get("joints", [])
+    if len(gripper_names) > 1:
+        raise ValueError("groups.gripper supports at most one joint")
+    return normalized
+
+
+def load_cfg(
+    hw_yaml: str | Path | None = None,
+    *,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Load and validate one model profile.
+
+    ``hw_yaml`` remains the backward-compatible positional custom-config
+    argument. New code may select a built-in ``model`` instead.
+    """
+    hw_path, selected_model = _resolve_hw_cfg_path(hw_yaml, model=model)
+    data = _read_yaml_mapping(hw_path, description="hardware config")
+
+    raw_joints = data.get("joints")
+    if not isinstance(raw_joints, list) or not raw_joints:
+        raise ValueError(f"hardware config must define a non-empty joints list: {hw_path}")
+    joints: list[JointCfg] = []
+    names: set[str] = set()
+    motor_ids: set[int] = set()
+    feedback_ids: set[int] = set()
+    for index, j in enumerate(raw_joints):
+        if not isinstance(j, dict):
+            raise ValueError(f"joints[{index}] must be a mapping")
         mc = j.get("MIT", {})
         pc = j.get("POS_VEL", {})
-        joints.append(JointCfg(
-            name=j["name"],
-            motor_id=int(j["motor_id"]),
-            feedback_id=int(j["feedback_id"]),
+        if not isinstance(mc, dict) or not isinstance(pc, dict):
+            raise ValueError(f"joints[{index}] MIT and POS_VEL must be mappings")
+        name = str(j.get("name", "")).strip()
+        if not name:
+            raise ValueError(f"joints[{index}].name is required")
+        motor_id = int(j["motor_id"])
+        feedback_id = int(j["feedback_id"])
+        if name in names:
+            raise ValueError(f"duplicate joint name: {name}")
+        if motor_id in motor_ids:
+            raise ValueError(f"duplicate motor_id: 0x{motor_id:X}")
+        if feedback_id in feedback_ids:
+            raise ValueError(f"duplicate feedback_id: 0x{feedback_id:X}")
+        if not 0 <= motor_id <= 0x7FF or not 0 <= feedback_id <= 0x7FF:
+            raise ValueError(f"joint {name} CAN IDs must be in 0..0x7FF")
+        names.add(name)
+        motor_ids.add(motor_id)
+        feedback_ids.add(feedback_id)
+        joint = JointCfg(
+            name=name,
+            motor_id=motor_id,
+            feedback_id=feedback_id,
             model=str(j.get("model", "4340P")),
-            kp=float(mc.get("kp", 0.0)),
-            kd=float(mc.get("kd", 0.0)),
-            vel_kp=float(pc.get("vel_kp", 0.0)),
-            vel_ki=float(pc.get("vel_ki", 0.0)),
-            pos_kp=float(pc.get("pos_kp", 0.0)),
-            pos_ki=float(pc.get("pos_ki", 0.0)),
-            vlim=float(pc.get("vlim", 2.0)),
-        ))
+            kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
+            kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
+            vel_kp=_finite(pc.get("vel_kp", 0.0), field=f"{name}.POS_VEL.vel_kp"),
+            vel_ki=_finite(pc.get("vel_ki", 0.0), field=f"{name}.POS_VEL.vel_ki"),
+            pos_kp=_finite(pc.get("pos_kp", 0.0), field=f"{name}.POS_VEL.pos_kp"),
+            pos_ki=_finite(pc.get("pos_ki", 0.0), field=f"{name}.POS_VEL.pos_ki"),
+            vlim=_finite(pc.get("vlim", 2.0), field=f"{name}.POS_VEL.vlim"),
+        )
+        if joint.vlim <= 0.0:
+            raise ValueError(f"{name}.POS_VEL.vlim must be positive")
+        joints.append(joint)
+
+    groups = _validate_groups(data.get("groups"), joints, path=hw_path)
+    urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
+    end_effector_frame = str(
+        data.get("end_effector_frame", "gripper_end")
+    ).strip()
+    channel = str(data.get("channel", "/dev/ttyACM0")).strip()
+    baud = int(data.get("baud", 1_000_000))
+    rate = _finite(data.get("rate", 500.0), field="rate")
+    if not channel:
+        raise ValueError("channel must not be empty")
+    if baud <= 0:
+        raise ValueError("baud must be positive")
+    if rate <= 0.0:
+        raise ValueError("rate must be positive")
+    if not end_effector_frame:
+        raise ValueError("end_effector_frame must not be empty")
 
     return {
         "name": data.get("name", "ARX-D-CAN"),
-        "channel": data.get("channel", "/dev/ttyACM0"),
-        "baud": int(data.get("baud", 1_000_000)),
-        "rate": float(data.get("rate", 500.0)),
-        "groups": data.get("groups", {}),
+        "model": selected_model or str(data.get("name", hw_path.stem)),
+        "hardware_path": str(hw_path),
+        "urdf_path": None if urdf_path is None else str(urdf_path),
+        "end_effector_frame": end_effector_frame,
+        "channel": channel,
+        "baud": baud,
+        "rate": rate,
+        "groups": groups,
         "joints": joints,
-        "gripper_mapping": data.get("gripper_mapping", {}),
-        "gripper_force_control": data.get("gripper_force_control", {}),
-        "safety": data.get("safety", {}),
+        "gripper_mapping": _optional_mapping(data, "gripper_mapping"),
+        "gripper_force_control": _optional_mapping(data, "gripper_force_control"),
+        "safety": _optional_mapping(data, "safety"),
     }
 
 
@@ -578,13 +752,28 @@ class ArxDCan:
 
     def __init__(
         self,
-        hw_yaml: str | None = None,
+        hw_yaml: str | Path | None = None,
         channel: str | None = None,
         baud: int | None = None,
         joint_names: Optional[List[str]] = None,
+        *,
+        model: str | None = None,
+        config_data: dict[str, Any] | None = None,
     ) -> None:
-        self._hw_yaml = _resolve_hw_cfg_path(hw_yaml).name
-        cfg = load_cfg(hw_yaml)
+        if config_data is not None and (hw_yaml is not None or model is not None):
+            raise ValueError("config_data cannot be combined with model or config_path")
+        cfg = dict(config_data) if config_data is not None else load_cfg(hw_yaml, model=model)
+        hardware_path = cfg.get("hardware_path")
+        self._hw_yaml = (
+            Path(str(hardware_path)).name
+            if hardware_path
+            else f"{cfg.get('model', 'custom')}.yaml"
+        )
+        self._model: str = str(cfg.get("model", "custom"))
+        self._urdf_path: str | None = cfg.get("urdf_path")
+        self._end_effector_frame: str = str(
+            cfg.get("end_effector_frame", "gripper_end")
+        )
         if channel:
             cfg["channel"] = channel
 
@@ -692,6 +881,18 @@ class ArxDCan:
     @property
     def hardware_yaml(self) -> str:
         return self._hw_yaml
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def urdf_path(self) -> str | None:
+        return self._urdf_path
+
+    @property
+    def end_effector_frame(self) -> str:
+        return self._end_effector_frame
 
     def __getattr__(self, name: str) -> any:
         if name.startswith("_"):

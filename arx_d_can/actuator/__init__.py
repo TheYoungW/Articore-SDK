@@ -1,10 +1,10 @@
 """actuator 模块 — JointGroup 架构（分组控制，同步发送）。
 
-所有参数均在 config/arx_d_can.yaml 中定义，hardware_yaml 字段指定硬件配置文件。
+默认机型和内置机型列表由 config/models.yaml 定义；每个机型使用独立硬件 YAML。
 
 示例::
 
-    arx_d_can = ArxDCan()   # 自动从 arx_d_can.yaml 读取 hardware_yaml
+    arx_d_can = ArxDCan()   # 自动读取 models.yaml 中的默认机型
     arx_d_can.connect()
     arx_d_can.arm.enable()
     arx_d_can.gripper.enable()
@@ -20,11 +20,12 @@
     arx_d_can.disconnect()
 """
 
-from .arx_d_can import ArxDCan, JointGroup, JointCfg, load_cfg
+from .arx_d_can import ArxDCan, JointGroup, JointCfg, available_models, load_cfg
 
 __all__ = [
     "ArxDCan",
     "JointGroup",
     "JointCfg",
+    "available_models",
     "load_cfg",
 ]

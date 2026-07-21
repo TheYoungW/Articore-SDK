@@ -53,3 +53,41 @@ def test_replay_sends_every_position_at_recorded_frequency(monkeypatch):
     assert arm.arm_positions == [point[:6] for point in positions]
     assert arm.gripper_positions == [point[6] for point in positions]
     assert sleeps == pytest.approx([0.01, 0.01])
+
+
+def test_replay_uses_selected_model_joint_count(monkeypatch):
+    monkeypatch.setattr(
+        example,
+        "run_at_hz",
+        lambda count, _hz, action: [action(i) for i in range(count)],
+    )
+
+    class TwoJointArm:
+        joint_names = ("shoulder", "elbow")
+
+        def __init__(self):
+            self.arm_positions = []
+            self.gripper_positions = []
+
+        def send_joint_positions(self, positions):
+            self.arm_positions.append(positions)
+
+        def set_gripper_motor_value(self, position):
+            self.gripper_positions.append(position)
+
+    arm = TwoJointArm()
+    positions = [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+    example.replay(arm, hz=100.0, positions=positions)
+
+    assert arm.arm_positions == [[0.1, 0.2], [0.4, 0.5]]
+    assert arm.gripper_positions == [0.3, 0.6]
+
+
+def test_record_parser_accepts_model_profile_selection():
+    args = example.build_parser().parse_args(
+        ["record", "trajectory.json", "--arm-model", "arx_d_can"]
+    )
+
+    assert args.arm_model == "arx_d_can"
+    assert args.config_path is None

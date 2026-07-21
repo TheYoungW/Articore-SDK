@@ -1,0 +1,4 @@
+default_model: arx_d_can
+
+models:
+  arx_d_can: arx_d_can_dm.yaml

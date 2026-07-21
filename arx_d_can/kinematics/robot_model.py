@@ -1,7 +1,6 @@
 """reBot-DevArm 机器人模型加载模块 — 基于 Pinocchio。
 
-urdf_path 和 end_effector_frame 从 hardware_yaml 指向的硬件配置文件中读取，
-arx_d_can.yaml 只提供 hardware_yaml 字段。
+默认的 urdf_path 和 end_effector_frame 来自 models.yaml 选中的默认机型。
 """
 
 from pathlib import Path
@@ -9,10 +8,10 @@ from typing import List, Tuple
 
 import numpy as np
 import pinocchio as pin
-import yaml
+
+from ..actuator import load_cfg
 
 _cfg_dir = Path(__file__).resolve().parents[1] / "config"
-_global_cfg = _cfg_dir / "arx_d_can.yaml"
 _project_root = _cfg_dir.parent
 
 _hw_cfg_cache: dict | None = None
@@ -24,16 +23,7 @@ def _hw_config() -> dict:
     if _hw_cfg_cache is not None:
         return _hw_cfg_cache
 
-    hw_yaml = ""
-    if _global_cfg.exists():
-        global_data = yaml.safe_load(_global_cfg.read_text()) or {}
-        hw_yaml = global_data.get("hardware_yaml", hw_yaml)
-
-    hw_path = _cfg_dir / hw_yaml
-    if not hw_path.exists():
-        raise FileNotFoundError(f"Hardware config not found: {hw_path}")
-
-    _hw_cfg_cache = yaml.safe_load(hw_path.read_text()) or {}
+    _hw_cfg_cache = load_cfg()
     return _hw_cfg_cache
 
 
@@ -82,8 +72,11 @@ def get_joint_limits(model: pin.Model) -> List[Tuple[float, float]]:
     return limits
 
 
-def get_end_effector_frame_id(model: pin.Model) -> int:
-    return model.getFrameId(get_end_effector_frame())
+def get_end_effector_frame_id(
+    model: pin.Model,
+    frame_name: str | None = None,
+) -> int:
+    return model.getFrameId(frame_name or get_end_effector_frame())
 
 
 def get_all_frame_names(model: pin.Model) -> List[str]:

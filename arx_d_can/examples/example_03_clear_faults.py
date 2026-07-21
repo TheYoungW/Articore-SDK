@@ -6,13 +6,13 @@ import argparse
 import math
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
-        port=args.port,
-        baud=args.baud,
         enable_gripper=args.include_gripper,
+        **arm_kwargs(args),
     )
     try:
         arm.connect()
@@ -46,6 +46,5 @@ if __name__ == "__main__":
         action="store_true",
         help="Also clear the gripper motor fault",
     )
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())

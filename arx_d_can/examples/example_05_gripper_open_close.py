@@ -6,6 +6,7 @@ import argparse
 import time
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
 
 
 def send_gripper_for_seconds(
@@ -28,9 +29,8 @@ def send_gripper_for_seconds(
 
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
-        port=args.port,
-        baud=args.baud,
         enable_gripper=True,
+        **arm_kwargs(args),
     )
     try:
         arm.connect()
@@ -67,6 +67,5 @@ if __name__ == "__main__":
     parser.add_argument("--close-seconds", type=float, default=2.0)
     parser.add_argument("--hz", type=float, default=100.0)
     parser.add_argument("--raw", action="store_true", help="Send raw gripper motor target values directly")
-    parser.add_argument("--port", default="/dev/ttyACM0", help="USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=1_000_000, help="USB2CAN serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())

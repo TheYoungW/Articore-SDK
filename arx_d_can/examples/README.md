@@ -9,6 +9,11 @@ cd Articore-SDK
 python -m pip install -e .
 ```
 
+所有示例默认使用 `arx_d_can/config/models.yaml` 中的 `default_model`。选择其他
+内置机型时增加 `--arm-model <名称>`；临时使用外部硬件配置时增加
+`--config-path /path/to/arm.yaml`。两个参数不能同时使用，`--port` 和 `--baud`
+仍可覆盖机型 YAML 中的连接参数。示例会按所选机型的实际关节数量校验输入。
+
 ## 01 扫描电机 ID
 
 只检查通信，不使能电机：
@@ -26,7 +31,7 @@ python -m arx_d_can.examples.example_02_read_state --port /dev/ttyACM0 --watch -
 
 ## 03 清除全部电机故障
 
-先移除堵转障碍、释放负载并托住机械臂。该示例逐个清除六个关节的电机故障，
+先移除堵转障碍、释放负载并托住机械臂。该示例逐个清除所选机型各关节的电机故障，
 验证它们已进入失能状态，不会自动重新使能或运动：
 
 ```bash
@@ -50,9 +55,9 @@ python -m arx_d_can.examples.example_03_clear_faults \
 
 控制模式通过 `--mode` 选择：`pv` 是默认值，对应电机的 POS_VEL 模式；`mit`
 对应 MIT 模式。PV 使用配置文件中的位置环、速度环和速度限制参数，MIT 使用各
-关节配置的 `kp/kd`，还可通过 `--torques` 设置六个关节各自的前馈力矩（N·m）。
-PV 可用 `--velocity-limits` 覆盖六个关节的最大速度，MIT 可用 `--velocities`
-设置六个目标速度；这两个命令行参数的单位都是 deg/s，但控制语义不同。未提供时，
+关节配置的 `kp/kd`，还可通过 `--torques` 设置各关节的前馈力矩（N·m）。
+PV 可用 `--velocity-limits` 覆盖各关节的最大速度，MIT 可用 `--velocities`
+设置各关节目标速度；这两个命令行参数的单位都是 deg/s，但控制语义不同。未提供时，
 PV 使用 YAML 中各关节的 `vlim`（rad/s），MIT 的目标速度和力矩均默认为零。模式会
 在电机使能前完成配置。
 
@@ -114,7 +119,7 @@ python -m arx_d_can.examples.example_07_send_joint_trajectory \
 
 ## 08 全部电机直接回到零位
 
-直接向六个机械臂关节发送 `0°`，夹爪默认也发送电机 `0°`。该示例不做插值，
+直接向所选机型的全部机械臂关节发送 `0°`，夹爪默认也发送电机 `0°`。该示例不做插值，
 只发送位置命令，不会修改电机零点标定。使能后会逐轴验证 `ENABLED` 反馈，运行中
 每秒打印实际关节角并监测电机故障。默认持续刷新零目标，按 `Ctrl+C` 后全部失能。
 夹爪零位对应闭合，运行前必须确保夹爪内没有物体：
@@ -123,7 +128,7 @@ python -m arx_d_can.examples.example_07_send_joint_trajectory \
 python -m arx_d_can.examples.example_08_return_zero --port /dev/ttyACM0
 ```
 
-可用 `--velocity-limit` 设置六轴统一的 PV 最大速度（单位 `deg/s`），例如：
+可用 `--velocity-limit` 设置全部关节统一的 PV 最大速度（单位 `deg/s`），例如：
 
 ```bash
 python -m arx_d_can.examples.example_08_return_zero \
@@ -132,9 +137,9 @@ python -m arx_d_can.examples.example_08_return_zero \
 ```
 
 目标会直接交给电机位置控制器；运行前必须确认当前位置到零位之间没有碰撞风险。
-需要平滑运动到零位时，使用示例 07 并把目标位置设为六个 `0`。
+需要平滑运动到零位时，使用示例 07 并为全部关节传入 `0`。
 
-只移动六个机械臂关节、不连接夹爪：
+只移动机械臂关节、不连接夹爪：
 
 ```bash
 python -m arx_d_can.examples.example_08_return_zero \
@@ -164,8 +169,8 @@ python -m arx_d_can.examples.example_09_diagnose_status \
 ## 10 将当前位置设为电机零位
 
 该示例不会驱动机械臂运动，而是把当前静止位置写入电机作为新的零位。运行前确认
-机械臂已经放在机械零位并保持静止；命令会检查反馈和静止状态，然后直接写入六个
-机械臂关节。每个电机写入后必须连续收到 3 帧状态正常、位置接近零且速度接近零的
+机械臂已经放在机械零位并保持静止；命令会检查反馈和静止状态，然后直接写入所选
+机型的全部机械臂关节。每个电机写入后必须连续收到 3 帧状态正常、位置接近零且速度接近零的
 新反馈，才判定调零成功：
 
 ```bash
@@ -179,7 +184,7 @@ python -m arx_d_can.examples.example_10_set_zero_current_position \
 ## 11 录制和回放轨迹
 
 录制时不会使能电机，可手动拖动机械臂。默认以 100 Hz 录制 10 秒，频率最高
-500 Hz，六个关节和夹爪位置保存在 JSON 文件中：
+500 Hz，全部机械臂关节和夹爪位置保存在 JSON 文件中：
 
 ```bash
 python -m arx_d_can.examples.example_11_record_and_replay_trajectory \

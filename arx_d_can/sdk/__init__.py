@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -88,6 +89,11 @@ class ArxDCanConfig:
     watchdog_action: str = "safe_hold"
     safe_hold_hz: float = 100.0
     feedback_fault_threshold: int = 3
+    name: str = "ARX-D-CAN"
+    model: str = "custom"
+    hardware_config_path: str | None = None
+    urdf_path: str | None = None
+    end_effector_frame: str = "gripper_end"
 
     @property
     def joint_names(self) -> tuple[str, ...]:
@@ -124,14 +130,14 @@ def _config_bool(value: object, *, name: str) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
-def default_config(
+def _config_from_loaded(
+    data: dict,
     *,
     port: str | None = None,
     baud: int | None = None,
     control_hz: float = 100.0,
     arm_control_mode: str = "posvel",
 ) -> ArxDCanConfig:
-    data = load_cfg()
     joints_by_name = {
         joint.name: _joint_from_yaml(joint)
         for joint in data.get("joints", [])
@@ -144,6 +150,13 @@ def default_config(
     safety = data.get("safety", {}) or {}
 
     return ArxDCanConfig(
+        name=str(data.get("name", "ARX-D-CAN")),
+        model=str(data.get("model", "custom")),
+        hardware_config_path=(
+            None if data.get("hardware_path") is None else str(data["hardware_path"])
+        ),
+        urdf_path=None if data.get("urdf_path") is None else str(data["urdf_path"]),
+        end_effector_frame=str(data.get("end_effector_frame", "gripper_end")),
         port=str(port or data.get("channel", "/dev/ttyACM0")),
         baud=int(baud or data.get("baud", 1_000_000)),
         control_hz=control_hz,
@@ -187,31 +200,136 @@ def default_config(
     )
 
 
+def default_config(
+    *,
+    model: str | None = None,
+    config_path: str | Path | None = None,
+    port: str | None = None,
+    baud: int | None = None,
+    control_hz: float = 100.0,
+    arm_control_mode: str = "posvel",
+) -> ArxDCanConfig:
+    """Build the public SDK config from one built-in or custom model profile."""
+    data = load_cfg(config_path, model=model)
+    return _config_from_loaded(
+        data,
+        port=port,
+        baud=baud,
+        control_hz=control_hz,
+        arm_control_mode=arm_control_mode,
+    )
+
+
+def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
+    """Adapt an explicit SDK config without reading another YAML file."""
+    joints = [
+        JointCfg(
+            name=joint.name,
+            motor_id=joint.motor_id,
+            feedback_id=joint.feedback_id,
+            model=joint.model,
+            kp=joint.mit_kp,
+            kd=joint.mit_kd,
+            vel_kp=joint.pv_vel_kp,
+            vel_ki=joint.pv_vel_ki,
+            pos_kp=joint.pv_pos_kp,
+            pos_ki=joint.pv_pos_ki,
+            vlim=joint.pv_vlim,
+        )
+        for joint in config.arm_joints
+    ]
+    groups: dict[str, dict[str, list[str]]] = {
+        "arm": {"joints": [joint.name for joint in config.arm_joints]}
+    }
+    if config.gripper is not None:
+        joint = config.gripper
+        joints.append(
+            JointCfg(
+                name=joint.name,
+                motor_id=joint.motor_id,
+                feedback_id=joint.feedback_id,
+                model=joint.model,
+                kp=joint.mit_kp,
+                kd=joint.mit_kd,
+                vel_kp=joint.pv_vel_kp,
+                vel_ki=joint.pv_vel_ki,
+                pos_kp=joint.pv_pos_kp,
+                pos_ki=joint.pv_pos_ki,
+                vlim=joint.pv_vlim,
+            )
+        )
+        groups["gripper"] = {"joints": [joint.name]}
+    force = config.gripper_force_control
+    return {
+        "name": config.name,
+        "model": config.model,
+        "hardware_path": config.hardware_config_path,
+        "urdf_path": config.urdf_path,
+        "end_effector_frame": config.end_effector_frame,
+        "channel": config.port,
+        "baud": config.baud,
+        "rate": config.control_hz,
+        "groups": groups,
+        "joints": joints,
+        "gripper_mapping": {
+            "closed_value": config.gripper_closed_value,
+            "open_value": config.gripper_open_value,
+        },
+        "gripper_force_control": {
+            "enabled": config.gripper_force_control_enabled,
+            "close_speed": force.close_speed,
+            "contact_torque": force.contact_torque,
+            "overload_torque": force.overload_torque,
+        },
+        "safety": {
+            "watchdog_enabled": config.watchdog_enabled,
+            "command_timeout_s": config.command_timeout_s,
+            "enable_grace_s": config.enable_grace_s,
+            "watchdog_poll_s": config.watchdog_poll_s,
+            "watchdog_action": config.watchdog_action,
+            "safe_hold_hz": config.safe_hold_hz,
+            "feedback_fault_threshold": config.feedback_fault_threshold,
+        },
+    }
+
+
 class ArxDCanArm:
     """High-level Python SDK for an ARX arm using Damiao motors over USB2CAN."""
 
     def __init__(
         self,
         *,
-        port: str = "/dev/ttyACM0",
-        baud: int = 1_000_000,
+        port: str | None = None,
+        baud: int | None = None,
+        model: str | None = None,
+        config_path: str | Path | None = None,
         config: ArxDCanConfig | None = None,
         control_mode: str = "posvel",
         enable_gripper: bool = False,
     ) -> None:
-        self.config = config or default_config(
-            port=port,
-            baud=baud,
-            arm_control_mode=control_mode,
-        )
+        if config is not None and (model is not None or config_path is not None):
+            raise ValueError("config cannot be combined with model or config_path")
+        if config is None:
+            loaded_config = load_cfg(config_path, model=model)
+            self.config = _config_from_loaded(
+                loaded_config,
+                port=port,
+                baud=baud,
+                arm_control_mode=control_mode,
+            )
+            loaded_config = dict(loaded_config)
+            loaded_config["channel"] = self.config.port
+            loaded_config["baud"] = self.config.baud
+        else:
+            self.config = config
+            loaded_config = _actuator_config_from_sdk(config)
         self._validate_safety_config()
         self.enable_gripper = enable_gripper
         active_joint_names = list(self.config.joint_names)
         if self.enable_gripper and self.config.gripper is not None:
             active_joint_names.append(self.config.gripper.name)
         self.robot = ArxDCan(
-            channel=self.config.port,
-            baud=self.config.baud,
+            config_data=loaded_config,
             joint_names=active_joint_names,
         )
         self._connected = False
