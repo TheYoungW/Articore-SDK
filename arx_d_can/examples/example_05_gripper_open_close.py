@@ -6,7 +6,7 @@ import argparse
 import time
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
+from arx_d_can.examples.common import add_connection_arguments
 
 
 def send_gripper_for_seconds(
@@ -29,8 +29,11 @@ def send_gripper_for_seconds(
 
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
+        model=args.arm_model,
+        config_path=args.config_path,
+        port=args.port,
+        baud=args.baud,
         enable_gripper=True,
-        **arm_kwargs(args),
     )
     try:
         arm.connect()

@@ -5,11 +5,16 @@ from __future__ import annotations
 import argparse
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.common import add_connection_arguments, arm_kwargs
+from arx_d_can.examples.common import add_connection_arguments
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = ArxDCanArm(**arm_kwargs(args))
+    arm = ArxDCanArm(
+        model=args.arm_model,
+        config_path=args.config_path,
+        port=args.port,
+        baud=args.baud,
+    )
     ids = arm.scan_ids(
         start_id=args.start_id,
         end_id=args.end_id,

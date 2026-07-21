@@ -25,7 +25,7 @@ def compute_fk(
         model:      由 :func:`load_robot_model` 返回的 Pinocchio 模型。
         q:          关节位置向量，形状 (nq,)，每个关节一个值。
                     全零向量表示机器人的零位构型。
-        frame_name: 要计算位姿的帧名称，留空则使用 config/arx_d_can.yaml 中定义的末端执行器帧。
+        frame_name: 要计算位姿的帧名称，留空则使用默认机型配置中的末端执行器帧。
 
     返回:
         三元组 (position, rotation, homogeneous):

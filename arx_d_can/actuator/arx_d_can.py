@@ -42,7 +42,6 @@ import yaml
 from ..driver import CallError, Controller, Mode
 
 _CFG_DIR = Path(__file__).resolve().parents[1] / "config"
-_GLOBAL_CFG = _CFG_DIR / "arx_d_can.yaml"
 _MODEL_REGISTRY = _CFG_DIR / "models.yaml"
 _HEALTHY_DAMIAO_STATUS_CODES = frozenset((0x0, 0x1))  # disabled, enabled
 
@@ -57,25 +56,14 @@ def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
 
 
 def _load_model_registry() -> dict[str, Any]:
-    if _MODEL_REGISTRY.is_file():
-        data = _read_yaml_mapping(_MODEL_REGISTRY, description="model registry")
-        models = data.get("models")
-        if not isinstance(models, dict) or not models:
-            raise ValueError("models.yaml must define a non-empty 'models' mapping")
-        default_model = data.get("default_model")
-        if not isinstance(default_model, str) or default_model not in models:
-            raise ValueError("models.yaml default_model must reference a registered model")
-        return data
-
-    # Backward compatibility for installations that only contain arx_d_can.yaml.
-    legacy = _read_yaml_mapping(_GLOBAL_CFG, description="legacy hardware selector")
-    hardware_yaml = legacy.get("hardware_yaml")
-    if not isinstance(hardware_yaml, str) or not hardware_yaml:
-        raise ValueError("hardware_yaml not set in arx_d_can.yaml")
-    return {
-        "default_model": "arx_d_can",
-        "models": {"arx_d_can": hardware_yaml},
-    }
+    data = _read_yaml_mapping(_MODEL_REGISTRY, description="model registry")
+    models = data.get("models")
+    if not isinstance(models, dict) or not models:
+        raise ValueError("models.yaml must define a non-empty 'models' mapping")
+    default_model = data.get("default_model")
+    if not isinstance(default_model, str) or default_model not in models:
+        raise ValueError("models.yaml default_model must reference a registered model")
+    return data
 
 
 def available_models() -> tuple[str, ...]:

@@ -42,22 +42,22 @@ def add_connection_arguments(parser: ArgumentParser) -> None:
     )
 
 
-def arm_kwargs(args: Namespace) -> dict:
-    return {
-        "model": args.arm_model,
-        "config_path": args.config_path,
-        "port": args.port,
-        "baud": args.baud,
-    }
-
-
 def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> ArxDCanArm:
-    kwargs = (
-        {"port": DEFAULT_PORT, "baud": DEFAULT_BAUD}
-        if args is None
-        else arm_kwargs(args)
+    if args is None:
+        return ArxDCanArm(
+            port=DEFAULT_PORT,
+            baud=DEFAULT_BAUD,
+            control_mode="posvel",
+            enable_gripper=enable_gripper,
+        )
+    return ArxDCanArm(
+        model=args.arm_model,
+        config_path=args.config_path,
+        port=args.port,
+        baud=args.baud,
+        control_mode="posvel",
+        enable_gripper=enable_gripper,
     )
-    return ArxDCanArm(control_mode="posvel", enable_gripper=enable_gripper, **kwargs)
 
 
 def parse_joint_positions(text: str, *, expected_count: int = 6) -> tuple[float, ...]:
