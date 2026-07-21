@@ -44,10 +44,10 @@ def add_connection_arguments(parser: ArgumentParser) -> None:
 
 def arm_kwargs(args: Namespace) -> dict:
     return {
-        "model": getattr(args, "arm_model", None),
-        "config_path": getattr(args, "config_path", None),
-        "port": getattr(args, "port", None),
-        "baud": getattr(args, "baud", None),
+        "model": args.arm_model,
+        "config_path": args.config_path,
+        "port": args.port,
+        "baud": args.baud,
     }
 
 
