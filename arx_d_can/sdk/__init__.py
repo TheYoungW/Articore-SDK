@@ -536,6 +536,15 @@ class ArxDCanArm:
 
     def configure_mode(self, mode: str = "posvel") -> None:
         self._require_operational()
+        # A Damiao mode switch may take longer than the normal command period.
+        # Keep the watchdog alive for the same grace window used at enable;
+        # the first command in the new mode restores the regular deadline.
+        with self._state_lock:
+            if self._enabled:
+                self._watchdog_deadline = time.monotonic() + max(
+                    self.config.enable_grace_s,
+                    self.config.command_timeout_s,
+                )
         normalized = mode.strip().lower().replace("_", "")
         if normalized in ("posvel", "pv"):
             if not self.robot.arm.mode_pos_vel():
@@ -626,6 +635,8 @@ class ArxDCanArm:
         velocities: Sequence[float] | None = None,
         velocity_limits: Sequence[float] | None = None,
         torques: Sequence[float] | None = None,
+        mit_kp: Sequence[float] | None = None,
+        mit_kd: Sequence[float] | None = None,
         mode: str | None = None,
         require_enabled: bool = True,
     ) -> None:
@@ -673,12 +684,34 @@ class ArxDCanArm:
             if any(not math.isfinite(float(value)) for value in torques):
                 raise ValueError("joint torques must be finite")
             torque_target = np.asarray(torques, dtype=np.float64)
+        mit_kp_target = np.asarray(
+            [joint.mit_kp for joint in self.config.arm_joints]
+            if mit_kp is None
+            else mit_kp,
+            dtype=np.float64,
+        ).reshape(-1)
+        mit_kd_target = np.asarray(
+            [joint.mit_kd for joint in self.config.arm_joints]
+            if mit_kd is None
+            else mit_kd,
+            dtype=np.float64,
+        ).reshape(-1)
+        for name, gains in (("mit_kp", mit_kp_target), ("mit_kd", mit_kd_target)):
+            if gains.size != len(self.config.arm_joints):
+                raise ValueError(
+                    f"expected {len(self.config.arm_joints)} {name} values, "
+                    f"got {gains.size}"
+                )
+            if np.any(~np.isfinite(gains)) or np.any(gains < 0.0):
+                raise ValueError(f"{name} values must be finite and non-negative")
         active_mode = (mode or self._mode).strip().lower().replace("_", "")
         if active_mode in ("posvel", "pv"):
             if velocity_target is not None:
                 raise ValueError("target velocities are only supported in MIT mode")
             if torque_target is not None:
                 raise ValueError("torques are only supported in MIT mode")
+            if mit_kp is not None or mit_kd is not None:
+                raise ValueError("MIT gains are only supported in MIT mode")
         if active_mode == "mit" and velocity_limit_target is not None:
             raise ValueError("velocity limits are only supported in PV mode")
         try:
@@ -702,6 +735,8 @@ class ArxDCanArm:
                 self.robot.arm.send_mit(
                     np.array([target[joint.name] for joint in self.config.arm_joints]),
                     vel=velocity_target,
+                    kp=mit_kp_target,
+                    kd=mit_kd_target,
                     tau=torque_target,
                     strict=True,
                 )

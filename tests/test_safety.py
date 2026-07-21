@@ -44,6 +44,8 @@ class FakeGroup:
         self.sent_pos_vel_limits: list[np.ndarray | None] = []
         self.sent_mit: list[np.ndarray] = []
         self.sent_mit_velocities: list[np.ndarray | None] = []
+        self.sent_mit_kp: list[np.ndarray | None] = []
+        self.sent_mit_kd: list[np.ndarray | None] = []
         self.sent_mit_torques: list[np.ndarray | None] = []
 
     def mode_pos_vel(self) -> bool:
@@ -72,6 +74,14 @@ class FakeGroup:
         velocity = kwargs.get("vel")
         self.sent_mit_velocities.append(
             None if velocity is None else np.asarray(velocity, dtype=np.float64).copy()
+        )
+        kp = kwargs.get("kp")
+        self.sent_mit_kp.append(
+            None if kp is None else np.asarray(kp, dtype=np.float64).copy()
+        )
+        kd = kwargs.get("kd")
+        self.sent_mit_kd.append(
+            None if kd is None else np.asarray(kd, dtype=np.float64).copy()
         )
         torque = kwargs.get("tau")
         self.sent_mit_torques.append(
@@ -180,6 +190,26 @@ def test_watchdog_can_be_configured_to_disable() -> None:
         arm.close()
 
 
+def test_mode_switch_uses_enable_grace_instead_of_command_timeout() -> None:
+    arm, robot = make_arm(timeout=0.03, grace=0.15)
+    try:
+        arm.send_joint_positions([0.0])
+
+        def slow_mode_switch() -> bool:
+            time.sleep(0.06)
+            robot.arm.mode_calls.append("mit")
+            return True
+
+        robot.arm.mode_mit = slow_mode_switch
+        arm.configure_mode("mit")
+        arm.send_joint_positions([0.0], mode="mit")
+
+        assert not arm.faulted
+        assert arm.enabled
+    finally:
+        arm.close()
+
+
 def test_send_failure_disables_and_latches_fault() -> None:
     arm, robot = make_arm(timeout=1.0, grace=1.0)
     robot.arm.send_error = RuntimeError("simulated bus failure")
@@ -210,11 +240,15 @@ def test_joint_positions_use_configured_control_mode(mode: str) -> None:
         velocities = [0.3] if mode == "mit" else None
         velocity_limits = [0.2] if mode == "pv" else None
         torques = [0.1] if mode == "mit" else None
+        mit_kp = [2.5] if mode == "mit" else None
+        mit_kd = [0.25] if mode == "mit" else None
         arm.send_joint_positions(
             [0.25],
             velocities=velocities,
             velocity_limits=velocity_limits,
             torques=torques,
+            mit_kp=mit_kp,
+            mit_kd=mit_kd,
         )
 
         assert robot.arm.mode_calls == [mode]
@@ -225,6 +259,8 @@ def test_joint_positions_use_configured_control_mode(mode: str) -> None:
         else:
             np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.25])
             np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.3])
+            np.testing.assert_allclose(robot.arm.sent_mit_kp[-1], mit_kp)
+            np.testing.assert_allclose(robot.arm.sent_mit_kd[-1], mit_kd)
             np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.1])
             assert robot.arm.sent_pos_vel == []
     finally:
