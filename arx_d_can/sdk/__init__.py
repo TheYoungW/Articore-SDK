@@ -66,6 +66,7 @@ class JointMotorConfig:
     pv_pos_kp: float
     pv_pos_ki: float
     pv_vlim: float
+    direction: float = 1.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -113,6 +114,7 @@ def _joint_from_yaml(joint: JointCfg) -> JointMotorConfig:
         pv_pos_kp=joint.pos_kp,
         pv_pos_ki=joint.pos_ki,
         pv_vlim=joint.vlim,
+        direction=joint.direction,
     )
 
 
@@ -257,6 +259,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             pos_kp=joint.pv_pos_kp,
             pos_ki=joint.pv_pos_ki,
             vlim=joint.pv_vlim,
+            direction=joint.direction,
         )
         for joint in config.arm_joints
     ]
@@ -278,6 +281,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
                 pos_kp=joint.pv_pos_kp,
                 pos_ki=joint.pv_pos_ki,
                 vlim=joint.pv_vlim,
+                direction=joint.direction,
             )
         )
         groups["gripper"] = {"joints": [joint.name]}

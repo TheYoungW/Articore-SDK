@@ -144,6 +144,32 @@ class FakePollController:
         pass
 
 
+class FakeDirectionalMotor(FakeZeroMotor):
+    def __init__(self):
+        super().__init__(position=-0.4, velocity=-0.2)
+        self.torque = -0.3
+        self.mit_commands = []
+        self.pos_vel_commands = []
+        self.vel_commands = []
+
+    def get_state(self):
+        return SimpleNamespace(
+            pos=self.position,
+            vel=self.velocity,
+            torq=self.torque,
+            status_code=self.status_code,
+        )
+
+    def send_mit(self, pos, vel, kp, kd, tau):
+        self.mit_commands.append((pos, vel, kp, kd, tau))
+
+    def send_pos_vel(self, pos, vlim):
+        self.pos_vel_commands.append((pos, vlim))
+
+    def send_vel(self, vel):
+        self.vel_commands.append(vel)
+
+
 def make_zero_arm(*motors):
     arm = ArxDCan.__new__(ArxDCan)
     arm._all_joints = [
@@ -389,6 +415,42 @@ def test_joint_group_state_rejects_damiao_fault_status():
 
     with pytest.raises(RuntimeError, match="arm/joint1: motor fault status=8"):
         group.read_state(request_feedback=False)
+
+
+def test_reversed_joint_transforms_commands_and_feedback() -> None:
+    motor = FakeDirectionalMotor()
+    joint = JointCfg(
+        name="joint1",
+        motor_id=1,
+        feedback_id=0x11,
+        model="4340P",
+        direction=-1,
+    )
+    arm = make_uninitialized_arm(joint)
+    arm._motor_map = {"joint1": motor}
+    arm._ctrl_map = {"main": FakePollController()}
+    group = JointGroup(
+        "arm",
+        ["joint1"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.send_mit([0.5], vel=[0.2], kp=[30.0], kd=[2.0], tau=[0.7])
+    group.send_pos_vel([0.6], vlim=[1.5])
+    group.send_vel([0.8])
+
+    assert motor.mit_commands == [(-0.5, -0.2, 30.0, 2.0, -0.7)]
+    assert motor.pos_vel_commands == [(-0.6, 1.5)]
+    assert motor.vel_commands == [-0.8]
+
+    group_state = group.read_state(request_feedback=False)
+    global_state = arm.get_state(request_feedback=False)
+    for positions, velocities, torques in (group_state, global_state):
+        assert positions.tolist() == [0.4]
+        assert velocities.tolist() == [0.2]
+        assert torques.tolist() == [0.3]
 
 
 @pytest.mark.parametrize("include_gripper", [False, True])

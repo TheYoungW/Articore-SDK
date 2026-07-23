@@ -158,6 +158,52 @@ arm = ArxDCanArm(config_path="/path/to/my_arm.yaml")
 
 对应的示例命令为 `--config-path /path/to/my_arm.yaml`。`--arm-model` 与
 `--config-path` 互斥；没有指定时使用 `models.yaml` 的 `default_model`。
+若某个电机的正方向与机械臂坐标相反，在该关节配置中设置 `direction: -1`；
+SDK 会同时反转位置、速度和力矩的指令及反馈，其他关节省略该字段即可。
+
+### Yunyi V1.0 双臂
+
+Yunyi V1.0 的完整双臂模型位于
+`arx_d_can/models/yunyi_v1_0.urdf`。SDK 另外提供左右单臂 URDF 和两个机型配置，
+确保运动学模型与每个 USB2CAN 实际控制的 7 个关节一致：
+
+| 单臂电机 | 型号 | 右臂 CAN/反馈 ID | 左臂 CAN/反馈 ID |
+|---|---|---|---|
+| joint1～joint2 | 8009 | 0x01～0x02 / 0x11～0x12 | 0x09～0x0A / 0x19～0x1A |
+| joint3～joint4 | 4340P | 0x03～0x04 / 0x13～0x14 | 0x0B～0x0C / 0x1B～0x1C |
+| joint5～joint7 | 4310 | 0x05～0x07 / 0x15～0x17 | 0x0D～0x0F / 0x1D～0x1F |
+| gripper（第 8 个电机） | 4310 | 0x08 / 0x18 | 0x10 / 0x20 |
+
+左右臂使用独立 USB2CAN。当前左臂使用 `/dev/ttyACM0`，右臂默认使用
+`/dev/ttyACM1`；Linux 设备号发生变化时显式覆盖
+`port`：
+
+```python
+right_arm = ArxDCanArm(
+    model="yunyi_v1_0_right",
+    port="/dev/ttyACM1",
+    enable_gripper=True,
+)
+left_arm = ArxDCanArm(
+    model="yunyi_v1_0_left",
+    port="/dev/ttyACM0",
+    enable_gripper=True,
+)
+```
+
+也可以通过所有编号示例单独操作一侧，例如：
+
+```bash
+python -m arx_d_can.examples.example_02_read_state \
+  --arm-model yunyi_v1_0_left \
+  --port /dev/ttyACM0
+```
+
+当前配置将第 8 个 4310 作为一个夹爪电机，机械联动 URDF 中的两根手指。MIT/PV
+初始增益沿用现有 ARX 机型的保守参数，不视为 Yunyi 实机最终标定值；首次使能前
+应托稳单臂、卸载负载，并逐关节验证方向、零点和增益。左臂 `0x09～0x0F` 已在
+`/dev/ttyACM0` 实机确认，左臂第 1、4 关节已配置为反向；预留夹爪
+`0x10/0x20` 当前未收到反馈。
 
 ## 维护工具
 

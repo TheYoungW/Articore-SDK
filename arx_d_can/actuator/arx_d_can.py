@@ -113,6 +113,7 @@ class JointCfg:
     motor_id: int
     feedback_id: int
     model: str
+    direction: float = 1.0
     kp: float = 0.0
     kd: float = 0.0
     vel_kp: float = 0.0
@@ -235,6 +236,10 @@ def load_cfg(
             motor_id=motor_id,
             feedback_id=feedback_id,
             model=str(j.get("model", "4340P")),
+            direction=_finite(
+                j.get("direction", 1.0),
+                field=f"{name}.direction",
+            ),
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
             kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
             vel_kp=_finite(pc.get("vel_kp", 0.0), field=f"{name}.POS_VEL.vel_kp"),
@@ -243,6 +248,8 @@ def load_cfg(
             pos_ki=_finite(pc.get("pos_ki", 0.0), field=f"{name}.POS_VEL.pos_ki"),
             vlim=_finite(pc.get("vlim", 2.0), field=f"{name}.POS_VEL.vlim"),
         )
+        if joint.direction not in (-1.0, 1.0):
+            raise ValueError(f"{name}.direction must be 1 or -1")
         if joint.vlim <= 0.0:
             raise ValueError(f"{name}.POS_VEL.vlim must be positive")
         joints.append(joint)
@@ -616,11 +623,11 @@ class JointGroup:
         for i, jc in enumerate(self._jcfgs):
             try:
                 self._mm[jc.name].send_mit(
-                    float(pos[i]),
-                    float(vel[i]),
+                    jc.direction * float(pos[i]),
+                    jc.direction * float(vel[i]),
                     float(kp[i]),
                     float(kd[i]),
-                    float(tau[i]),
+                    jc.direction * float(tau[i]),
                 )
             except CallError:
                 if strict:
@@ -642,7 +649,7 @@ class JointGroup:
         for i in range(min(len(pos), len(vlim))):
             try:
                 self._mm[self._jcfgs[i].name].send_pos_vel(
-                    float(pos[i]),
+                    self._jcfgs[i].direction * float(pos[i]),
                     float(vlim[i]),
                 )
             except CallError:
@@ -655,7 +662,8 @@ class JointGroup:
         vel = np.asarray(vel, dtype=np.float64).reshape(-1)
         for i in range(min(len(vel), self.num_joints)):
             try:
-                self._mm[self._jcfgs[i].name].send_vel(float(vel[i]))
+                jc = self._jcfgs[i]
+                self._mm[jc.name].send_vel(jc.direction * float(vel[i]))
             except CallError:
                 if strict:
                     raise
@@ -682,9 +690,9 @@ class JointGroup:
                 raise RuntimeError(
                     f"{self.name}/{jc.name}: motor fault status={state.status_code}"
                 )
-            positions.append(state.pos)
-            velocities.append(state.vel)
-            torques.append(state.torq)
+            positions.append(jc.direction * state.pos)
+            velocities.append(jc.direction * state.vel)
+            torques.append(jc.direction * state.torq)
         return (
             np.asarray(positions, dtype=np.float64),
             np.asarray(velocities, dtype=np.float64),
@@ -695,7 +703,7 @@ class JointGroup:
         if request_feedback:
             self._request_feedback()
         return np.array([
-            self._mm[jc.name].get_state().pos
+            jc.direction * self._mm[jc.name].get_state().pos
             if self._mm[jc.name].get_state() is not None else 0.0
             for jc in self._jcfgs
         ], dtype=np.float64)
@@ -704,7 +712,7 @@ class JointGroup:
         if request_feedback:
             self._request_feedback()
         return np.array([
-            self._mm[jc.name].get_state().vel
+            jc.direction * self._mm[jc.name].get_state().vel
             if self._mm[jc.name].get_state() is not None else 0.0
             for jc in self._jcfgs
         ], dtype=np.float64)
@@ -1129,9 +1137,9 @@ class ArxDCan:
                     raise RuntimeError(
                         f"{jc.name}: motor fault status={st.status_code}"
                     )
-                pos.append(st.pos)
-                vel.append(st.vel)
-                torq.append(st.torq)
+                pos.append(jc.direction * st.pos)
+                vel.append(jc.direction * st.vel)
+                torq.append(jc.direction * st.torq)
             else:
                 if require_complete:
                     raise RuntimeError(f"{jc.name}: no motor feedback")

@@ -48,7 +48,13 @@ def test_builtin_model_registry_exposes_default_profile() -> None:
 
 
 def test_custom_profile_drives_sdk_and_low_level_from_same_values(tmp_path: Path) -> None:
-    profile = write_profile(tmp_path)
+    profile = write_profile(
+        tmp_path,
+        CUSTOM_PROFILE.replace(
+            "name: elbow\n",
+            "name: elbow\n    direction: -1\n",
+        ),
+    )
 
     arm = ArxDCanArm(config_path=profile, port="/dev/override")
 
@@ -60,6 +66,8 @@ def test_custom_profile_drives_sdk_and_low_level_from_same_values(tmp_path: Path
     assert arm.robot.joint_names == ["shoulder", "elbow"]
     assert arm.robot._all_joints[0].vel_kp == pytest.approx(0.01)
     assert arm.robot._all_joints[1].pos_kp == pytest.approx(30.0)
+    assert arm.config.arm_joints[1].direction == -1.0
+    assert arm.robot._all_joints[1].direction == -1.0
 
 
 def test_arm_loads_selected_profile_only_once(monkeypatch, tmp_path: Path) -> None:
@@ -101,4 +109,16 @@ def test_profile_rejects_unknown_group_joint(tmp_path: Path) -> None:
         CUSTOM_PROFILE.replace("joints: [shoulder, elbow]", "joints: [shoulder, wrist]"),
     )
     with pytest.raises(ValueError, match="references unknown joints: wrist"):
+        load_cfg(profile)
+
+
+def test_profile_rejects_invalid_joint_direction(tmp_path: Path) -> None:
+    profile = write_profile(
+        tmp_path,
+        CUSTOM_PROFILE.replace(
+            "name: elbow\n",
+            "name: elbow\n    direction: 0\n",
+        ),
+    )
+    with pytest.raises(ValueError, match=r"elbow\.direction must be 1 or -1"):
         load_cfg(profile)
