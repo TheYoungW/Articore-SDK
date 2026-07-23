@@ -49,7 +49,10 @@ def main(args: argparse.Namespace) -> None:
         period = 1.0 / max(1.0, args.hz)
         while args.count <= 0 or sample_index < args.count:
             sample_index += 1
-            print_state(arm, sample_index=sample_index)
+            try:
+                print_state(arm, sample_index=sample_index)
+            except RuntimeError as exc:
+                print(f"[{sample_index:04d}] feedback_error: {exc}")
             time.sleep(period)
     finally:
         arm.close()

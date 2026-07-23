@@ -144,6 +144,18 @@ class FakePollController:
         pass
 
 
+class FakeFlakyFeedbackController:
+    def __init__(self, failures: int):
+        self.failures = failures
+        self.calls = 0
+
+    def request_feedback_all(self, timeout_ms=50):
+        del timeout_ms
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("missing motor IDs: 15")
+
+
 class FakeDirectionalMotor(FakeZeroMotor):
     def __init__(self):
         super().__init__(position=-0.4, velocity=-0.2)
@@ -359,6 +371,34 @@ def test_global_state_rejects_damiao_fault_status():
 
     with pytest.raises(RuntimeError, match="joint1: motor fault status=8"):
         arm.get_state(request_feedback=False)
+
+
+def test_complete_feedback_retries_one_transient_timeout():
+    arm = make_zero_arm(FakeZeroMotor())
+    controller = FakeFlakyFeedbackController(failures=1)
+    arm._ctrl_map = {"main": controller}
+
+    positions, _, _ = arm.get_state(
+        request_feedback=True,
+        require_complete=True,
+    )
+
+    assert positions.tolist() == [0.4]
+    assert controller.calls == 2
+
+
+def test_complete_feedback_raises_after_two_failed_attempts():
+    arm = make_zero_arm(FakeZeroMotor())
+    controller = FakeFlakyFeedbackController(failures=2)
+    arm._ctrl_map = {"main": controller}
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"fresh feedback failed after 2 attempts: missing motor IDs: 15",
+    ):
+        arm.get_state(request_feedback=True, require_complete=True)
+
+    assert controller.calls == 2
 
 
 def test_global_state_can_require_only_selected_joint_feedback():

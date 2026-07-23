@@ -44,6 +44,7 @@ from ..driver import CallError, Controller, Mode
 _CFG_DIR = Path(__file__).resolve().parents[1] / "config"
 _MODEL_REGISTRY = _CFG_DIR / "models.yaml"
 _HEALTHY_DAMIAO_STATUS_CODES = frozenset((0x0, 0x1))  # disabled, enabled
+_COMPLETE_FEEDBACK_ATTEMPTS = 2
 
 
 def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
@@ -1122,13 +1123,21 @@ class ArxDCan:
 
         feedback_errors = []
         if request_feedback:
-            for ctrl in self._ctrl_map.values():
-                try:
-                    ctrl.request_feedback_all(timeout_ms=50)
-                except Exception as exc:
-                    feedback_errors.append(f"fresh feedback: {exc}")
+            attempts = _COMPLETE_FEEDBACK_ATTEMPTS if require_complete else 1
+            for _ in range(attempts):
+                feedback_errors = []
+                for ctrl in self._ctrl_map.values():
+                    try:
+                        ctrl.request_feedback_all(timeout_ms=50)
+                    except Exception as exc:
+                        feedback_errors.append(str(exc))
+                if not feedback_errors:
+                    break
             if require_complete and feedback_errors:
-                raise RuntimeError("; ".join(feedback_errors))
+                raise RuntimeError(
+                    f"fresh feedback failed after {attempts} attempts: "
+                    + "; ".join(feedback_errors)
+                )
         pos, vel, torq = [], [], []
         for jc in selected_joints:
             st = self._motor_map[jc.name].get_state()
