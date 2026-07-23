@@ -101,10 +101,14 @@ class ArxDCanEndPose:
             raise ValueError(
                 f"model {arx_d_can.model!r} does not define urdf_path"
             )
-        self._model = load_robot_model(arx_d_can.urdf_path)
+        self._model = load_robot_model(
+            arx_d_can.urdf_path,
+            controlled_joint_names=self._arm_group.joint_names,
+        )
+        self._end_frame_name = arx_d_can.end_effector_frame
         self._end_frame_id = get_end_effector_frame_id(
             self._model,
-            arx_d_can.end_effector_frame,
+            self._end_frame_name,
         )
         self._data = self._model.createData()
 
@@ -293,8 +297,16 @@ class ArxDCanEndPose:
         q_end = ik_result.q
         q_end_padded = pad_q_for_model(self._model, q_end, self._n)
 
-        T_start = compute_fk(self._model, q_start)[2]
-        T_end = compute_fk(self._model, q_end_padded)[2]
+        T_start = compute_fk(
+            self._model,
+            q_start,
+            frame_name=self._end_frame_name,
+        )[2]
+        T_end = compute_fk(
+            self._model,
+            q_end_padded,
+            frame_name=self._end_frame_name,
+        )[2]
 
         if duration <= 0:
             dist = float(np.linalg.norm(T_target.translation() - T_start.translation()))

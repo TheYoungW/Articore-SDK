@@ -4,7 +4,7 @@
 """
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 import pinocchio as pin
@@ -43,9 +43,61 @@ def _resolve_urdf(urdf_path: str | None = None) -> Tuple[str, str]:
     return urdf_path, pkg_dir
 
 
-def load_robot_model(urdf_path: str | None = None) -> pin.Model:
+def load_robot_model(
+    urdf_path: str | None = None,
+    controlled_joint_names: Sequence[str] | None = None,
+) -> pin.Model:
+    """Load a URDF, optionally reducing it to the configured controlled joints.
+
+    A multi-arm robot must keep one authoritative URDF.  Callers controlling
+    only one arm pass that arm's joint names; every other movable joint is
+    locked at the neutral configuration while the original frame tree and
+    transforms are preserved.
+    """
     path, _ = _resolve_urdf(urdf_path)
-    return pin.buildModelFromUrdf(path)
+    model = pin.buildModelFromUrdf(path)
+    if controlled_joint_names is None:
+        return model
+
+    requested = tuple(str(name) for name in controlled_joint_names)
+    if not requested:
+        raise ValueError("controlled_joint_names must not be empty")
+    if len(requested) != len(set(requested)):
+        raise ValueError("controlled_joint_names contains duplicate names")
+
+    movable_joint_ids = {
+        str(model.names[joint_id]): joint_id
+        for joint_id in range(1, model.njoints)
+        if model.joints[joint_id].nq > 0
+    }
+    unknown = set(requested).difference(movable_joint_ids)
+    if unknown:
+        raise ValueError(
+            "controlled joints not found in URDF: " + ", ".join(sorted(unknown))
+        )
+
+    requested_set = set(requested)
+    locked_joint_ids = [
+        joint_id
+        for name, joint_id in movable_joint_ids.items()
+        if name not in requested_set
+    ]
+    reduced = pin.buildReducedModel(
+        model,
+        locked_joint_ids,
+        pin.neutral(model),
+    )
+    reduced_names = tuple(get_joint_names(reduced))
+    if reduced_names != requested:
+        raise ValueError(
+            "configured joint order does not match URDF model order: "
+            f"configured={requested}, urdf={reduced_names}"
+        )
+    if reduced.nq != len(requested):
+        raise ValueError(
+            "each controlled motor joint must have exactly one position variable"
+        )
+    return reduced
 
 
 def get_end_effector_frame() -> str:

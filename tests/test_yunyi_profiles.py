@@ -59,21 +59,19 @@ def test_yunyi_left_joint_directions_match_hardware() -> None:
     assert [joint.direction for joint in right] == [1] * 8
 
 
-def test_yunyi_dual_and_single_arm_urdfs_have_expected_chains() -> None:
-    dual = ET.parse(MODELS_DIR / "yunyi_v1_0.urdf").getroot()
-    dual_joints = {joint.attrib["name"] for joint in dual.findall("joint")}
-    assert {f"r-joint{i}" for i in range(1, 10)} <= dual_joints
-    assert {f"l-joint{i}" for i in range(1, 10)} <= dual_joints
+def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
+    dual_path = MODELS_DIR / "yunyi_v1_0.urdf"
+    root = ET.parse(dual_path).getroot()
+    joints = root.findall("joint")
+    names = {joint.attrib["name"] for joint in joints}
 
-    for side, prefix in (("right", "r-"), ("left", "l-")):
-        root = ET.parse(MODELS_DIR / f"yunyi_v1_0_{side}.urdf").getroot()
-        joints = root.findall("joint")
-        names = {joint.attrib["name"] for joint in joints}
-        revolute = [joint for joint in joints if joint.attrib["type"] == "revolute"]
-        prismatic = [joint for joint in joints if joint.attrib["type"] == "prismatic"]
+    assert {f"r-joint{i}" for i in range(1, 10)} <= names
+    assert {f"l-joint{i}" for i in range(1, 10)} <= names
+    assert len([joint for joint in joints if joint.attrib["type"] == "revolute"]) == 14
+    assert len([joint for joint in joints if joint.attrib["type"] == "prismatic"]) == 4
 
-        assert len(revolute) == 7
-        assert len(prismatic) == 2
-        assert all(
-            name.startswith(prefix) for name in names if name != f"{prefix}base-joint"
-        )
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        assert Path(load_cfg(model=model)["urdf_path"]) == dual_path
+
+    assert not (MODELS_DIR / "yunyi_v1_0_left.urdf").exists()
+    assert not (MODELS_DIR / "yunyi_v1_0_right.urdf").exists()

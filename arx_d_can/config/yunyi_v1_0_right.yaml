@@ -1,5 +1,5 @@
 name: Yunyi V1.0 Right Arm
-urdf_path: models/yunyi_v1_0_right.urdf
+urdf_path: models/yunyi_v1_0.urdf
 end_effector_frame: r-link7
 
 # Intended right-arm CAN mapping; verify it when the right adapter is connected.

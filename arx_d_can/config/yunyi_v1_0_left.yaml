@@ -1,5 +1,5 @@
 name: Yunyi V1.0 Left Arm
-urdf_path: models/yunyi_v1_0_left.urdf
+urdf_path: models/yunyi_v1_0.urdf
 end_effector_frame: l-link7
 
 # The left-arm USB2CAN currently exposes arm motor IDs 0x09..0x0F.
