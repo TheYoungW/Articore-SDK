@@ -61,6 +61,10 @@ PV 可用 `--velocity-limits` 覆盖各关节的最大速度，MIT 可用 `--vel
 PV 使用 YAML 中各关节的 `vlim`（rad/s），MIT 的目标速度和力矩均默认为零。模式会
 在电机使能前完成配置。
 
+`--torques` 是前馈力矩，示例 04 仍同时使用 YAML 的 Kp/Kd，并非纯力矩控制。
+Python API 可通过逐帧参数 `mit_kp`、`mit_kd` 覆盖增益；严格的零增益力矩包使用
+`arm.send_joint_torques(torques)`。
+
 注意：MIT 的 `--velocities` 是控制公式中 `kd(v_des-v)` 的目标速度，不是最大速度
 限制。示例 04 会直接发送位置目标；如果需要限制整个运动过程的速度，应使用示例 07
 生成插值轨迹，而不是只修改 MIT 的目标速度。

@@ -96,6 +96,34 @@ finally:
     arm.close()
 ```
 
+### MIT 逐帧增益与纯力矩控制
+
+`send_joint_positions(..., torques=...)` 中的 `torques` 是 MIT 前馈力矩。默认仍会
+使用机型 YAML 中的 Kp/Kd，因此不是纯力矩控制。可通过 `mit_kp`、`mit_kd` 对当前
+一帧覆盖各关节增益；不传入时继续使用 YAML 默认值：
+
+```python
+arm.send_joint_positions(
+    positions,
+    velocities=velocities,
+    torques=torques,
+    mit_kp=[20.0, 20.0, 20.0, 5.0, 5.0, 5.0],
+    mit_kd=[2.0, 2.0, 2.0, 0.5, 0.5, 0.5],
+    mode="mit",
+)
+```
+
+交接阶段可逐帧将 `mit_kp`、`mit_kd` 从 YAML 增益平滑降到零。进入纯力矩阶段后，
+使用下面的接口更明确；它会强制 MIT 包中全部关节的 Kp、Kd 和目标速度为零：
+
+```python
+arm.send_joint_torques(torques)
+```
+
+纯力矩模式没有位置保持能力，必须持续发送经过限幅和安全检查的力矩。命令超时后，
+SDK 看门狗仍会尝试读取当前位置并恢复安全保持；生产设备还必须具备物理急停和
+电机侧保护。
+
 ## 多机型配置
 
 SDK 不再在代码中假定机械臂必须是 6 轴。关节数量、顺序、电机 ID、反馈 ID、

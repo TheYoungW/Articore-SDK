@@ -45,6 +45,8 @@ class FakeGroup:
         self.sent_mit: list[np.ndarray] = []
         self.sent_mit_velocities: list[np.ndarray | None] = []
         self.sent_mit_torques: list[np.ndarray | None] = []
+        self.sent_mit_kp: list[np.ndarray | None] = []
+        self.sent_mit_kd: list[np.ndarray | None] = []
 
     def mode_pos_vel(self) -> bool:
         self.mode_calls.append("pv")
@@ -76,6 +78,14 @@ class FakeGroup:
         torque = kwargs.get("tau")
         self.sent_mit_torques.append(
             None if torque is None else np.asarray(torque, dtype=np.float64).copy()
+        )
+        kp = kwargs.get("kp")
+        self.sent_mit_kp.append(
+            None if kp is None else np.asarray(kp, dtype=np.float64).copy()
+        )
+        kd = kwargs.get("kd")
+        self.sent_mit_kd.append(
+            None if kd is None else np.asarray(kd, dtype=np.float64).copy()
         )
 
 
@@ -250,11 +260,95 @@ def test_pv_mode_rejects_mit_torques() -> None:
         arm.close()
 
 
+def test_mit_packet_can_override_kp_and_kd_without_changing_defaults() -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="mit",
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        arm.send_joint_positions(
+            [0.25],
+            torques=[0.1],
+            mit_kp=[3.0],
+            mit_kd=[0.2],
+        )
+        arm.send_joint_positions([0.3], torques=[0.2])
+
+        np.testing.assert_allclose(robot.arm.sent_mit_kp[0], [3.0])
+        np.testing.assert_allclose(robot.arm.sent_mit_kd[0], [0.2])
+        assert robot.arm.sent_mit_kp[1] is None
+        assert robot.arm.sent_mit_kd[1] is None
+    finally:
+        arm.close()
+
+
+def test_send_joint_torques_forces_zero_mit_feedback_gains() -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="pv",
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        arm.send_joint_torques([0.4])
+
+        assert robot.arm.mode_calls == ["pv", "mit"]
+        np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.0])
+        np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.0])
+        np.testing.assert_allclose(robot.arm.sent_mit_kp[-1], [0.0])
+        np.testing.assert_allclose(robot.arm.sent_mit_kd[-1], [0.0])
+        np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.4])
+        assert arm._last_joint_command is None
+    finally:
+        arm.close()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"mit_kp": []}, "expected 1 MIT Kp"),
+        ({"mit_kd": [float("nan")]}, "MIT Kd values must be finite"),
+        ({"mit_kp": [-0.1]}, "MIT Kp values must be finite"),
+    ],
+)
+def test_mit_gain_overrides_are_validated(kwargs: dict, message: str) -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="mit",
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        with pytest.raises(ValueError, match=message):
+            arm.send_joint_positions([0.25], **kwargs)
+    finally:
+        arm.close()
+
+
 @pytest.mark.parametrize(
     ("mode", "kwargs", "message"),
     [
         ("pv", {"velocities": [0.1]}, "only supported in MIT mode"),
         ("mit", {"velocity_limits": [0.1]}, "only supported in PV mode"),
+        ("pv", {"mit_kp": [0.0]}, "only supported in MIT mode"),
+        ("pv", {"mit_kd": [0.0]}, "only supported in MIT mode"),
     ],
 )
 def test_control_modes_reject_other_mode_velocity_parameter(

@@ -626,14 +626,25 @@ class ArxDCanArm:
         velocities: Sequence[float] | None = None,
         velocity_limits: Sequence[float] | None = None,
         torques: Sequence[float] | None = None,
+        mit_kp: Sequence[float] | None = None,
+        mit_kd: Sequence[float] | None = None,
         mode: str | None = None,
         require_enabled: bool = True,
     ) -> None:
+        """Send one arm command.
+
+        In MIT mode, ``mit_kp`` and ``mit_kd`` override the YAML gains for
+        this packet only. Omitting either argument keeps that gain at its
+        configured YAML value.
+        """
         self._require_operational()
         if require_enabled and not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
-        if len(positions) != len(self.config.arm_joints):
-            raise ValueError(f"expected {len(self.config.arm_joints)} joint positions, got {len(positions)}")
+        joint_count = len(self.config.arm_joints)
+        if len(positions) != joint_count:
+            raise ValueError(
+                f"expected {joint_count} joint positions, got {len(positions)}"
+            )
         if any(not math.isfinite(float(value)) for value in positions):
             raise ValueError("joint positions must be finite")
         target = {
@@ -642,9 +653,9 @@ class ArxDCanArm:
         }
         velocity_target: np.ndarray | None = None
         if velocities is not None:
-            if len(velocities) != len(self.config.arm_joints):
+            if len(velocities) != joint_count:
                 raise ValueError(
-                    f"expected {len(self.config.arm_joints)} joint velocities, "
+                    f"expected {joint_count} joint velocities, "
                     f"got {len(velocities)}"
                 )
             if any(not math.isfinite(float(value)) for value in velocities):
@@ -652,9 +663,9 @@ class ArxDCanArm:
             velocity_target = np.asarray(velocities, dtype=np.float64)
         velocity_limit_target: np.ndarray | None = None
         if velocity_limits is not None:
-            if len(velocity_limits) != len(self.config.arm_joints):
+            if len(velocity_limits) != joint_count:
                 raise ValueError(
-                    f"expected {len(self.config.arm_joints)} joint velocity limits, "
+                    f"expected {joint_count} joint velocity limits, "
                     f"got {len(velocity_limits)}"
                 )
             if any(
@@ -665,20 +676,46 @@ class ArxDCanArm:
             velocity_limit_target = np.asarray(velocity_limits, dtype=np.float64)
         torque_target: np.ndarray | None = None
         if torques is not None:
-            if len(torques) != len(self.config.arm_joints):
+            if len(torques) != joint_count:
                 raise ValueError(
-                    f"expected {len(self.config.arm_joints)} joint torques, "
+                    f"expected {joint_count} joint torques, "
                     f"got {len(torques)}"
                 )
             if any(not math.isfinite(float(value)) for value in torques):
                 raise ValueError("joint torques must be finite")
             torque_target = np.asarray(torques, dtype=np.float64)
+        mit_kp_target: np.ndarray | None = None
+        if mit_kp is not None:
+            if len(mit_kp) != joint_count:
+                raise ValueError(
+                    f"expected {joint_count} MIT Kp values, got {len(mit_kp)}"
+                )
+            if any(
+                not math.isfinite(float(value)) or float(value) < 0.0
+                for value in mit_kp
+            ):
+                raise ValueError("MIT Kp values must be finite and non-negative")
+            mit_kp_target = np.asarray(mit_kp, dtype=np.float64)
+        mit_kd_target: np.ndarray | None = None
+        if mit_kd is not None:
+            if len(mit_kd) != joint_count:
+                raise ValueError(
+                    f"expected {joint_count} MIT Kd values, got {len(mit_kd)}"
+                )
+            if any(
+                not math.isfinite(float(value)) or float(value) < 0.0
+                for value in mit_kd
+            ):
+                raise ValueError("MIT Kd values must be finite and non-negative")
+            mit_kd_target = np.asarray(mit_kd, dtype=np.float64)
         active_mode = (mode or self._mode).strip().lower().replace("_", "")
         if active_mode in ("posvel", "pv"):
             if velocity_target is not None:
                 raise ValueError("target velocities are only supported in MIT mode")
             if torque_target is not None:
                 raise ValueError("torques are only supported in MIT mode")
+            if mit_kp_target is not None or mit_kd_target is not None:
+                raise ValueError("MIT Kp/Kd are only supported in MIT mode")
         if active_mode == "mit" and velocity_limit_target is not None:
             raise ValueError("velocity limits are only supported in PV mode")
         try:
@@ -702,6 +739,8 @@ class ArxDCanArm:
                 self.robot.arm.send_mit(
                     np.array([target[joint.name] for joint in self.config.arm_joints]),
                     vel=velocity_target,
+                    kp=mit_kp_target,
+                    kd=mit_kd_target,
                     tau=torque_target,
                     strict=True,
                 )
@@ -715,6 +754,44 @@ class ArxDCanArm:
             self._trip_fault(f"joint command failed: {exc}")
             raise
         raise ValueError("mode must be 'posvel' or 'mit'")
+
+    def send_joint_torques(
+        self,
+        torques: Sequence[float],
+        *,
+        require_enabled: bool = True,
+    ) -> None:
+        """Send a pure MIT torque command with Kp=Kd=0 for every joint."""
+        self._require_operational()
+        if require_enabled and not self._enabled:
+            raise RuntimeError("ARX-D-CAN arm is not enabled")
+        joint_count = len(self.config.arm_joints)
+        if len(torques) != joint_count:
+            raise ValueError(
+                f"expected {joint_count} joint torques, got {len(torques)}"
+            )
+        if any(not math.isfinite(float(value)) for value in torques):
+            raise ValueError("joint torques must be finite")
+
+        zeros = np.zeros(joint_count, dtype=np.float64)
+        torque_target = np.asarray(torques, dtype=np.float64)
+        try:
+            if self._mode != "mit":
+                self.configure_mode("mit")
+            self.robot.arm.send_mit(
+                zeros,
+                vel=zeros,
+                kp=zeros,
+                kd=zeros,
+                tau=torque_target,
+                strict=True,
+            )
+            # Refresh the watchdog without recording the packet's irrelevant
+            # zero position as a future safe-hold target.
+            self._record_successful_command()
+        except Exception as exc:
+            self._trip_fault(f"joint torque command failed: {exc}")
+            raise
 
     def hold_current_position(self) -> ArxDCanState:
         state = self.read_state(request_feedback=True)
