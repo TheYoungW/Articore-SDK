@@ -114,10 +114,16 @@ arm.send_joint_positions(
 ```
 
 交接阶段可逐帧将 `mit_kp`、`mit_kd` 从 YAML 增益平滑降到零。进入纯力矩阶段后，
-使用下面的接口更明确；它会强制 MIT 包中全部关节的 Kp、Kd 和目标速度为零：
+直接把两个增益设为标量 `0`；标量会自动应用到全部关节：
 
 ```python
-arm.send_joint_torques(torques)
+arm.send_joint_positions(
+    positions,
+    torques=torques,
+    mit_kp=0,
+    mit_kd=0,
+    mode="mit",
+)
 ```
 
 纯力矩模式没有位置保持能力，必须持续发送经过限幅和安全检查的力矩。命令超时后，

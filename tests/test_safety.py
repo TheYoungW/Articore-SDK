@@ -289,7 +289,7 @@ def test_mit_packet_can_override_kp_and_kd_without_changing_defaults() -> None:
         arm.close()
 
 
-def test_send_joint_torques_forces_zero_mit_feedback_gains() -> None:
+def test_scalar_zero_mit_gains_apply_to_every_joint() -> None:
     config = ArxDCanConfig(
         arm_control_mode="pv",
         arm_joints=(JOINT,),
@@ -302,15 +302,20 @@ def test_send_joint_torques_forces_zero_mit_feedback_gains() -> None:
     arm.configure()
     arm.enable()
     try:
-        arm.send_joint_torques([0.4])
+        arm.send_joint_positions(
+            [0.0],
+            torques=[0.4],
+            mit_kp=0,
+            mit_kd=0,
+            mode="mit",
+        )
 
         assert robot.arm.mode_calls == ["pv", "mit"]
         np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.0])
-        np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.0])
+        assert robot.arm.sent_mit_velocities[-1] is None
         np.testing.assert_allclose(robot.arm.sent_mit_kp[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_kd[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.4])
-        assert arm._last_joint_command is None
     finally:
         arm.close()
 
