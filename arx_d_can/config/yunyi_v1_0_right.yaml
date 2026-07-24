@@ -47,6 +47,8 @@ gripper_force_control:
 # Initial gains are conservative values derived from the existing ARX profile.
 # Verify and tune them on supported hardware before carrying a payload.
 joints:
+  # Control gains are tiered by actuator capability:
+  # joint1-2 (40 Nm), joint3-4 (20 Nm), joint5-7 (8 Nm).
   - name: r-joint1
     motor_id: 0x01
     feedback_id: 0x11
@@ -68,16 +70,16 @@ joints:
     feedback_id: 0x13
     model: "4340P"
     torque_range: 20.0
-    MIT: {kp: 120.0, kd: 8.0}
-    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
+    MIT: {kp: 60.0, kd: 4.0}
+    POS_VEL: {vel_kp: 0.008, vel_ki: 0.003, pos_kp: 100.0, pos_ki: 0.75, vlim: 2.5}
 
   - name: r-joint4
     motor_id: 0x04
     feedback_id: 0x14
     model: "4340P"
     torque_range: 20.0
-    MIT: {kp: 120.0, kd: 8.0}
-    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
+    MIT: {kp: 60.0, kd: 4.0}
+    POS_VEL: {vel_kp: 0.008, vel_ki: 0.003, pos_kp: 100.0, pos_ki: 0.75, vlim: 2.5}
 
   - name: r-joint5
     motor_id: 0x05

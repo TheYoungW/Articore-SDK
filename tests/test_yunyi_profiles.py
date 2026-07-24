@@ -66,6 +66,29 @@ def test_yunyi_joint_torque_ranges_match_hardware() -> None:
         assert [joint.torque_range for joint in joints] == expected
 
 
+def test_yunyi_control_gains_follow_actuator_capability_tiers() -> None:
+    high = (120.0, 8.0, 0.0125, 0.004, 150.0, 0.5, 3.0)
+    medium = (60.0, 4.0, 0.008, 0.003, 100.0, 0.75, 2.5)
+    low = (18.0, 2.0, 0.005, 0.002, 50.0, 1.0, 2.0)
+    expected = [high, high, medium, medium, low, low, low]
+
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        joints = load_cfg(model=model)["joints"][:7]
+        actual = [
+            (
+                joint.kp,
+                joint.kd,
+                joint.vel_kp,
+                joint.vel_ki,
+                joint.pos_kp,
+                joint.pos_ki,
+                joint.vlim,
+            )
+            for joint in joints
+        ]
+        assert actual == expected
+
+
 def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
     dual_path = MODELS_DIR / "yunyi_v1_0.urdf"
     root = ET.parse(dual_path).getroot()
