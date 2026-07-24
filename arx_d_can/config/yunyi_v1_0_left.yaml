@@ -64,7 +64,7 @@ joints:
     model: "8009"
     torque_range: 40.0
     MIT: {kp: 120.0, kd: 8.0}
-    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
+    POS_VEL: {vel_kp: 0.008, vel_ki: 0.002, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
 
   - name: l-joint3
     motor_id: 0x0B
@@ -72,7 +72,7 @@ joints:
     model: "4340P"
     torque_range: 20.0
     MIT: {kp: 60.0, kd: 4.0}
-    POS_VEL: {vel_kp: 0.008, vel_ki: 0.003, pos_kp: 100.0, pos_ki: 0.75, vlim: 2.5}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 150.0, pos_ki: 0.0, vlim: 1.8}
 
   - name: l-joint4
     motor_id: 0x0C
@@ -81,7 +81,7 @@ joints:
     torque_range: 20.0
     direction: -1
     MIT: {kp: 60.0, kd: 4.0}
-    POS_VEL: {vel_kp: 0.008, vel_ki: 0.003, pos_kp: 100.0, pos_ki: 0.75, vlim: 2.5}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 150.0, pos_ki: 0.0, vlim: 1.8}
 
   - name: l-joint5
     motor_id: 0x0D

@@ -68,10 +68,18 @@ def test_yunyi_joint_torque_ranges_match_hardware() -> None:
 
 def test_yunyi_control_gains_follow_actuator_capability_tiers() -> None:
     high_damped = (120.0, 8.0, 0.010, 0.0025, 100.0, 0.3, 2.5)
-    high = (120.0, 8.0, 0.0125, 0.004, 150.0, 0.5, 3.0)
-    medium = (60.0, 4.0, 0.008, 0.003, 100.0, 0.75, 2.5)
+    high_soft = (120.0, 8.0, 0.008, 0.002, 80.0, 0.2, 2.0)
+    medium_damped = (60.0, 4.0, 0.0125, 0.001, 150.0, 0.0, 1.8)
     low = (18.0, 2.0, 0.005, 0.002, 50.0, 1.0, 2.0)
-    expected = [high_damped, high, medium, medium, low, low, low]
+    expected = [
+        high_damped,
+        high_soft,
+        medium_damped,
+        medium_damped,
+        low,
+        low,
+        low,
+    ]
 
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         joints = load_cfg(model=model)["joints"][:7]
