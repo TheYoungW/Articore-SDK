@@ -160,6 +160,8 @@ arm = ArxDCanArm(config_path="/path/to/my_arm.yaml")
 `--config-path` 互斥；没有指定时使用 `models.yaml` 的 `default_model`。
 若某个电机的正方向与机械臂坐标相反，在该关节配置中设置 `direction: -1`；
 SDK 会同时反转位置、速度和力矩的指令及反馈，其他关节省略该字段即可。
+若实际电机的 MIT 力矩映射范围与底层型号默认值不同，设置
+`torque_range`；SDK 会同时换算 MIT 前馈力矩和反馈力矩。
 
 ### Yunyi V1.0 双臂
 

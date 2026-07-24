@@ -493,6 +493,36 @@ def test_reversed_joint_transforms_commands_and_feedback() -> None:
         assert torques.tolist() == [0.3]
 
 
+def test_custom_torque_range_rescales_mit_command_and_feedback() -> None:
+    motor = FakeDirectionalMotor()
+    motor.torque = 5.4
+    joint = JointCfg(
+        name="joint1",
+        motor_id=1,
+        feedback_id=0x11,
+        model="8009",
+        torque_range=40.0,
+    )
+    arm = make_uninitialized_arm(joint)
+    arm._motor_map = {"joint1": motor}
+    arm._ctrl_map = {"main": FakePollController()}
+    group = JointGroup(
+        "arm",
+        ["joint1"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.send_mit([0.0], tau=[4.0])
+    _, _, group_torque = group.read_state(request_feedback=False)
+    _, _, global_torque = arm.get_state(request_feedback=False)
+
+    assert motor.mit_commands == [(0.0, 0.0, 0.0, 0.0, 5.4)]
+    assert group_torque.tolist() == [4.0]
+    assert global_torque.tolist() == [4.0]
+
+
 @pytest.mark.parametrize("include_gripper", [False, True])
 def test_zero_tool_requests_feedback_for_selected_actuators(
     monkeypatch,

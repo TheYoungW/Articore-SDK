@@ -51,12 +51,19 @@ def test_yunyi_motor_models_and_ids_match_each_single_can_bus() -> None:
         assert [joint.feedback_id for joint in joints] == expected_feedback_ids
 
 
-def test_yunyi_left_joint_directions_match_hardware() -> None:
+def test_yunyi_left_joint_directions_match_verified_tf_convention() -> None:
     left = load_cfg(model="yunyi_v1_0_left")["joints"]
     right = load_cfg(model="yunyi_v1_0_right")["joints"]
 
-    assert [joint.direction for joint in left] == [-1, 1, 1, -1, 1, 1, 1, 1]
+    assert [joint.direction for joint in left] == [1, 1, 1, -1, 1, 1, 1, 1]
     assert [joint.direction for joint in right] == [1] * 8
+
+
+def test_yunyi_joint_torque_ranges_match_hardware() -> None:
+    expected = [40.0, 40.0, 20.0, 20.0, 8.0, 8.0, 8.0, None]
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        joints = load_cfg(model=model)["joints"]
+        assert [joint.torque_range for joint in joints] == expected
 
 
 def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:

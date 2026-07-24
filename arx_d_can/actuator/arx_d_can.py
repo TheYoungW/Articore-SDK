@@ -45,6 +45,16 @@ _CFG_DIR = Path(__file__).resolve().parents[1] / "config"
 _MODEL_REGISTRY = _CFG_DIR / "models.yaml"
 _HEALTHY_DAMIAO_STATUS_CODES = frozenset((0x0, 0x1))  # disabled, enabled
 _COMPLETE_FEEDBACK_ATTEMPTS = 2
+_NATIVE_TORQUE_RANGES = {
+    "4310": 10.0,
+    "4310P": 10.0,
+    "4340": 28.0,
+    "4340P": 28.0,
+    "4340_v20": 28.0,
+    "6006": 20.0,
+    "8006": 40.0,
+    "8009": 54.0,
+}
 
 
 def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
@@ -115,6 +125,7 @@ class JointCfg:
     feedback_id: int
     model: str
     direction: float = 1.0
+    torque_range: float | None = None
     kp: float = 0.0
     kd: float = 0.0
     vel_kp: float = 0.0
@@ -129,6 +140,19 @@ def _finite(value: Any, *, field: str) -> float:
     if not math.isfinite(parsed):
         raise ValueError(f"{field} must be finite")
     return parsed
+
+
+def _torque_range_scales(joint: JointCfg) -> tuple[float, float]:
+    """Return command and feedback scales for a custom MIT torque range."""
+    if joint.torque_range is None:
+        return 1.0, 1.0
+    native_range = _NATIVE_TORQUE_RANGES.get(joint.model)
+    if native_range is None:
+        raise ValueError(
+            f"{joint.name}.torque_range requires a known Damiao model, "
+            f"got {joint.model!r}"
+        )
+    return native_range / joint.torque_range, joint.torque_range / native_range
 
 
 def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
@@ -232,15 +256,23 @@ def load_cfg(
         names.add(name)
         motor_ids.add(motor_id)
         feedback_ids.add(feedback_id)
+        model = str(j.get("model", "4340P"))
+        raw_torque_range = j.get("torque_range")
+        torque_range = (
+            None
+            if raw_torque_range is None
+            else _finite(raw_torque_range, field=f"{name}.torque_range")
+        )
         joint = JointCfg(
             name=name,
             motor_id=motor_id,
             feedback_id=feedback_id,
-            model=str(j.get("model", "4340P")),
+            model=model,
             direction=_finite(
                 j.get("direction", 1.0),
                 field=f"{name}.direction",
             ),
+            torque_range=torque_range,
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
             kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
             vel_kp=_finite(pc.get("vel_kp", 0.0), field=f"{name}.POS_VEL.vel_kp"),
@@ -251,6 +283,10 @@ def load_cfg(
         )
         if joint.direction not in (-1.0, 1.0):
             raise ValueError(f"{name}.direction must be 1 or -1")
+        if joint.torque_range is not None:
+            if joint.torque_range <= 0.0:
+                raise ValueError(f"{name}.torque_range must be positive")
+            _torque_range_scales(joint)
         if joint.vlim <= 0.0:
             raise ValueError(f"{name}.POS_VEL.vlim must be positive")
         joints.append(joint)
@@ -623,12 +659,13 @@ class JointGroup:
 
         for i, jc in enumerate(self._jcfgs):
             try:
+                torque_command_scale, _ = _torque_range_scales(jc)
                 self._mm[jc.name].send_mit(
                     jc.direction * float(pos[i]),
                     jc.direction * float(vel[i]),
                     float(kp[i]),
                     float(kd[i]),
-                    jc.direction * float(tau[i]),
+                    jc.direction * float(tau[i]) * torque_command_scale,
                 )
             except CallError:
                 if strict:
@@ -691,9 +728,12 @@ class JointGroup:
                 raise RuntimeError(
                     f"{self.name}/{jc.name}: motor fault status={state.status_code}"
                 )
+            _, torque_feedback_scale = _torque_range_scales(jc)
             positions.append(jc.direction * state.pos)
             velocities.append(jc.direction * state.vel)
-            torques.append(jc.direction * state.torq)
+            torques.append(
+                jc.direction * state.torq * torque_feedback_scale
+            )
         return (
             np.asarray(positions, dtype=np.float64),
             np.asarray(velocities, dtype=np.float64),
@@ -1146,9 +1186,10 @@ class ArxDCan:
                     raise RuntimeError(
                         f"{jc.name}: motor fault status={st.status_code}"
                     )
+                _, torque_feedback_scale = _torque_range_scales(jc)
                 pos.append(jc.direction * st.pos)
                 vel.append(jc.direction * st.vel)
-                torq.append(jc.direction * st.torq)
+                torq.append(jc.direction * st.torq * torque_feedback_scale)
             else:
                 if require_complete:
                     raise RuntimeError(f"{jc.name}: no motor feedback")

@@ -51,7 +51,8 @@ joints:
     motor_id: 0x09
     feedback_id: 0x19
     model: "8009"
-    direction: -1
+    torque_range: 40.0
+    direction: 1
     MIT: {kp: 120.0, kd: 8.0}
     POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
 
@@ -59,6 +60,7 @@ joints:
     motor_id: 0x0A
     feedback_id: 0x1A
     model: "8009"
+    torque_range: 40.0
     MIT: {kp: 120.0, kd: 8.0}
     POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
 
@@ -66,6 +68,7 @@ joints:
     motor_id: 0x0B
     feedback_id: 0x1B
     model: "4340P"
+    torque_range: 20.0
     MIT: {kp: 120.0, kd: 8.0}
     POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
 
@@ -73,6 +76,7 @@ joints:
     motor_id: 0x0C
     feedback_id: 0x1C
     model: "4340P"
+    torque_range: 20.0
     direction: -1
     MIT: {kp: 120.0, kd: 8.0}
     POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 3.0}
@@ -81,6 +85,7 @@ joints:
     motor_id: 0x0D
     feedback_id: 0x1D
     model: "4310"
+    torque_range: 8.0
     MIT: {kp: 18.0, kd: 2.0}
     POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
 
@@ -88,6 +93,7 @@ joints:
     motor_id: 0x0E
     feedback_id: 0x1E
     model: "4310"
+    torque_range: 8.0
     MIT: {kp: 18.0, kd: 2.0}
     POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
 
@@ -95,6 +101,7 @@ joints:
     motor_id: 0x0F
     feedback_id: 0x1F
     model: "4310"
+    torque_range: 8.0
     MIT: {kp: 18.0, kd: 2.0}
     POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
 
