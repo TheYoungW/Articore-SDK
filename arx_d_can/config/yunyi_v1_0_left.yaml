@@ -2,7 +2,7 @@ name: Yunyi V1.0 Left Arm
 urdf_path: models/yunyi_v1_0.urdf
 end_effector_frame: l-link7
 
-# The left-arm USB2CAN currently exposes arm motor IDs 0x09..0x0F.
+# The left-arm USB2CAN exposes arm motor IDs 0x09..0x0F and gripper ID 0x01.
 channel: /dev/ttyACM0
 baud: 1000000
 rate: 500
@@ -108,8 +108,8 @@ joints:
     POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
 
   - name: l-gripper
-    motor_id: 0x10
-    feedback_id: 0x20
+    motor_id: 0x01
+    feedback_id: 0x11
     model: "4310"
     MIT: {kp: 4.0, kd: 0.5}
     POS_VEL: {vel_kp: 0.0008, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
