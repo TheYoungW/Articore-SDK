@@ -75,7 +75,7 @@ joints:
     torque_range: 20.0
     velocity_range: 10.0
     MIT: {kp: 60.0, kd: 4.0}
-    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 150.0, pos_ki: 0.0, vlim: 1.8}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 165.0, pos_ki: 0.0, vlim: 1.8}
 
   - name: r-joint4
     motor_id: 0x04
@@ -93,7 +93,7 @@ joints:
     torque_range: 8.0
     velocity_range: 10.0
     MIT: {kp: 18.0, kd: 2.0}
-    POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
+    POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
 
   - name: r-joint6
     motor_id: 0x06
@@ -102,7 +102,7 @@ joints:
     torque_range: 8.0
     velocity_range: 10.0
     MIT: {kp: 18.0, kd: 2.0}
-    POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
+    POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
 
   - name: r-joint7
     motor_id: 0x07
@@ -111,7 +111,7 @@ joints:
     torque_range: 8.0
     velocity_range: 10.0
     MIT: {kp: 18.0, kd: 2.0}
-    POS_VEL: {vel_kp: 0.005, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 2.0}
+    POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
 
   - name: r-gripper
     motor_id: 0x08
