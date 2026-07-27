@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 import xml.etree.ElementTree as ET
 
 from arx_d_can import ArxDCanArm, available_models, load_cfg
@@ -108,6 +109,14 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
     assert {f"l-joint{i}" for i in range(1, 10)} <= names
     assert len([joint for joint in joints if joint.attrib["type"] == "revolute"]) == 14
     assert len([joint for joint in joints if joint.attrib["type"] == "prismatic"]) == 4
+
+    for side in ("r", "l"):
+        joint6 = root.find(f"joint[@name='{side}-joint6']")
+        assert joint6 is not None
+        limit = joint6.find("limit")
+        assert limit is not None
+        assert math.isclose(float(limit.attrib["lower"]), math.radians(-45))
+        assert math.isclose(float(limit.attrib["upper"]), math.radians(60))
 
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         assert Path(load_cfg(model=model)["urdf_path"]) == dual_path

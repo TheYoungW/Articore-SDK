@@ -225,7 +225,7 @@
     <parent link="r-link5" />
     <child link="r-link6" />
     <axis xyz="1.16496372423e-06 -0.99999874339 0.00158531275793" />
-    <limit lower="-1.04" upper="1.04" effort="3" velocity="10" />
+    <limit lower="-0.785398163397" upper="1.0471975512" effort="3" velocity="10" />
   </joint>
   <link name="r-link7">
     <inertial>
@@ -514,7 +514,7 @@
     <parent link="l-link5" />
     <child link="l-link6" />
     <axis xyz="6.3903025017e-06 -0.999988690606 0.0047559036059" />
-    <limit lower="-1.04" upper="1.04" effort="3" velocity="10" />
+    <limit lower="-0.785398163397" upper="1.0471975512" effort="3" velocity="10" />
   </joint>
   <link name="l-link7">
     <inertial>
