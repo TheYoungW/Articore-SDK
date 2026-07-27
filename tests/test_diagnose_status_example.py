@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from arx_d_can.actuator import JointCfg
 from arx_d_can.examples import example_09_diagnose_status as example
 
@@ -40,6 +42,7 @@ def joint(name, motor_id):
         motor_id=motor_id,
         feedback_id=0x10 + motor_id,
         model="4310",
+        velocity_range=10.0,
     )
 
 
@@ -61,6 +64,7 @@ def test_read_diagnostics_reports_fault_and_actual_control_mode():
     assert example.mode_name(diagnostics[0].control_mode) == "POS_VEL"
     assert diagnostics[1].status_code == 0x0
     assert diagnostics[1].control_mode == 1
+    assert diagnostics[0].velocity == pytest.approx(0.2 / 3.0)
 
 
 def test_summary_warns_for_fault_and_abnormal_temperature(capsys):

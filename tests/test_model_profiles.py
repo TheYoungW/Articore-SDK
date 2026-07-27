@@ -122,3 +122,15 @@ def test_profile_rejects_invalid_joint_direction(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match=r"elbow\.direction must be 1 or -1"):
         load_cfg(profile)
+
+
+def test_profile_rejects_nonpositive_velocity_range(tmp_path: Path) -> None:
+    profile = write_profile(
+        tmp_path,
+        CUSTOM_PROFILE.replace(
+            'model: "4310"\n',
+            'model: "4310"\n    velocity_range: 0\n',
+        ),
+    )
+    with pytest.raises(ValueError, match=r"elbow\.velocity_range must be positive"):
+        load_cfg(profile)

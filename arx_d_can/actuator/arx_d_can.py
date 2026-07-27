@@ -55,6 +55,24 @@ _NATIVE_TORQUE_RANGES = {
     "8006": 40.0,
     "8009": 54.0,
 }
+_NATIVE_VELOCITY_RANGES = {
+    "3507": 50.0,
+    "4310": 30.0,
+    "4310P": 50.0,
+    "4340": 10.0,
+    "4340P": 10.0,
+    "4340_v20": 20.0,
+    "6006": 45.0,
+    "8006": 45.0,
+    "8009": 45.0,
+    "10010L": 25.0,
+    "10010": 20.0,
+    "H3510": 280.0,
+    "G6215": 45.0,
+    "H6220": 45.0,
+    "JH11": 10.0,
+    "6248P": 20.0,
+}
 
 
 def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
@@ -126,6 +144,7 @@ class JointCfg:
     model: str
     direction: float = 1.0
     torque_range: float | None = None
+    velocity_range: float | None = None
     kp: float = 0.0
     kd: float = 0.0
     vel_kp: float = 0.0
@@ -153,6 +172,19 @@ def _torque_range_scales(joint: JointCfg) -> tuple[float, float]:
             f"got {joint.model!r}"
         )
     return native_range / joint.torque_range, joint.torque_range / native_range
+
+
+def _velocity_range_scales(joint: JointCfg) -> tuple[float, float]:
+    """Return MIT command and feedback scales for a custom velocity mapping."""
+    if joint.velocity_range is None:
+        return 1.0, 1.0
+    native_range = _NATIVE_VELOCITY_RANGES.get(joint.model)
+    if native_range is None:
+        raise ValueError(
+            f"{joint.name}.velocity_range requires a known Damiao model, "
+            f"got {joint.model!r}"
+        )
+    return native_range / joint.velocity_range, joint.velocity_range / native_range
 
 
 def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
@@ -263,6 +295,12 @@ def load_cfg(
             if raw_torque_range is None
             else _finite(raw_torque_range, field=f"{name}.torque_range")
         )
+        raw_velocity_range = j.get("velocity_range")
+        velocity_range = (
+            None
+            if raw_velocity_range is None
+            else _finite(raw_velocity_range, field=f"{name}.velocity_range")
+        )
         joint = JointCfg(
             name=name,
             motor_id=motor_id,
@@ -273,6 +311,7 @@ def load_cfg(
                 field=f"{name}.direction",
             ),
             torque_range=torque_range,
+            velocity_range=velocity_range,
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
             kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
             vel_kp=_finite(pc.get("vel_kp", 0.0), field=f"{name}.POS_VEL.vel_kp"),
@@ -287,6 +326,10 @@ def load_cfg(
             if joint.torque_range <= 0.0:
                 raise ValueError(f"{name}.torque_range must be positive")
             _torque_range_scales(joint)
+        if joint.velocity_range is not None:
+            if joint.velocity_range <= 0.0:
+                raise ValueError(f"{name}.velocity_range must be positive")
+            _velocity_range_scales(joint)
         if joint.vlim <= 0.0:
             raise ValueError(f"{name}.POS_VEL.vlim must be positive")
         joints.append(joint)
@@ -659,10 +702,11 @@ class JointGroup:
 
         for i, jc in enumerate(self._jcfgs):
             try:
+                velocity_command_scale, _ = _velocity_range_scales(jc)
                 torque_command_scale, _ = _torque_range_scales(jc)
                 self._mm[jc.name].send_mit(
                     jc.direction * float(pos[i]),
-                    jc.direction * float(vel[i]),
+                    jc.direction * float(vel[i]) * velocity_command_scale,
                     float(kp[i]),
                     float(kd[i]),
                     jc.direction * float(tau[i]) * torque_command_scale,
@@ -728,9 +772,12 @@ class JointGroup:
                 raise RuntimeError(
                     f"{self.name}/{jc.name}: motor fault status={state.status_code}"
                 )
+            _, velocity_feedback_scale = _velocity_range_scales(jc)
             _, torque_feedback_scale = _torque_range_scales(jc)
             positions.append(jc.direction * state.pos)
-            velocities.append(jc.direction * state.vel)
+            velocities.append(
+                jc.direction * state.vel * velocity_feedback_scale
+            )
             torques.append(
                 jc.direction * state.torq * torque_feedback_scale
             )
@@ -752,11 +799,15 @@ class JointGroup:
     def get_velocities(self, request_feedback: bool = True) -> np.ndarray:
         if request_feedback:
             self._request_feedback()
-        return np.array([
-            jc.direction * self._mm[jc.name].get_state().vel
-            if self._mm[jc.name].get_state() is not None else 0.0
-            for jc in self._jcfgs
-        ], dtype=np.float64)
+        velocities = []
+        for jc in self._jcfgs:
+            state = self._mm[jc.name].get_state()
+            if state is None:
+                velocities.append(0.0)
+                continue
+            _, velocity_feedback_scale = _velocity_range_scales(jc)
+            velocities.append(jc.direction * state.vel * velocity_feedback_scale)
+        return np.asarray(velocities, dtype=np.float64)
 
     def __repr__(self) -> str:
         return f"JointGroup({self.name!r}, joints={self.num_joints}, mode={self._mode})"
@@ -1104,7 +1155,8 @@ class ArxDCan:
                         f"motor status={state.status_code}; completed={completed}"
                     )
                 position = float(state.pos)
-                velocity = float(state.vel)
+                _, velocity_feedback_scale = _velocity_range_scales(jc)
+                velocity = float(state.vel) * velocity_feedback_scale
                 if (
                     abs(position) > verify_tolerance
                     or abs(velocity) > verify_velocity
@@ -1186,9 +1238,10 @@ class ArxDCan:
                     raise RuntimeError(
                         f"{jc.name}: motor fault status={st.status_code}"
                     )
+                _, velocity_feedback_scale = _velocity_range_scales(jc)
                 _, torque_feedback_scale = _torque_range_scales(jc)
                 pos.append(jc.direction * st.pos)
-                vel.append(jc.direction * st.vel)
+                vel.append(jc.direction * st.vel * velocity_feedback_scale)
                 torq.append(jc.direction * st.torq * torque_feedback_scale)
             else:
                 if require_complete:

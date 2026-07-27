@@ -8,6 +8,10 @@ import math
 import time
 
 from arx_d_can.actuator import JointCfg, load_cfg
+from arx_d_can.actuator.arx_d_can import (
+    _torque_range_scales,
+    _velocity_range_scales,
+)
 from arx_d_can.driver import Controller
 
 
@@ -86,6 +90,8 @@ def read_diagnostics(
                 CTRL_MODE_REGISTER,
                 timeout_ms=timeout_ms,
             )
+            _, velocity_feedback_scale = _velocity_range_scales(joint)
+            _, torque_feedback_scale = _torque_range_scales(joint)
             results.append(
                 MotorDiagnostic(
                     name=joint.name,
@@ -93,9 +99,17 @@ def read_diagnostics(
                     feedback_id=joint.feedback_id,
                     status_code=int(state.status_code),
                     control_mode=int(control_mode),
-                    position=float(state.pos),
-                    velocity=float(state.vel),
-                    torque=float(state.torq),
+                    position=joint.direction * float(state.pos),
+                    velocity=(
+                        joint.direction
+                        * float(state.vel)
+                        * velocity_feedback_scale
+                    ),
+                    torque=(
+                        joint.direction
+                        * float(state.torq)
+                        * torque_feedback_scale
+                    ),
                     mos_temperature=float(state.t_mos),
                     rotor_temperature=float(state.t_rotor),
                 )

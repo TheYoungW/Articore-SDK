@@ -523,6 +523,38 @@ def test_custom_torque_range_rescales_mit_command_and_feedback() -> None:
     assert global_torque.tolist() == [4.0]
 
 
+def test_custom_velocity_range_rescales_mit_command_and_feedback() -> None:
+    motor = FakeDirectionalMotor()
+    motor.velocity = 6.0
+    joint = JointCfg(
+        name="joint1",
+        motor_id=1,
+        feedback_id=0x11,
+        model="4310",
+        velocity_range=10.0,
+    )
+    arm = make_uninitialized_arm(joint)
+    arm._motor_map = {"joint1": motor}
+    arm._ctrl_map = {"main": FakePollController()}
+    group = JointGroup(
+        "arm",
+        ["joint1"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.send_mit([0.0], vel=[2.0])
+    _, group_velocity, _ = group.read_state(request_feedback=False)
+    _, global_velocity, _ = arm.get_state(request_feedback=False)
+    direct_velocity = group.get_velocities(request_feedback=False)
+
+    assert motor.mit_commands == [(0.0, 6.0, 0.0, 0.0, 0.0)]
+    assert group_velocity.tolist() == [2.0]
+    assert global_velocity.tolist() == [2.0]
+    assert direct_velocity.tolist() == [2.0]
+
+
 @pytest.mark.parametrize("include_gripper", [False, True])
 def test_zero_tool_requests_feedback_for_selected_actuators(
     monkeypatch,
