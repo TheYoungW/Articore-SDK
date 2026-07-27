@@ -70,13 +70,14 @@ def test_yunyi_joint_torque_ranges_match_hardware() -> None:
 def test_yunyi_control_gains_follow_actuator_capability_tiers() -> None:
     high_damped = (120.0, 8.0, 0.010, 0.0025, 100.0, 0.3, 2.5)
     high_soft = (120.0, 8.0, 0.008, 0.002, 80.0, 0.2, 2.0)
-    medium_damped = (60.0, 4.0, 0.0125, 0.001, 150.0, 0.0, 1.8)
+    medium_joint3 = (60.0, 4.0, 0.0125, 0.001, 150.0, 0.0, 1.8)
+    medium_joint4 = (60.0, 4.0, 0.0125, 0.001, 180.0, 0.0, 1.8)
     low = (18.0, 2.0, 0.005, 0.002, 50.0, 1.0, 2.0)
     expected = [
         high_damped,
         high_soft,
-        medium_damped,
-        medium_damped,
+        medium_joint3,
+        medium_joint4,
         low,
         low,
         low,
