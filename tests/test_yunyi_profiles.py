@@ -2,6 +2,8 @@ from pathlib import Path
 import math
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from arx_d_can import ArxDCanArm, available_models, load_cfg
 
 
@@ -112,6 +114,13 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
     assert len([joint for joint in joints if joint.attrib["type"] == "prismatic"]) == 4
 
     for side in ("r", "l"):
+        joint4 = root.find(f"joint[@name='{side}-joint4']")
+        assert joint4 is not None
+        joint4_limit = joint4.find("limit")
+        assert joint4_limit is not None
+        assert float(joint4_limit.attrib["lower"]) == pytest.approx(-0.174)
+        assert float(joint4_limit.attrib["upper"]) == pytest.approx(math.radians(104.0))
+
         joint6 = root.find(f"joint[@name='{side}-joint6']")
         assert joint6 is not None
         limit = joint6.find("limit")
