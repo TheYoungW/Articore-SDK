@@ -125,8 +125,14 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
         assert joint4 is not None
         joint4_limit = joint4.find("limit")
         assert joint4_limit is not None
-        assert float(joint4_limit.attrib["lower"]) == pytest.approx(-0.174)
-        assert float(joint4_limit.attrib["upper"]) == pytest.approx(math.radians(104.0))
+        assert float(joint4_limit.attrib["lower"]) == pytest.approx(math.radians(-5.0))
+        assert float(joint4_limit.attrib["upper"]) == pytest.approx(math.radians(90.0))
+
+        profile_joint4 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
+            "joints"
+        ][3]
+        assert profile_joint4.lower_limit == pytest.approx(math.radians(-5.0))
+        assert profile_joint4.upper_limit == pytest.approx(math.radians(90.0))
 
         joint6 = root.find(f"joint[@name='{side}-joint6']")
         assert joint6 is not None

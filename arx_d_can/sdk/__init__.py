@@ -69,6 +69,8 @@ class JointMotorConfig:
     direction: float = 1.0
     torque_range: float | None = None
     velocity_range: float | None = None
+    lower_limit: float | None = None
+    upper_limit: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -119,6 +121,8 @@ def _joint_from_yaml(joint: JointCfg) -> JointMotorConfig:
         direction=joint.direction,
         torque_range=joint.torque_range,
         velocity_range=joint.velocity_range,
+        lower_limit=joint.lower_limit,
+        upper_limit=joint.upper_limit,
     )
 
 
@@ -266,6 +270,8 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             direction=joint.direction,
             torque_range=joint.torque_range,
             velocity_range=joint.velocity_range,
+            lower_limit=joint.lower_limit,
+            upper_limit=joint.upper_limit,
         )
         for joint in config.arm_joints
     ]
@@ -290,6 +296,8 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
                 direction=joint.direction,
                 torque_range=joint.torque_range,
                 velocity_range=joint.velocity_range,
+                lower_limit=joint.lower_limit,
+                upper_limit=joint.upper_limit,
             )
         )
         groups["gripper"] = {"joints": [joint.name]}
@@ -462,9 +470,15 @@ class ArxDCanArm:
         with self._state_lock:
             self._connected = False
             self._configured = False
-            self._enabled = False
             self._safe_holding = False
             self._watchdog_deadline = None
+            if error is None:
+                self._enabled = False
+            else:
+                # The bus is closed, but physical disable was not confirmed.
+                self._enabled = True
+                self._faulted = True
+                self._fault_reason = f"close failed: {error}"
         if error is not None:
             raise RuntimeError(f"ARX-D-CAN close failed: {error}") from error
 
@@ -495,14 +509,26 @@ class ArxDCanArm:
         self._stop_watchdog()
         try:
             self.robot.estop()
-        finally:
+        except Exception as exc:
             with self._gripper_command_lock:
                 if self._gripper_force_controller is not None:
                     self._gripper_force_controller.reset()
             with self._state_lock:
-                self._enabled = False
+                # Physical disable is unconfirmed. Keep a conservative
+                # software state instead of pretending the motors are safe.
+                self._enabled = True
+                self._faulted = True
+                self._fault_reason = f"disable failed: {exc}"
                 self._safe_holding = False
                 self._watchdog_deadline = None
+            raise
+        with self._gripper_command_lock:
+            if self._gripper_force_controller is not None:
+                self._gripper_force_controller.reset()
+        with self._state_lock:
+            self._enabled = False
+            self._safe_holding = False
+            self._watchdog_deadline = None
 
     def clear_fault(self) -> None:
         """Clear the SDK fault latch after healthy feedback is available."""
@@ -1058,3 +1084,4 @@ class ArxDCanArm:
         except Exception as exc:
             with self._state_lock:
                 self._fault_reason = f"{reason}; emergency disable error: {exc}"
+                self._enabled = True

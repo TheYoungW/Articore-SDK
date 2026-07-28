@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import yaml
@@ -152,6 +153,8 @@ class JointCfg:
     pos_kp: float = 0.0
     pos_ki: float = 0.0
     vlim: float = 0.0
+    lower_limit: float | None = None
+    upper_limit: float | None = None
 
 
 def _finite(value: Any, *, field: str) -> float:
@@ -196,6 +199,39 @@ def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
         if candidate.is_file():
             return candidate.resolve()
     raise FileNotFoundError(f"URDF not found for {hw_path}: {value}")
+
+
+def _apply_urdf_joint_limits(
+    urdf_path: Path | None,
+    joints: list[JointCfg],
+) -> None:
+    """Attach URDF position limits to configured joints in logical coordinates."""
+    if urdf_path is None:
+        return
+    root = ET.parse(urdf_path).getroot()
+    urdf_joints = {
+        element.attrib.get("name"): element
+        for element in root.findall("joint")
+    }
+    for joint in joints:
+        element = urdf_joints.get(joint.name)
+        if element is None:
+            continue
+        limit = element.find("limit")
+        if limit is None:
+            continue
+        lower_text = limit.attrib.get("lower")
+        upper_text = limit.attrib.get("upper")
+        if lower_text is None or upper_text is None:
+            continue
+        lower = _finite(lower_text, field=f"{joint.name}.limit.lower")
+        upper = _finite(upper_text, field=f"{joint.name}.limit.upper")
+        if lower > upper:
+            raise ValueError(
+                f"{joint.name} URDF lower limit must not exceed upper limit"
+            )
+        joint.lower_limit = lower
+        joint.upper_limit = upper
 
 
 def _optional_mapping(data: dict[str, Any], field: str) -> dict[str, Any]:
@@ -336,6 +372,7 @@ def load_cfg(
 
     groups = _validate_groups(data.get("groups"), joints, path=hw_path)
     urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
+    _apply_urdf_joint_limits(urdf_path, joints)
     end_effector_frame = str(
         data.get("end_effector_frame", "gripper_end")
     ).strip()
@@ -527,7 +564,12 @@ class JointGroup:
             "not all motors entered ENABLED state: " + "; ".join(errors)
         )
 
-    def disable(self) -> None:
+    def disable(
+        self,
+        poll_max: int = 20,
+        poll_interval: float = 0.05,
+    ) -> None:
+        """Disable every motor and verify fresh DISABLED feedback."""
         errors = []
         for jc in self._jcfgs:
             try:
@@ -535,6 +577,11 @@ class JointGroup:
             except Exception as exc:
                 errors.append(f"{jc.name}: {exc}")
         time.sleep(0.05)
+        for jc in self._jcfgs:
+            try:
+                self._wait_for_disabled_state(jc, poll_max, poll_interval)
+            except Exception as exc:
+                errors.append(f"{jc.name}: {exc}")
         if errors:
             raise RuntimeError("failed to disable motors: " + "; ".join(errors))
 
@@ -588,7 +635,7 @@ class JointGroup:
         status = None if last_state is None else last_state.status_code
         detail = f", last_error={last_error}" if last_error is not None else ""
         raise RuntimeError(
-            f"disabled feedback unavailable after clear_error, status={status}{detail}"
+            f"fresh DISABLED feedback unavailable, status={status}{detail}"
         )
 
     def _wait_for_enabled_state(
@@ -677,6 +724,14 @@ class JointGroup:
         time.sleep(0.2)
         return ok
 
+    @staticmethod
+    def _clamp_position(joint: JointCfg, position: float) -> float:
+        if joint.lower_limit is not None:
+            position = max(position, joint.lower_limit)
+        if joint.upper_limit is not None:
+            position = min(position, joint.upper_limit)
+        return position
+
     # ── MIT 发送 ────────────────────────────────────────────────────────
 
     def send_mit(
@@ -704,8 +759,9 @@ class JointGroup:
             try:
                 velocity_command_scale, _ = _velocity_range_scales(jc)
                 torque_command_scale, _ = _torque_range_scales(jc)
+                limited_position = self._clamp_position(jc, float(pos[i]))
                 self._mm[jc.name].send_mit(
-                    jc.direction * float(pos[i]),
+                    jc.direction * limited_position,
                     jc.direction * float(vel[i]) * velocity_command_scale,
                     float(kp[i]),
                     float(kd[i]),
@@ -730,8 +786,10 @@ class JointGroup:
         vlim = np.asarray(vlim, dtype=np.float64).reshape(-1)
         for i in range(min(len(pos), len(vlim))):
             try:
-                self._mm[self._jcfgs[i].name].send_pos_vel(
-                    self._jcfgs[i].direction * float(pos[i]),
+                jc = self._jcfgs[i]
+                limited_position = self._clamp_position(jc, float(pos[i]))
+                self._mm[jc.name].send_pos_vel(
+                    jc.direction * limited_position,
                     float(vlim[i]),
                 )
             except CallError:
@@ -1022,17 +1080,48 @@ class ArxDCan:
             ) from exc
         time.sleep(0.05)
 
-    def disable_all(self) -> None:
+    def disable_all(
+        self,
+        poll_max: int = 20,
+        poll_interval: float = 0.05,
+    ) -> None:
+        """Disable all active motors and verify fresh DISABLED feedback."""
         errors = []
         for jc in self._all_joints:
             motor = self._motor_map.get(jc.name)
             if motor is None:
+                errors.append(f"{jc.name}: motor handle unavailable")
                 continue
             try:
                 motor.disable()
             except Exception as exc:
                 errors.append(f"{jc.name}: {exc}")
         time.sleep(0.05)
+        for jc in self._all_joints:
+            motor = self._motor_map.get(jc.name)
+            if motor is None:
+                continue
+            last_state = None
+            last_error = None
+            for _ in range(max(1, poll_max)):
+                try:
+                    last_state = motor.request_fresh_state(timeout_ms=50)
+                    if last_state is not None and last_state.status_code == 0:
+                        break
+                except Exception as exc:
+                    last_error = exc
+                time.sleep(max(0.0, poll_interval))
+            else:
+                status = None if last_state is None else last_state.status_code
+                detail = (
+                    f", last_error={last_error}"
+                    if last_error is not None
+                    else ""
+                )
+                errors.append(
+                    f"{jc.name}: fresh DISABLED feedback unavailable, "
+                    f"status={status}{detail}"
+                )
         if errors:
             raise RuntimeError("failed to disable motors: " + "; ".join(errors))
 
@@ -1101,7 +1190,10 @@ class ArxDCan:
         if not np.isfinite(verify_velocity) or verify_velocity < 0.0:
             raise ValueError("verify_velocity must be finite and non-negative")
 
-        self.disable_all()
+        self.disable_all(
+            poll_max=poll_max,
+            poll_interval=poll_interval,
+        )
         time.sleep(0.3)
 
         selected = set(joint_names or [joint.name for joint in self._all_joints])

@@ -73,6 +73,7 @@ class FakeZeroMotor:
         clear_error=None,
         velocity=0.0,
         zero_feedback=None,
+        disable_effective=True,
     ):
         self.position = position
         self.velocity = velocity
@@ -80,6 +81,7 @@ class FakeZeroMotor:
         self.status_code = status_code
         self.clear_error_exception = clear_error
         self.zero_feedback = list(zero_feedback or ())
+        self.disable_effective = disable_effective
         self.zero_feedback_index = 0
         self.fresh_requests = 0
         self.clear_error_calls = 0
@@ -89,7 +91,7 @@ class FakeZeroMotor:
 
     def disable(self):
         self.disable_calls += 1
-        if self.status_code in (0, 1):
+        if self.disable_effective and self.status_code in (0, 1):
             self.status_code = 0
 
     def enable(self):
@@ -206,7 +208,10 @@ def test_zero_preflight_prevents_partial_writes(monkeypatch):
     second = FakeZeroMotor(feedback=False)
     arm = make_zero_arm(first, second)
 
-    with pytest.raises(RuntimeError, match="joint2: healthy feedback unavailable"):
+    with pytest.raises(
+        RuntimeError,
+        match="joint2: fresh DISABLED feedback unavailable",
+    ):
         arm.set_zero(poll_max=2, poll_interval=0.0)
 
     assert first.zero_writes == 0
@@ -227,7 +232,8 @@ def test_zero_writes_and_verifies_selected_motor(monkeypatch):
 
     assert completed == ("joint1",)
     assert first.zero_writes == 1
-    assert first.fresh_requests == 4  # one preflight plus three verification frames
+    # One disable confirmation, one preflight, then three zero verification frames.
+    assert first.fresh_requests == 5
     assert second.zero_writes == 0
 
 
@@ -353,6 +359,42 @@ def test_joint_group_enable_rejects_faulted_motor_and_rolls_back(monkeypatch):
     assert second.status_code == 12
     assert first.disable_calls >= 1
     assert second.disable_calls >= 1
+
+
+def test_joint_group_disable_verifies_fresh_disabled_feedback(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    first = FakeZeroMotor(status_code=1)
+    second = FakeZeroMotor(status_code=1)
+    arm = make_zero_arm(first, second)
+    group = JointGroup(
+        "arm",
+        ["joint1", "joint2"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.disable(poll_max=2, poll_interval=0.0)
+
+    assert first.status_code == 0
+    assert second.status_code == 0
+    assert first.fresh_requests == 1
+    assert second.fresh_requests == 1
+
+
+def test_disable_all_rejects_unconfirmed_disabled_motor(monkeypatch):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    motor = FakeZeroMotor(status_code=1, disable_effective=False)
+    arm = make_zero_arm(motor)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"joint1: fresh DISABLED feedback unavailable, status=1",
+    ):
+        arm.disable_all(poll_max=2, poll_interval=0.0)
+
+    assert motor.disable_calls == 1
+    assert motor.fresh_requests == 2
 
 
 @pytest.mark.parametrize("status_code", [0, 1])
@@ -491,6 +533,35 @@ def test_reversed_joint_transforms_commands_and_feedback() -> None:
         assert positions.tolist() == [0.4]
         assert velocities.tolist() == [0.2]
         assert torques.tolist() == [0.3]
+
+
+def test_driver_clamps_mit_and_pos_vel_positions_before_direction_mapping() -> None:
+    motor = FakeDirectionalMotor()
+    joint = JointCfg(
+        name="joint1",
+        motor_id=1,
+        feedback_id=0x11,
+        model="4340P",
+        direction=-1,
+        lower_limit=-0.1,
+        upper_limit=0.8,
+    )
+    arm = make_uninitialized_arm(joint)
+    arm._motor_map = {"joint1": motor}
+    arm._ctrl_map = {"main": FakePollController()}
+    group = JointGroup(
+        "arm",
+        ["joint1"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.send_mit([-1.0])
+    group.send_pos_vel([1.0], vlim=[1.5])
+
+    assert motor.mit_commands == [(0.1, -0.0, 0.0, 0.0, -0.0)]
+    assert motor.pos_vel_commands == [(-0.8, 1.5)]
 
 
 def test_custom_torque_range_rescales_mit_command_and_feedback() -> None:

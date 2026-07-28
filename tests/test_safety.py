@@ -98,6 +98,7 @@ class FakeRobot:
         self.position = position
         self.last_state_joint_names: list[str] | None = None
         self.clear_error_joint_names: list[str] | None = None
+        self.estop_error: Exception | None = None
 
     def connect(self) -> None:
         pass
@@ -108,6 +109,8 @@ class FakeRobot:
 
     def estop(self) -> None:
         self.estop_calls += 1
+        if self.estop_error is not None:
+            raise self.estop_error
         self.arm.enabled = False
 
     def clear_errors(self, *, joint_names=None):
@@ -201,6 +204,33 @@ def test_send_failure_disables_and_latches_fault() -> None:
         assert robot.estop_calls >= 1
     finally:
         arm.close()
+
+
+def test_disable_failure_remains_enabled_and_records_reason() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    robot.estop_error = RuntimeError("disabled feedback missing")
+    try:
+        with pytest.raises(RuntimeError, match="disabled feedback missing"):
+            arm.disable()
+        assert arm.enabled
+        assert arm.faulted
+        assert arm.fault_reason == "disable failed: disabled feedback missing"
+    finally:
+        robot.estop_error = None
+        arm.close()
+
+
+def test_close_failure_does_not_claim_confirmed_disable() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    robot.estop_error = RuntimeError("disabled feedback missing")
+
+    with pytest.raises(RuntimeError, match="disabled feedback missing"):
+        arm.close()
+
+    assert not arm.connected
+    assert arm.enabled
+    assert arm.faulted
+    assert "close failed" in (arm.fault_reason or "")
 
 
 @pytest.mark.parametrize("mode", ["pv", "mit"])
