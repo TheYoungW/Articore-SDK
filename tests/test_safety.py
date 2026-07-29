@@ -99,6 +99,7 @@ class FakeRobot:
         self.last_state_joint_names: list[str] | None = None
         self.clear_error_joint_names: list[str] | None = None
         self.estop_error: Exception | None = None
+        self.state_error: Exception | None = None
 
     def connect(self) -> None:
         pass
@@ -126,6 +127,8 @@ class FakeRobot:
         require_complete=False,
         joint_names=None,
     ):
+        if self.state_error is not None:
+            raise self.state_error
         self.last_state_joint_names = None if joint_names is None else list(joint_names)
         count = 1 if joint_names is None else len(joint_names)
         values = np.full(count, self.position)
@@ -164,7 +167,7 @@ def wait_for_fault(arm: ArxDCanArm, timeout: float = 0.5) -> None:
     assert arm.faulted
 
 
-def test_watchdog_holds_actual_position_and_latches_fault() -> None:
+def test_watchdog_holds_last_successful_command_without_disabling() -> None:
     arm, robot = make_arm()
     try:
         arm.send_joint_positions([0.0])
@@ -176,7 +179,7 @@ def test_watchdog_holds_actual_position_and_latches_fault() -> None:
         assert arm.safe_holding
         assert "watchdog" in (arm.fault_reason or "")
         assert robot.estop_calls == 0
-        np.testing.assert_allclose(robot.arm.sent_pos_vel[-1], [robot.position])
+        np.testing.assert_allclose(robot.arm.sent_pos_vel[-1], [0.0])
     finally:
         arm.close()
 
@@ -193,15 +196,48 @@ def test_watchdog_can_be_configured_to_disable() -> None:
         arm.close()
 
 
-def test_send_failure_disables_and_latches_fault() -> None:
+def test_send_failure_holds_last_command_until_feedback_recovers() -> None:
     arm, robot = make_arm(timeout=1.0, grace=1.0)
-    robot.arm.send_error = RuntimeError("simulated bus failure")
     try:
-        with pytest.raises(RuntimeError, match="simulated bus failure"):
-            arm.send_joint_positions([0.0])
+        arm.send_joint_positions([0.2])
+        robot.arm.send_error = RuntimeError("simulated bus failure")
+        arm.send_joint_positions([0.4])
         assert arm.faulted
-        assert not arm.enabled
-        assert robot.estop_calls >= 1
+        assert arm.enabled
+        assert arm.safe_holding
+        assert robot.estop_calls == 0
+        arm.send_joint_positions([0.6])
+
+        robot.arm.send_error = None
+        arm.read_state()
+        assert not arm.faulted
+        assert not arm.safe_holding
+        assert arm.enabled
+        arm.send_joint_positions([0.5])
+        np.testing.assert_allclose(robot.arm.sent_pos_vel[-1], [0.5])
+    finally:
+        arm.close()
+
+
+def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    try:
+        arm.send_joint_positions([0.3])
+        last_state = arm.read_state()
+        robot.state_error = RuntimeError("missing motor IDs: 1")
+        for _ in range(3):
+            assert arm.read_state() is last_state
+
+        assert arm.faulted
+        assert arm.safe_holding
+        assert arm.enabled
+        assert robot.estop_calls == 0
+
+        robot.state_error = None
+        arm.read_state()
+        assert not arm.faulted
+        assert not arm.safe_holding
+        assert arm.enabled
     finally:
         arm.close()
 
@@ -482,20 +518,21 @@ def test_clear_motor_faults_clears_hardware_and_leaves_arm_disabled() -> None:
         arm.close()
 
 
-def test_safe_hold_send_failure_promotes_to_hard_fault() -> None:
+def test_safe_hold_send_failure_keeps_retrying_without_disabling() -> None:
     arm, robot = make_arm()
     try:
         arm.send_joint_positions([0.0])
         robot.arm.send_error = RuntimeError("hold bus failure")
         wait_for_fault(arm)
-        deadline = time.monotonic() + 0.2
-        while arm.safe_holding and time.monotonic() < deadline:
-            time.sleep(0.005)
         assert arm.faulted
+        assert arm.safe_holding
+        assert arm.enabled
+        assert robot.estop_calls == 0
+
+        robot.arm.send_error = None
+        arm.read_state()
+        assert not arm.faulted
         assert not arm.safe_holding
-        assert not arm.enabled
-        assert "safe hold command failed" in (arm.fault_reason or "")
-        assert robot.estop_calls >= 1
     finally:
         arm.close()
 

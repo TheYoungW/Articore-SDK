@@ -387,6 +387,7 @@ class ArxDCanArm:
         self._feedback_error_count = 0
         self._last_joint_command: tuple[float, ...] | None = None
         self._last_gripper_command: float | None = None
+        self._last_state: ArxDCanState | None = None
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
         self._gripper_command_lock = threading.RLock()
         self._gripper_force_controller: GripperForceController | None = None
@@ -445,6 +446,7 @@ class ArxDCanArm:
             self._fault_reason = None
             self._safe_holding = False
             self._feedback_error_count = 0
+            self._last_state = None
 
     def configure(self, mode: str | None = None) -> None:
         self._require_operational()
@@ -622,11 +624,17 @@ class ArxDCanArm:
             if self._enabled and self._feedback_error_count >= max(
                 1, self.config.feedback_fault_threshold
             ):
-                self._trip_fault(
+                self._begin_safe_hold(
                     f"feedback failed {self._feedback_error_count} consecutive times: {exc}"
                 )
+            with self._state_lock:
+                last_state = self._last_state
+            if self._enabled and last_state is not None:
+                return last_state
             raise
         self._feedback_error_count = 0
+        if self._safe_holding:
+            self._resume_from_safe_hold()
         arm_count = len(self.config.arm_joints)
         arm_pos = pos[:arm_count]
         arm_vel = vel[:arm_count]
@@ -641,7 +649,7 @@ class ArxDCanArm:
                 velocity=float(vel[arm_count]),
                 torque=float(tau[arm_count]),
             )
-        return ArxDCanState(
+        state = ArxDCanState(
             arm=JointState(
                 names=self.config.joint_names,
                 positions=tuple(float(value) for value in arm_pos),
@@ -650,6 +658,9 @@ class ArxDCanArm:
             ),
             gripper=gripper_state,
         )
+        with self._state_lock:
+            self._last_state = state
+        return state
 
     def scan_ids(
         self,
@@ -697,6 +708,9 @@ class ArxDCanArm:
         this packet only. Omitting either argument keeps that gain at its
         configured YAML value.
         """
+        self._require_connected()
+        if self._safe_holding:
+            return
         self._require_operational()
         if require_enabled and not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
@@ -797,7 +811,11 @@ class ArxDCanArm:
                 )
                 return
         except Exception as exc:
-            self._trip_fault(f"joint command failed: {exc}")
+            holding = self._begin_safe_hold(f"joint command failed: {exc}")
+            with self._state_lock:
+                has_hold_target = self._last_joint_command is not None
+            if holding and has_hold_target:
+                return
             raise
         raise ValueError("mode must be 'posvel' or 'mit'")
 
@@ -833,6 +851,9 @@ class ArxDCanArm:
         input_max: float = 1000.0,
         require_enabled: bool = True,
     ) -> None:
+        self._require_connected()
+        if self._safe_holding:
+            return
         self._require_operational()
         if self.config.gripper is None:
             return
@@ -895,7 +916,11 @@ class ArxDCanArm:
                     )
                 except Exception:
                     self._gripper_force_controller.reset()
-                    self._trip_fault("gripper command failed")
+                    holding = self._begin_safe_hold("gripper command failed")
+                    with self._state_lock:
+                        has_hold_target = self._last_gripper_command is not None
+                    if holding and has_hold_target:
+                        return
                     raise
                 self._record_successful_command(
                     gripper_position=float(command.position)
@@ -907,7 +932,11 @@ class ArxDCanArm:
                     strict=True,
                 )
             except Exception as exc:
-                self._trip_fault(f"gripper command failed: {exc}")
+                holding = self._begin_safe_hold(f"gripper command failed: {exc}")
+                with self._state_lock:
+                    has_hold_target = self._last_gripper_command is not None
+                if holding and has_hold_target:
+                    return
                 raise
             self._record_successful_command(gripper_position=target)
 
@@ -961,7 +990,9 @@ class ArxDCanArm:
                 )
 
     def _start_watchdog(self) -> None:
-        if not self.config.watchdog_enabled:
+        with self._state_lock:
+            safe_holding = self._safe_holding
+        if not self.config.watchdog_enabled and not safe_holding:
             return
         if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
             return
@@ -986,6 +1017,12 @@ class ArxDCanArm:
             self._watchdog_thread = None
 
     def _watchdog_loop(self) -> None:
+        with self._state_lock:
+            safe_holding = self._safe_holding
+        if safe_holding:
+            self._safe_hold_loop()
+            return
+
         poll_s = max(0.005, self.config.watchdog_poll_s)
         while not self._watchdog_stop.wait(poll_s):
             with self._state_lock:
@@ -997,64 +1034,59 @@ class ArxDCanArm:
                     f"{self.config.command_timeout_s:.3f}s"
                 )
                 if self.config.watchdog_action.strip().lower() == "safe_hold":
-                    self._enter_safe_hold(reason, expected_deadline=deadline)
+                    if self._begin_safe_hold(
+                        reason,
+                        expected_deadline=deadline,
+                    ):
+                        self._safe_hold_loop()
                 else:
                     self._trip_fault(reason)
                 return
 
-    def _enter_safe_hold(self, reason: str, *, expected_deadline: float) -> None:
-        arm_count = len(self.config.arm_joints)
-        joint_target: tuple[float, ...] | None = None
-        gripper_target: float | None = None
-        attempts = max(1, self.config.feedback_fault_threshold)
-        for attempt in range(attempts):
-            try:
-                positions, _, _ = self.robot.get_state(
-                    request_feedback=True,
-                    require_complete=True,
-                    joint_names=self._active_joint_names(),
-                )
-                joint_target = tuple(float(value) for value in positions[:arm_count])
-                gripper_target = (
-                    float(positions[arm_count])
-                    if self.enable_gripper
-                    and self.config.gripper is not None
-                    and len(positions) > arm_count
-                    else None
-                )
-                break
-            except Exception:
-                if attempt + 1 < attempts:
-                    time.sleep(min(0.02, self.config.watchdog_poll_s))
-
-        if joint_target is None:
-            with self._state_lock:
-                joint_target = self._last_joint_command
-                gripper_target = self._last_gripper_command
-            if joint_target is None:
-                self._trip_fault(f"{reason}; current position unavailable")
-                return
-
+    def _begin_safe_hold(
+        self,
+        reason: str,
+        *,
+        expected_deadline: float | None = None,
+    ) -> bool:
+        called_from_watchdog = threading.current_thread() is self._watchdog_thread
+        if not called_from_watchdog:
+            self._stop_watchdog()
         with self._state_lock:
             if (
                 not self._enabled
-                or self._watchdog_deadline != expected_deadline
-                or time.monotonic() <= expected_deadline
+                or (
+                    expected_deadline is not None
+                    and (
+                        self._watchdog_deadline != expected_deadline
+                        or time.monotonic() <= expected_deadline
+                    )
+                )
             ):
-                return
+                return False
             self._faulted = True
             self._safe_holding = True
-            self._fault_reason = f"{reason}; safe hold active"
+            self._fault_reason = f"{reason}; holding last successful command"
             self._watchdog_deadline = None
+        if not called_from_watchdog:
+            self._start_watchdog()
+        return True
 
+    def _safe_hold_loop(self) -> None:
         period = 1.0 / self.config.safe_hold_hz
         while not self._watchdog_stop.is_set():
+            with self._state_lock:
+                if not self._safe_holding or not self._enabled:
+                    return
+                joint_target = self._last_joint_command
+                gripper_target = self._last_gripper_command
             try:
-                target = np.asarray(joint_target, dtype=np.float64)
-                if self._mode == "mit":
-                    self.robot.arm.send_mit(target, strict=True)
-                else:
-                    self.robot.arm.send_pos_vel(target, strict=True)
+                if joint_target is not None:
+                    target = np.asarray(joint_target, dtype=np.float64)
+                    if self._mode == "mit":
+                        self.robot.arm.send_mit(target, strict=False)
+                    else:
+                        self.robot.arm.send_pos_vel(target, strict=False)
                 if gripper_target is not None:
                     kp = self.config.gripper_force_control.hold_kp
                     kd = self.config.gripper_force_control.hold_kd
@@ -1062,12 +1094,33 @@ class ArxDCanArm:
                         np.array([gripper_target]),
                         kp=np.array([kp]),
                         kd=np.array([kd]),
-                        strict=True,
+                        strict=False,
                     )
             except Exception as exc:
-                self._trip_fault(f"safe hold command failed: {exc}")
-                return
+                with self._state_lock:
+                    if self._safe_holding:
+                        marker = "; hold retry failed:"
+                        if marker not in (self._fault_reason or ""):
+                            self._fault_reason = (
+                                f"{self._fault_reason}{marker} {exc}"
+                            )
             self._watchdog_stop.wait(period)
+
+    def _resume_from_safe_hold(self) -> None:
+        self._stop_watchdog()
+        with self._state_lock:
+            if not self._safe_holding:
+                return
+            self._faulted = False
+            self._safe_holding = False
+            self._fault_reason = None
+            self._feedback_error_count = 0
+            self._watchdog_deadline = (
+                time.monotonic() + self.config.command_timeout_s
+                if self._enabled
+                else None
+            )
+        self._start_watchdog()
 
     def _trip_fault(self, reason: str) -> None:
         with self._state_lock:
