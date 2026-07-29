@@ -1356,6 +1356,28 @@ class ArxDCan:
     def get_torques(self) -> np.ndarray:
         return self.get_state()[2]
 
+    def get_status_codes(
+        self,
+        joint_names: Optional[List[str]] = None,
+    ) -> dict[str, int]:
+        """Return the latest motor status for selected joints without requesting frames."""
+        joints_by_name = {joint.name: joint for joint in self._all_joints}
+        if joint_names is None:
+            selected_joints = self._all_joints
+        else:
+            unknown = set(joint_names).difference(joints_by_name)
+            if unknown:
+                raise ValueError(f"unknown joints: {', '.join(sorted(unknown))}")
+            selected_joints = [joints_by_name[name] for name in joint_names]
+
+        statuses: dict[str, int] = {}
+        for joint in selected_joints:
+            state = self._motor_map[joint.name].get_state()
+            if state is None:
+                raise RuntimeError(f"{joint.name}: no motor feedback")
+            statuses[joint.name] = int(state.status_code)
+        return statuses
+
     # ── 生命周期 ────────────────────────────────────────────────────────
 
     def disconnect(self) -> None:

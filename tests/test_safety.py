@@ -100,6 +100,7 @@ class FakeRobot:
         self.clear_error_joint_names: list[str] | None = None
         self.estop_error: Exception | None = None
         self.state_error: Exception | None = None
+        self.status_codes = {"joint1": 1, "gripper": 1}
 
     def connect(self) -> None:
         pass
@@ -133,6 +134,10 @@ class FakeRobot:
         count = 1 if joint_names is None else len(joint_names)
         values = np.full(count, self.position)
         return values, values.copy(), values.copy()
+
+    def get_status_codes(self, *, joint_names=None):
+        names = ["joint1"] if joint_names is None else list(joint_names)
+        return {name: self.status_codes[name] for name in names}
 
 
 def make_arm(
@@ -234,6 +239,34 @@ def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover()
         assert robot.estop_calls == 0
 
         robot.state_error = None
+        arm.read_state()
+        assert not arm.faulted
+        assert not arm.safe_holding
+        assert arm.enabled
+    finally:
+        arm.close()
+
+
+def test_feedback_recovery_stays_in_hold_until_every_motor_is_enabled() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    try:
+        arm.send_joint_positions([0.3])
+        arm.read_state()
+        robot.state_error = RuntimeError("missing motor IDs: 1")
+        for _ in range(3):
+            arm.read_state()
+        assert arm.safe_holding
+
+        robot.state_error = None
+        robot.status_codes["joint1"] = 0
+        arm.read_state()
+        assert arm.faulted
+        assert arm.safe_holding
+        assert arm.enabled
+        assert "unexpectedly disabled" in (arm.fault_reason or "")
+        assert robot.estop_calls == 0
+
+        robot.status_codes["joint1"] = 1
         arm.read_state()
         assert not arm.faulted
         assert not arm.safe_holding

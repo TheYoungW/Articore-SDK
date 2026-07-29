@@ -381,6 +381,7 @@ class ArxDCanArm:
         self._fault_reason: str | None = None
         self._safe_holding = False
         self._state_lock = threading.RLock()
+        self._io_lock = threading.RLock()
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: threading.Thread | None = None
         self._watchdog_deadline: float | None = None
@@ -600,25 +601,32 @@ class ArxDCanArm:
         self._require_operational()
         normalized = mode.strip().lower().replace("_", "")
         if normalized in ("posvel", "pv"):
-            if not self.robot.arm.mode_pos_vel():
-                raise RuntimeError("ARX-D-CAN arm did not enter POS_VEL mode")
+            with self._io_lock:
+                if not self.robot.arm.mode_pos_vel():
+                    raise RuntimeError("ARX-D-CAN arm did not enter POS_VEL mode")
             self._mode = "posvel"
             return
         if normalized == "mit":
-            if not self.robot.arm.mode_mit():
-                raise RuntimeError("ARX-D-CAN arm did not enter MIT mode")
+            with self._io_lock:
+                if not self.robot.arm.mode_mit():
+                    raise RuntimeError("ARX-D-CAN arm did not enter MIT mode")
             self._mode = "mit"
             return
         raise ValueError("mode must be 'posvel' or 'mit'")
 
     def read_state(self, *, request_feedback: bool = True) -> ArxDCanState:
         self._require_connected()
+        active_joint_names = self._active_joint_names()
         try:
-            pos, vel, tau = self.robot.get_state(
-                request_feedback=request_feedback,
-                require_complete=request_feedback,
-                joint_names=self._active_joint_names(),
-            )
+            with self._io_lock:
+                pos, vel, tau = self.robot.get_state(
+                    request_feedback=request_feedback,
+                    require_complete=request_feedback,
+                    joint_names=active_joint_names,
+                )
+                status_codes = self.robot.get_status_codes(
+                    joint_names=active_joint_names,
+                )
         except Exception as exc:
             self._feedback_error_count += 1
             if self._enabled and self._feedback_error_count >= max(
@@ -633,7 +641,22 @@ class ArxDCanArm:
                 return last_state
             raise
         self._feedback_error_count = 0
-        if self._safe_holding:
+        disabled_motors = [
+            name for name, status in status_codes.items() if status == 0
+        ]
+        if self._enabled and disabled_motors:
+            reason = (
+                "motors unexpectedly disabled after feedback recovery: "
+                + ", ".join(disabled_motors)
+            )
+            if not self._safe_holding:
+                self._begin_safe_hold(reason)
+            else:
+                with self._state_lock:
+                    self._fault_reason = (
+                        f"{reason}; holding last successful command"
+                    )
+        elif self._safe_holding:
             self._resume_from_safe_hold()
         arm_count = len(self.config.arm_joints)
         arm_pos = pos[:arm_count]
@@ -782,11 +805,12 @@ class ArxDCanArm:
             if active_mode in ("posvel", "pv"):
                 if self._mode != "posvel":
                     self.configure_mode("posvel")
-                self.robot.arm.send_pos_vel(
-                    np.array([target[joint.name] for joint in self.config.arm_joints]),
-                    vlim=velocity_limit_target,
-                    strict=True,
-                )
+                with self._io_lock:
+                    self.robot.arm.send_pos_vel(
+                        np.array([target[joint.name] for joint in self.config.arm_joints]),
+                        vlim=velocity_limit_target,
+                        strict=True,
+                    )
                 self._record_successful_command(
                     joint_positions=tuple(
                         target[joint.name] for joint in self.config.arm_joints
@@ -796,14 +820,15 @@ class ArxDCanArm:
             if active_mode == "mit":
                 if self._mode != "mit":
                     self.configure_mode("mit")
-                self.robot.arm.send_mit(
-                    np.array([target[joint.name] for joint in self.config.arm_joints]),
-                    vel=velocity_target,
-                    kp=mit_kp_target,
-                    kd=mit_kd_target,
-                    tau=torque_target,
-                    strict=True,
-                )
+                with self._io_lock:
+                    self.robot.arm.send_mit(
+                        np.array([target[joint.name] for joint in self.config.arm_joints]),
+                        vel=velocity_target,
+                        kp=mit_kp_target,
+                        kd=mit_kd_target,
+                        tau=torque_target,
+                        strict=True,
+                    )
                 self._record_successful_command(
                     joint_positions=tuple(
                         target[joint.name] for joint in self.config.arm_joints
@@ -875,6 +900,9 @@ class ArxDCanArm:
         *,
         require_enabled: bool = True,
     ) -> None:
+        self._require_connected()
+        if self._safe_holding:
+            return
         self._require_operational()
         if self.config.gripper is None:
             return
@@ -896,9 +924,10 @@ class ArxDCanArm:
             if require_enabled and not self._enabled:
                 raise RuntimeError("ARX-D-CAN arm is not enabled")
             if self._gripper_force_controller is not None:
-                position, _, torque = self.robot.gripper.read_state(
-                    request_feedback=True
-                )
+                with self._io_lock:
+                    position, _, torque = self.robot.gripper.read_state(
+                        request_feedback=True
+                    )
                 if len(position) != 1 or len(torque) != 1:
                     raise RuntimeError("gripper feedback must contain exactly one motor")
                 command = self._gripper_force_controller.update(
@@ -908,12 +937,13 @@ class ArxDCanArm:
                     now=time.monotonic(),
                 )
                 try:
-                    self.robot.gripper.send_mit(
-                        np.array([command.position]),
-                        kp=np.array([command.kp]),
-                        kd=np.array([command.kd]),
-                        strict=True,
-                    )
+                    with self._io_lock:
+                        self.robot.gripper.send_mit(
+                            np.array([command.position]),
+                            kp=np.array([command.kp]),
+                            kd=np.array([command.kd]),
+                            strict=True,
+                        )
                 except Exception:
                     self._gripper_force_controller.reset()
                     holding = self._begin_safe_hold("gripper command failed")
@@ -927,10 +957,11 @@ class ArxDCanArm:
                 )
                 return
             try:
-                self.robot.gripper.send_mit(
-                    np.array([target]),
-                    strict=True,
-                )
+                with self._io_lock:
+                    self.robot.gripper.send_mit(
+                        np.array([target]),
+                        strict=True,
+                    )
             except Exception as exc:
                 holding = self._begin_safe_hold(f"gripper command failed: {exc}")
                 with self._state_lock:
@@ -1081,21 +1112,22 @@ class ArxDCanArm:
                 joint_target = self._last_joint_command
                 gripper_target = self._last_gripper_command
             try:
-                if joint_target is not None:
-                    target = np.asarray(joint_target, dtype=np.float64)
-                    if self._mode == "mit":
-                        self.robot.arm.send_mit(target, strict=False)
-                    else:
-                        self.robot.arm.send_pos_vel(target, strict=False)
-                if gripper_target is not None:
-                    kp = self.config.gripper_force_control.hold_kp
-                    kd = self.config.gripper_force_control.hold_kd
-                    self.robot.gripper.send_mit(
-                        np.array([gripper_target]),
-                        kp=np.array([kp]),
-                        kd=np.array([kd]),
-                        strict=False,
-                    )
+                with self._io_lock:
+                    if joint_target is not None:
+                        target = np.asarray(joint_target, dtype=np.float64)
+                        if self._mode == "mit":
+                            self.robot.arm.send_mit(target, strict=False)
+                        else:
+                            self.robot.arm.send_pos_vel(target, strict=False)
+                    if gripper_target is not None:
+                        kp = self.config.gripper_force_control.hold_kp
+                        kd = self.config.gripper_force_control.hold_kd
+                        self.robot.gripper.send_mit(
+                            np.array([gripper_target]),
+                            kp=np.array([kp]),
+                            kd=np.array([kd]),
+                            strict=False,
+                        )
             except Exception as exc:
                 with self._state_lock:
                     if self._safe_holding:
