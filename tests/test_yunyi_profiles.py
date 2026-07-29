@@ -121,6 +121,17 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
     assert len([joint for joint in joints if joint.attrib["type"] == "prismatic"]) == 4
 
     for side in ("r", "l"):
+        joint3 = root.find(f"joint[@name='{side}-joint3']")
+        assert joint3 is not None
+        joint3_limit = joint3.find("limit")
+        assert joint3_limit is not None
+        assert float(joint3_limit.attrib["lower"]) == pytest.approx(
+            math.radians(-145.0)
+        )
+        assert float(joint3_limit.attrib["upper"]) == pytest.approx(
+            math.radians(145.0)
+        )
+
         joint4 = root.find(f"joint[@name='{side}-joint4']")
         assert joint4 is not None
         joint4_limit = joint4.find("limit")
@@ -131,6 +142,11 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
         profile_joint4 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
             "joints"
         ][3]
+        profile_joint3 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
+            "joints"
+        ][2]
+        assert profile_joint3.lower_limit == pytest.approx(math.radians(-145.0))
+        assert profile_joint3.upper_limit == pytest.approx(math.radians(145.0))
         assert profile_joint4.lower_limit == pytest.approx(math.radians(-5.0))
         assert profile_joint4.upper_limit == pytest.approx(math.radians(90.0))
 
