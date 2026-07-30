@@ -202,6 +202,9 @@ python -m arx_d_can.examples.example_02_read_state \
   --port /dev/ttyACM0
 ```
 
+示例 02 默认以 10 Hz 持续打印，按 `Ctrl+C` 停止；需要只读取一次时增加
+`--once`。
+
 当前配置将第 8 个 4310 作为一个夹爪电机，机械联动 URDF 中的两根手指。MIT/PV
 初始增益沿用现有 ARX 机型的保守参数，不视为 Yunyi 实机最终标定值；首次使能前
 应托稳单臂、卸载负载，并逐关节验证方向、零点和增益。左臂关节 `0x09～0x0F`

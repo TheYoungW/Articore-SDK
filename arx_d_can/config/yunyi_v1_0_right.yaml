@@ -56,6 +56,7 @@ joints:
     model: "8009"
     torque_range: 40.0
     velocity_range: 20.0
+    direction: -1
     MIT: {kp: 120.0, kd: 8.0}
     POS_VEL: {vel_kp: 0.010, vel_ki: 0.0025, pos_kp: 100.0, pos_ki: 0.3, vlim: 2.5}
 
@@ -101,6 +102,7 @@ joints:
     model: "4310"
     torque_range: 8.0
     velocity_range: 10.0
+    direction: -1
     MIT: {kp: 18.0, kd: 2.0}
     POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
 
@@ -110,6 +112,7 @@ joints:
     model: "4310"
     torque_range: 8.0
     velocity_range: 10.0
+    direction: -1
     MIT: {kp: 18.0, kd: 2.0}
     POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
 

@@ -24,9 +24,11 @@ python -m arx_d_can.examples.example_01_scan_ids --port /dev/ttyACM0
 
 ## 02 读取状态
 
+默认以 10 Hz 持续打印，按 `Ctrl+C` 停止。使用 `--once` 只读取一次：
+
 ```bash
 python -m arx_d_can.examples.example_02_read_state --port /dev/ttyACM0
-python -m arx_d_can.examples.example_02_read_state --port /dev/ttyACM0 --watch --hz 10
+python -m arx_d_can.examples.example_02_read_state --port /dev/ttyACM0 --once
 ```
 
 ## 03 清除全部电机故障

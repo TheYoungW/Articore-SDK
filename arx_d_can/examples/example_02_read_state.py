@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 02: read one or multiple state samples without enabling the arm."""
+"""Example 02: continuously read state without enabling the arm."""
 from __future__ import annotations
 
 import argparse
@@ -60,8 +60,21 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Read ARX-D-CAN state without enabling the arm.")
-    parser.add_argument("--watch", action="store_true", help="Continuously print state")
-    parser.add_argument("--hz", type=float, default=10.0, help="Print frequency in watch mode")
-    parser.add_argument("--count", type=int, default=0, help="Stop after N samples in watch mode; 0 means forever")
+    output_mode = parser.add_mutually_exclusive_group()
+    output_mode.add_argument(
+        "--watch",
+        dest="watch",
+        action="store_true",
+        help="Continuously print state (default)",
+    )
+    output_mode.add_argument(
+        "--once",
+        dest="watch",
+        action="store_false",
+        help="Read and print one state sample, then exit",
+    )
+    parser.set_defaults(watch=True)
+    parser.add_argument("--hz", type=float, default=10.0, help="Continuous print frequency")
+    parser.add_argument("--count", type=int, default=0, help="Stop after N samples; 0 means forever")
     add_connection_arguments(parser)
     main(parser.parse_args())
