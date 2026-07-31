@@ -1,5 +1,29 @@
 """ARX-D-CAN 机械臂控制器封装层。"""
+from __future__ import annotations
 
-from .arx_d_can_endpose_controller import ArxDCanEndPose
+from typing import Any
 
-__all__ = ["ArxDCanEndPose"]
+
+def __getattr__(name: str) -> Any:
+    if name == "ArxDCanEndPose":
+        from .arx_d_can_endpose_controller import ArxDCanEndPose
+
+        return ArxDCanEndPose
+    if name in {"GravityCompensationMode", "GravityCompensationSample"}:
+        from .gravity_compensation import (
+            GravityCompensationMode,
+            GravityCompensationSample,
+        )
+
+        return {
+            "GravityCompensationMode": GravityCompensationMode,
+            "GravityCompensationSample": GravityCompensationSample,
+        }[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+__all__ = [
+    "ArxDCanEndPose",
+    "GravityCompensationMode",
+    "GravityCompensationSample",
+]

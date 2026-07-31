@@ -26,6 +26,16 @@ def __getattr__(name: str) -> Any:
         from .controllers import ArxDCanEndPose
 
         return ArxDCanEndPose
+    if name in {"GravityCompensationMode", "GravityCompensationSample"}:
+        from .controllers import (
+            GravityCompensationMode,
+            GravityCompensationSample,
+        )
+
+        return {
+            "GravityCompensationMode": GravityCompensationMode,
+            "GravityCompensationSample": GravityCompensationSample,
+        }[name]
     if name in {"actuator", "controllers", "dynamics", "kinematics", "trajectory"}:
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -37,6 +47,8 @@ __all__ = [
     "ArxDCanConfig",
     "ArxDCanEndPose",
     "ArxDCanState",
+    "GravityCompensationMode",
+    "GravityCompensationSample",
     "JointCfg",
     "JointGroup",
     "JointMotorConfig",

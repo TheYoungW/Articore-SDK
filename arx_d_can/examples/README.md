@@ -63,9 +63,32 @@ PV 可用 `--velocity-limits` 覆盖各关节的最大速度，MIT 可用 `--vel
 PV 使用 YAML 中各关节的 `vlim`（rad/s），MIT 的目标速度和力矩均默认为零。模式会
 在电机使能前完成配置。
 
+### MIT 零增益和纯力矩发送
+
 `--torques` 是前馈力矩，示例 04 仍同时使用 YAML 的 Kp/Kd，并非纯力矩控制。
-Python API 可通过逐帧参数 `mit_kp`、`mit_kd` 覆盖增益；严格的零增益力矩包使用
-`arm.send_joint_positions(..., torques=torques, mit_kp=0, mit_kd=0, mode="mit")`。
+示例 04 的命令行目前没有 Kp/Kd 覆盖参数；需要纯力矩控制时必须使用 Python API，
+并且显式传入 `mit_kp=0`、`mit_kd=0`：
+
+```python
+arm.send_joint_positions(
+    positions,
+    torques=torques,
+    mit_kp=0,
+    mit_kd=0,
+    mode="mit",
+)
+```
+
+标量 `0` 会应用到全部机械臂关节，而且不会被当成“未设置”。不要通过省略参数来
+表示零增益：省略 `mit_kp` 或 `mit_kd` 会使用 YAML 中对应的默认增益。也可以传入
+与机械臂关节数相同的数组，以便逐关节设置增益，例如
+`mit_kp=[0.0] * len(arm.joint_names)`。
+
+当 Kp 为零时，仍需传入 `positions` 以组成完整 MIT 数据帧，但位置误差不会产生
+控制力矩；当 Kd 也为零时，电机只执行 `torques` 指定的前馈力矩。纯力矩模式必须
+持续刷新指令，并自行实施力矩限幅、速度监测、关节限位和通信异常处理。命令超时后，
+SDK 看门狗会在最后一次成功发送的位置恢复 YAML 默认 MIT 增益进行安全保持，而不是
+继续保持零增益。
 
 注意：MIT 的 `--velocities` 是控制公式中 `kd(v_des-v)` 的目标速度，不是最大速度
 限制。示例 04 会直接发送位置目标；如果需要限制整个运动过程的速度，应使用示例 07
@@ -210,3 +233,34 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
 
 回放会直接发送记录的第一个机械臂和夹爪位置。执行前应托稳机械臂，确认当前位置与
 夹爪开合程度接近轨迹起点，并确保整条轨迹没有碰撞和夹伤风险。
+
+## 12 重力补偿模式
+
+示例 12 使用 MIT 模式实时计算并发送 URDF 重力力矩。活动阶段默认显式发送
+`Kp=0、Kd=0`，机械臂不会保持位置，必须先托住机械臂并远离关节限位。程序会从
+当前位置保持平滑切换到重力补偿，退出时恢复 YAML MIT 增益，然后失能全部机械臂
+关节：
+
+```bash
+python -m arx_d_can.examples.example_12_gravity_compensation \
+  --arm-model yunyi_v1_0_right \
+  --port /dev/ttyACM0 \
+  --seconds 10
+```
+
+`--seconds 0` 表示持续运行到按下 `Ctrl+C`。如果需要保留少量速度阻尼，可增加
+`--damping 0.2`；此时仍保持 `Kp=0`，但 Kd 不再为零。`--gravity-scale` 设置整体
+重力力矩倍率，`--joint-scales` 设置逐关节倍率。例如 7 轴机械臂可传入：
+
+```bash
+python -m arx_d_can.examples.example_12_gravity_compensation \
+  --arm-model yunyi_v1_0_right \
+  --port /dev/ttyACM0 \
+  --joint-scales "1,1.55,1.55,1,1,1,1"
+```
+
+默认安全检查包括：关节速度不超过 `20 deg/s`、与 URDF 限位至少保持 `5°` 距离，
+且每个关节的重力力矩命令不超过配置力矩范围的 20%。这些阈值可通过
+`--max-velocity`、`--limit-margin` 和 `--torque-limit-ratio` 调整。运行该示例需要
+安装 `pin>=3.0`；如果当前 shell 加载的 ROS `PYTHONPATH` 覆盖了 conda 环境中的
+Pinocchio，可用 `env -u PYTHONPATH` 放在命令前。

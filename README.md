@@ -45,6 +45,8 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
   record trajectory.json --seconds 10 --hz 100 --port /dev/ttyACM0
 python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
   replay trajectory.json --port /dev/ttyACM0
+python -m arx_d_can.examples.example_12_gravity_compensation \
+  --port /dev/ttyACM0 --seconds 10
 ```
 
 `example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续
@@ -96,11 +98,35 @@ finally:
     arm.close()
 ```
 
-### MIT 逐帧增益与纯力矩控制
+### 重要：MIT 支持显式发送 Kp=0、Kd=0
 
-`send_joint_positions(..., torques=...)` 中的 `torques` 是 MIT 前馈力矩。默认仍会
-使用机型 YAML 中的 Kp/Kd，因此不是纯力矩控制。可通过 `mit_kp`、`mit_kd` 对当前
-一帧覆盖各关节增益；不传入时继续使用 YAML 默认值：
+`send_joint_positions()` 的 `mit_kp`、`mit_kd` 支持标量 `0` 和包含零的关节数组。
+传入标量 `0` 时，SDK 会把它展开成全部机械臂关节的零增益，并原样写入当前 MIT
+控制帧；`0` 不会被当成“未设置”。因此，下面两种写法等价：
+
+```python
+# 标量 0：应用到全部关节（推荐）
+arm.send_joint_positions(
+    positions,
+    torques=torques,
+    mit_kp=0,
+    mit_kd=0,
+    mode="mit",
+)
+
+# 也可以逐关节明确传入 0；数组长度必须等于当前机型的机械臂关节数
+arm.send_joint_positions(
+    positions,
+    torques=torques,
+    mit_kp=[0.0] * len(arm.joint_names),
+    mit_kd=[0.0] * len(arm.joint_names),
+    mode="mit",
+)
+```
+
+不要省略 `mit_kp` 或 `mit_kd` 来表示零增益。省略参数（默认值为 `None`）表示使用
+机型 YAML 中配置的默认增益。也就是说，只传 `torques` 仍然是“位置阻抗控制 +
+前馈力矩”，不是纯力矩控制：
 
 ```python
 arm.send_joint_positions(
@@ -113,22 +139,47 @@ arm.send_joint_positions(
 )
 ```
 
-交接阶段可逐帧将 `mit_kp`、`mit_kd` 从 YAML 增益平滑降到零。进入纯力矩阶段后，
-直接把两个增益设为标量 `0`；标量会自动应用到全部关节：
+`positions` 在 MIT 数据帧中仍是必填字段，但当 `mit_kp=0` 时，位置误差不再产生
+控制力矩；同理，当 `mit_kd=0` 时，目标速度误差不再产生控制力矩。纯力矩输出由
+`torques` 决定。SDK 提供 `GravityCompensationMode` 来完成重力计算、安全检查和
+零增益发送：
 
 ```python
-arm.send_joint_positions(
-    positions,
-    torques=torques,
-    mit_kp=0,
-    mit_kd=0,
-    mode="mit",
+from arx_d_can import ArxDCanArm, GravityCompensationMode
+
+arm = ArxDCanArm(
+    model="yunyi_v1_0_right",
+    port="/dev/ttyACM0",
+    control_mode="mit",
 )
+gravity = GravityCompensationMode(arm, damping=0.0)
+try:
+    gravity.start()
+    gravity.run(seconds=10.0)
+finally:
+    gravity.shutdown()
 ```
 
-纯力矩模式没有位置保持能力，必须持续发送经过限幅和安全检查的力矩。命令超时后，
-SDK 看门狗仍会尝试读取当前位置并恢复安全保持；生产设备还必须具备物理急停和
-电机侧保护。
+该模式会从当前位置保持开始，逐帧把 Kp/Kd 降到目标值并把补偿力矩升到目标值；
+退出时执行反向过渡，然后失能。默认 `damping=0`，即活动阶段明确发送
+`mit_kp=0、mit_kd=0`；需要速度阻尼时可设置较小的非零 `damping`。模式还会检查
+力矩、速度、URDF 关节限位和 SDK 故障状态。
+
+纯力矩模式没有位置保持能力，必须持续发送经过限幅和安全检查的力矩。如果希望保留
+速度阻尼，可以使用 `mit_kp=0` 和较小的非零 `mit_kd`。命令超时后，SDK 看门狗会在
+最后一次成功发送的位置恢复 YAML 默认 MIT 增益进行安全保持；这个回退不是继续发送
+零增益重力补偿。生产设备还必须具备物理急停、电机侧保护和可靠的防坠措施。
+
+`example_04_send_position.py` 的命令行参数目前不提供 Kp/Kd 覆盖选项，因此即使传入
+`--torques`，它仍使用 YAML 默认 Kp/Kd。需要发送 `Kp=0、Kd=0` 时，请使用上面的
+Python API，或直接运行示例 12：
+
+```bash
+python -m arx_d_can.examples.example_12_gravity_compensation \
+  --arm-model yunyi_v1_0_right \
+  --port /dev/ttyACM0 \
+  --seconds 10
+```
 
 ## 多机型配置
 
