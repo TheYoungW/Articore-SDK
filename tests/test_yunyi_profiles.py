@@ -78,8 +78,11 @@ def test_yunyi_joint_torque_ranges_match_hardware() -> None:
 
 
 def test_yunyi_joint_velocity_ranges_match_hardware_registers() -> None:
-    expected = [20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 30.0]
-    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+    expected_by_model = {
+        "yunyi_v1_0_right": [10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 30.0],
+        "yunyi_v1_0_left": [20.0, 20.0, 10.0, 10.0, 10.0, 10.0, 10.0, 30.0],
+    }
+    for model, expected in expected_by_model.items():
         joints = load_cfg(model=model)["joints"]
         assert [joint.velocity_range for joint in joints] == expected
 
