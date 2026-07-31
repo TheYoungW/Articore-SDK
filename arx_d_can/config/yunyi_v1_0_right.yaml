@@ -25,7 +25,8 @@ groups:
 
 gripper_mapping:
   closed_value: 0.0
-  open_value: 2.64
+  # Measured after gripper-only zero calibration; leaves margin at the open stop.
+  open_value: 2.48
 
 gripper_force_control:
   enabled: false
@@ -121,5 +122,6 @@ joints:
     feedback_id: 0x18
     model: "4310"
     velocity_range: 30.0
+    direction: -1
     MIT: {kp: 4.0, kd: 0.5}
     POS_VEL: {vel_kp: 0.0008, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
