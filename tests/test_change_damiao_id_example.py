@@ -85,10 +85,11 @@ def test_apply_id_change_reopens_after_each_id_switch():
     apply_id_change(
         port="/dev/null",
         baud=1_000_000,
+        transport="dm-serial",
         model="4310",
         store=True,
         plan=plan,
-        controller_factory=lambda _port, _baud: FakeController(events),
+        controller_factory=lambda _port, _baud, _transport: FakeController(events),
     )
 
     assert events == [
@@ -122,10 +123,11 @@ def test_apply_id_change_continues_after_id_write_ack_timeout():
     apply_id_change(
         port="/dev/null",
         baud=1_000_000,
+        transport="dm-serial",
         model="4310",
         store=True,
         plan=plan,
-        controller_factory=lambda _port, _baud: FakeController(
+        controller_factory=lambda _port, _baud, _transport: FakeController(
             events,
             fail_writes={(0x01, 0x17, 8, 0x07)},
         ),

@@ -76,6 +76,7 @@ def main(args: argparse.Namespace) -> None:
         config_path=args.config_path,
         port=args.port,
         baud=args.baud,
+        transport=getattr(args, "transport", None),
         control_mode=args.mode,
     )
     # The fallback keeps simple third-party test doubles compatible. Real SDK

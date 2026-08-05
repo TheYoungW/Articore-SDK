@@ -120,6 +120,26 @@ def test_yunyi_control_gains_follow_actuator_capability_tiers() -> None:
         assert actual == expected
 
 
+def test_yunyi_gripper_gain_scale_does_not_change_arm_gains() -> None:
+    baseline = ArxDCanArm(model="yunyi_v1_0_right", enable_gripper=True)
+    scaled = ArxDCanArm(
+        model="yunyi_v1_0_right",
+        enable_gripper=True,
+        gripper_gain_scale=0.1,
+    )
+
+    assert [
+        (joint.mit_kp, joint.mit_kd) for joint in scaled.config.arm_joints
+    ] == [
+        (joint.mit_kp, joint.mit_kd) for joint in baseline.config.arm_joints
+    ]
+    assert scaled.config.gripper is not None
+    assert scaled.config.gripper.mit_kp == pytest.approx(0.4)
+    assert scaled.config.gripper.mit_kd == pytest.approx(0.05)
+    assert scaled.config.gripper_force_control.hold_kp == pytest.approx(0.2)
+    assert scaled.config.gripper_force_control.hold_kd == pytest.approx(0.05)
+
+
 def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
     dual_path = MODELS_DIR / "yunyi_v1_0.urdf"
     root = ET.parse(dual_path).getroot()

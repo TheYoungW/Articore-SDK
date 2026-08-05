@@ -4,6 +4,7 @@ end_effector_frame: r-link7
 
 # Intended right-arm CAN mapping; verify it when the right adapter is connected.
 channel: /dev/ttyACM1
+transport: dm-serial
 baud: 1000000
 rate: 500
 

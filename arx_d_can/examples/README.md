@@ -11,8 +11,10 @@ python -m pip install -e .
 
 所有示例默认使用 `arx_d_can/config/models.yaml` 中的 `default_model`。选择其他
 内置机型时增加 `--arm-model <名称>`；临时使用外部硬件配置时增加
-`--config-path /path/to/arm.yaml`。两个参数不能同时使用，`--port` 和 `--baud`
-仍可覆盖机型 YAML 中的连接参数。示例会按所选机型的实际关节数量校验输入。
+`--config-path /path/to/arm.yaml`。两个参数不能同时使用。`--port` 与 `--channel`
+等价，配合 `--transport dm-serial|socketcan|socketcanfd` 可覆盖机型 YAML 中的
+连接参数；`--baud` 只对 dm-serial 有效。SocketCAN 的完整说明见
+[SocketCAN 使用说明](../../docs/socketcan.md)。示例会按所选机型的实际关节数量校验输入。
 
 ## 01 扫描电机 ID
 
@@ -21,6 +23,20 @@ python -m pip install -e .
 ```bash
 python -m arx_d_can.examples.example_01_scan_ids --port /dev/ttyACM0
 ```
+
+板载经典 CAN（例如 RK3588 + MCP2515）的扫描命令：
+
+```bash
+python -m arx_d_can.examples.example_01_scan_ids \
+  --transport socketcan \
+  --channel can0 \
+  --feedback-base 0x200
+```
+
+预期反馈 ID 按 `feedback_base + (motor_id & 0x0F)` 计算。电机 ID `6`、反馈 ID
+`0x206` 必须使用 `--feedback-base 0x200`；现有 `0x11`～`0x1F` 映射使用默认
+`0x10`。扫描结果会校验实际仲裁 ID，并过滤 255°C 和编码极值等无效状态，防止把
+其他电机的反馈帧误报为当前候选 ID。
 
 ## 02 读取状态
 

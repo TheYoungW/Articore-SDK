@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -76,6 +76,7 @@ class JointMotorConfig:
 @dataclass(slots=True, frozen=True)
 class ArxDCanConfig:
     port: str = "/dev/ttyACM0"
+    transport: str = "auto"
     baud: int = 1_000_000
     control_hz: float = 100.0
     arm_control_mode: str = "posvel"
@@ -99,6 +100,11 @@ class ArxDCanConfig:
     hardware_config_path: str | None = None
     urdf_path: str | None = None
     end_effector_frame: str = "gripper_end"
+
+    @property
+    def channel(self) -> str:
+        """Transport channel; ``port`` is retained for API compatibility."""
+        return self.port
 
     @property
     def joint_names(self) -> tuple[str, ...]:
@@ -140,6 +146,12 @@ def _config_bool(value: object, *, name: str) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
+def _connection_channel(port: str | None, channel: str | None) -> str | None:
+    if port is not None and channel is not None and port != channel:
+        raise ValueError("port and channel are aliases and cannot have different values")
+    return channel if channel is not None else port
+
+
 def _mit_gain_vector(
     value: float | Sequence[float] | None,
     *,
@@ -167,6 +179,7 @@ def _config_from_loaded(
     *,
     port: str | None = None,
     baud: int | None = None,
+    transport: str | None = None,
     control_hz: float = 100.0,
     arm_control_mode: str = "posvel",
 ) -> ArxDCanConfig:
@@ -189,8 +202,11 @@ def _config_from_loaded(
         ),
         urdf_path=None if data.get("urdf_path") is None else str(data["urdf_path"]),
         end_effector_frame=str(data.get("end_effector_frame", "gripper_end")),
-        port=str(port or data.get("channel", "/dev/ttyACM0")),
-        baud=int(baud or data.get("baud", 1_000_000)),
+        port=str(data.get("channel", "/dev/ttyACM0") if port is None else port),
+        transport=str(
+            data.get("transport", "auto") if transport is None else transport
+        ),
+        baud=int(data.get("baud", 1_000_000) if baud is None else baud),
         control_hz=control_hz,
         arm_control_mode=arm_control_mode,
         arm_joints=tuple(joints_by_name[name] for name in arm_names),
@@ -237,7 +253,9 @@ def default_config(
     model: str | None = None,
     config_path: str | Path | None = None,
     port: str | None = None,
+    channel: str | None = None,
     baud: int | None = None,
+    transport: str | None = None,
     control_hz: float = 100.0,
     arm_control_mode: str = "posvel",
 ) -> ArxDCanConfig:
@@ -245,8 +263,9 @@ def default_config(
     data = load_cfg(config_path, model=model)
     return _config_from_loaded(
         data,
-        port=port,
+        port=_connection_channel(port, channel),
         baud=baud,
+        transport=transport,
         control_hz=control_hz,
         arm_control_mode=arm_control_mode,
     )
@@ -309,6 +328,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
         "urdf_path": config.urdf_path,
         "end_effector_frame": config.end_effector_frame,
         "channel": config.port,
+        "transport": config.transport,
         "baud": config.baud,
         "rate": config.control_hz,
         "groups": groups,
@@ -336,35 +356,70 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
 
 
 class ArxDCanArm:
-    """High-level Python SDK for an ARX arm using Damiao motors over USB2CAN."""
+    """High-level SDK for an ARX arm over dm-serial or Linux SocketCAN."""
 
     def __init__(
         self,
         *,
         port: str | None = None,
+        channel: str | None = None,
         baud: int | None = None,
+        transport: str | None = None,
         model: str | None = None,
         config_path: str | Path | None = None,
         config: ArxDCanConfig | None = None,
         control_mode: str = "posvel",
         enable_gripper: bool = False,
+        gripper_gain_scale: float = 1.0,
     ) -> None:
         if config is not None and (model is not None or config_path is not None):
             raise ValueError("config cannot be combined with model or config_path")
+        connection_channel = _connection_channel(port, channel)
         if config is None:
             loaded_config = load_cfg(config_path, model=model)
             self.config = _config_from_loaded(
                 loaded_config,
-                port=port,
+                port=connection_channel,
                 baud=baud,
+                transport=transport,
                 arm_control_mode=control_mode,
             )
             loaded_config = dict(loaded_config)
             loaded_config["channel"] = self.config.port
+            loaded_config["transport"] = self.config.transport
             loaded_config["baud"] = self.config.baud
         else:
-            self.config = config
-            loaded_config = _actuator_config_from_sdk(config)
+            self.config = replace(
+                config,
+                port=(
+                    config.port
+                    if connection_channel is None
+                    else connection_channel
+                ),
+                baud=config.baud if baud is None else baud,
+                transport=config.transport if transport is None else transport,
+            )
+            loaded_config = _actuator_config_from_sdk(self.config)
+        gain_scale = float(gripper_gain_scale)
+        if not math.isfinite(gain_scale) or gain_scale <= 0.0:
+            raise ValueError("gripper_gain_scale must be finite and positive")
+        self.gripper_gain_scale = gain_scale
+        if self.config.gripper is not None and not math.isclose(gain_scale, 1.0):
+            gripper = self.config.gripper
+            force_control = self.config.gripper_force_control
+            self.config = replace(
+                self.config,
+                gripper=replace(
+                    gripper,
+                    mit_kp=gripper.mit_kp * gain_scale,
+                    mit_kd=gripper.mit_kd * gain_scale,
+                ),
+                gripper_force_control=replace(
+                    force_control,
+                    hold_kp=force_control.hold_kp * gain_scale,
+                    hold_kd=force_control.hold_kd * gain_scale,
+                ),
+            )
         self._validate_safety_config()
         self.enable_gripper = enable_gripper
         active_joint_names = list(self.config.joint_names)
@@ -454,7 +509,15 @@ class ArxDCanArm:
         try:
             self.configure_mode(mode or self._mode)
             if self.enable_gripper and self.config.gripper is not None:
-                if not self.robot.gripper.mode_mit():
+                if math.isclose(self.gripper_gain_scale, 1.0):
+                    gripper_mode_ok = self.robot.gripper.mode_mit()
+                else:
+                    gripper = self.config.gripper
+                    gripper_mode_ok = self.robot.gripper.mode_mit(
+                        kp=np.array([gripper.mit_kp]),
+                        kd=np.array([gripper.mit_kd]),
+                    )
+                if not gripper_mode_ok:
                     raise RuntimeError("ARX-D-CAN gripper did not enter MIT mode")
         except Exception as exc:
             self._trip_fault(f"configuration failed: {exc}")
@@ -698,6 +761,7 @@ class ArxDCanArm:
             python_executable=sys.executable,
             port=self.config.port,
             baud=self.config.baud,
+            transport=self.config.transport,
             model=model,
             start_id=start_id,
             end_id=end_id,
@@ -711,7 +775,7 @@ class ArxDCanArm:
                 or result.stdout.strip()
                 or "motor-drive-layer scan failed"
             )
-        return parse_scan_ids(result.stdout)
+        return parse_scan_ids(result.stdout, model=model)
 
     def send_joint_positions(
         self,

@@ -60,6 +60,7 @@ def main(args: argparse.Namespace) -> None:
         config_path=args.config_path,
         port=args.port,
         baud=args.baud,
+        transport=getattr(args, "transport", None),
         enable_gripper=include_gripper,
     )
     zero_position = (0.0,) * len(arm.joint_names)

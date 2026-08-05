@@ -70,6 +70,45 @@ def test_custom_profile_drives_sdk_and_low_level_from_same_values(tmp_path: Path
     assert arm.robot._all_joints[1].direction == -1.0
 
 
+def test_socketcan_profile_is_exposed_to_sdk_and_low_level(tmp_path: Path) -> None:
+    profile = write_profile(
+        tmp_path,
+        CUSTOM_PROFILE.replace(
+            "channel: /dev/test-arm\n",
+            "transport: socketcan\nchannel: can0\n",
+        ),
+    )
+
+    arm = ArxDCanArm(config_path=profile)
+
+    assert arm.config.transport == "socketcan"
+    assert arm.config.port == "can0"
+    assert arm.robot._transport == "socketcan"
+    assert arm.robot._channel == "can0"
+
+
+def test_connection_transport_and_channel_can_override_profile(tmp_path: Path) -> None:
+    arm = ArxDCanArm(
+        config_path=write_profile(tmp_path),
+        transport="socketcan",
+        channel="can1",
+    )
+
+    assert arm.config.transport == "socketcan"
+    assert arm.config.port == "can1"
+    assert arm.robot._transport == "socketcan"
+    assert arm.robot._channel == "can1"
+
+
+def test_port_and_channel_aliases_must_not_conflict(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="port and channel are aliases"):
+        ArxDCanArm(
+            config_path=write_profile(tmp_path),
+            port="can0",
+            channel="can1",
+        )
+
+
 def test_arm_loads_selected_profile_only_once(monkeypatch, tmp_path: Path) -> None:
     profile = write_profile(tmp_path)
     original = sdk_module.load_cfg

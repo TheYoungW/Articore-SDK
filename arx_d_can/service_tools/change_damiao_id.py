@@ -8,9 +8,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 try:
-    from arx_d_can.driver import CallError, Controller
+    from arx_d_can.driver import CallError, Controller, create_controller
 except ModuleNotFoundError:
-    from teleop.adapters.arm.arx_d_can.driver import CallError, Controller
+    from teleop.adapters.arm.arx_d_can.driver import (
+        CallError,
+        Controller,
+        create_controller,
+    )
 
 try:
     from arx_d_can.examples.common import add_connection_arguments, make_arm
@@ -81,13 +85,11 @@ def print_scan(label: str, ids: list[int]) -> None:
     print(f"{label}:", " ".join(f"0x{motor_id:02X}" for motor_id in ids) or "none")
 
 
-def make_controller(port: str, baud: int) -> Controller:
-    if port.startswith("/dev/tty"):
-        return Controller.from_dm_serial(port, baud)
-    return Controller(port)
+def make_controller(port: str, baud: int, transport: str = "auto") -> Controller:
+    return create_controller(transport=transport, channel=port, baud=baud)
 
 
-ControllerFactory = Callable[[str, int], Controller]
+ControllerFactory = Callable[[str, int, str], Controller]
 
 
 def close_controller(ctrl: Controller, motor) -> None:
@@ -110,6 +112,7 @@ def apply_id_change(
     *,
     port: str,
     baud: int,
+    transport: str,
     model: str,
     store: bool,
     plan: IdChangePlan,
@@ -119,7 +122,7 @@ def apply_id_change(
     active_feedback_id = plan.current_feedback_id
 
     if plan.current_id != plan.new_id:
-        ctrl = controller_factory(port, baud)
+        ctrl = controller_factory(port, baud, transport)
         motor = ctrl.add_damiao_motor(active_id, active_feedback_id, model)
         try:
             write_register_u32_with_warning(motor, 8, plan.new_id, "ESC_ID")
@@ -129,7 +132,7 @@ def apply_id_change(
         active_id = plan.new_id
 
     if plan.current_feedback_id != plan.new_feedback_id:
-        ctrl = controller_factory(port, baud)
+        ctrl = controller_factory(port, baud, transport)
         motor = ctrl.add_damiao_motor(active_id, active_feedback_id, model)
         try:
             write_register_u32_with_warning(motor, 7, plan.new_feedback_id, "MST_ID")
@@ -142,7 +145,7 @@ def apply_id_change(
         active_feedback_id = plan.new_feedback_id
 
     if store:
-        ctrl = controller_factory(port, baud)
+        ctrl = controller_factory(port, baud, transport)
         motor = ctrl.add_damiao_motor(active_id, active_feedback_id, model)
         try:
             motor.store_parameters()
@@ -153,7 +156,7 @@ def apply_id_change(
 
 def verify_id_change(args: argparse.Namespace, plan: IdChangePlan) -> None:
     time.sleep(args.verify_delay)
-    ctrl = make_controller(args.port, args.baud)
+    ctrl = make_controller(args.port, args.baud, args.transport or "auto")
     motor = ctrl.add_damiao_motor(plan.new_id, plan.new_feedback_id, args.model)
     try:
         esc_id = motor.get_register_u32(8, args.timeout_ms)
@@ -172,6 +175,10 @@ def verify_id_change(args: argparse.Namespace, plan: IdChangePlan) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
+    connection = make_arm(args).config
+    args.port = args.port or connection.port
+    args.baud = args.baud or connection.baud
+    args.transport = getattr(args, "transport", None) or connection.transport
     plan = build_id_change_plan(
         current_id=parse_id(args.current_id),
         new_id=parse_id(args.new_id),
@@ -211,6 +218,7 @@ def main(args: argparse.Namespace) -> None:
     apply_id_change(
         port=args.port,
         baud=args.baud,
+        transport=args.transport or "auto",
         model=args.model,
         store=args.store,
         plan=plan,

@@ -1,17 +1,30 @@
-from arx_d_can.driver import build_scan_command, parse_scan_ids
+import pytest
+
+from arx_d_can.driver import (
+    build_scan_command,
+    create_controller,
+    parse_scan_ids,
+    resolve_transport,
+)
+from arx_d_can.driver import motor_drive_layer_backend as backend
 
 
-def test_build_scan_command_uses_motor_drive_layer_cli():
-    command = build_scan_command(
+def build_command(*, port: str, transport: str) -> list[str]:
+    return build_scan_command(
         python_executable="/usr/bin/python3",
-        port="/dev/ttyACM4",
+        port=port,
         baud=921600,
+        transport=transport,
         model="4340P",
         start_id=1,
         end_id=7,
-        feedback_base="0x10",
+        feedback_base="0x200",
         timeout_ms=30,
     )
+
+
+def test_build_scan_command_uses_dm_serial_arguments():
+    command = build_command(port="/dev/ttyACM4", transport="dm-serial")
 
     assert command[:4] == [
         "/usr/bin/python3",
@@ -19,16 +32,88 @@ def test_build_scan_command_uses_motor_drive_layer_cli():
         "motor_drive_layer.cli",
         "scan",
     ]
+    assert command[command.index("--transport") + 1] == "dm-serial"
     assert command[command.index("--serial-port") + 1] == "/dev/ttyACM4"
-    assert command[command.index("--end-id") + 1] == "7"
+    assert command[command.index("--serial-baud") + 1] == "921600"
+    assert "--channel" not in command
 
 
-def test_parse_scan_ids_accepts_motor_drive_layer_hit_lines_only():
-    output = """\
-[..] id=0x1 feedback_id=0x11
-[hit] id=0x2 feedback_id=0x12 model=4340P
-[hit] id=0x0A feedback_id=0x1A model=4340P
-scan complete
-"""
+@pytest.mark.parametrize("transport", ["socketcan", "socketcanfd"])
+def test_build_scan_command_uses_socketcan_channel(transport: str):
+    command = build_command(port="can0", transport=transport)
 
-    assert parse_scan_ids(output) == [2, 10]
+    assert command[command.index("--transport") + 1] == transport
+    assert command[command.index("--channel") + 1] == "can0"
+    assert "--serial-port" not in command
+
+
+def test_auto_transport_preserves_legacy_channel_inference():
+    assert resolve_transport("auto", "/dev/ttyACM0") == "dm-serial"
+    assert resolve_transport(None, "can0") == "socketcan"
+    with pytest.raises(ValueError, match="unsupported transport"):
+        resolve_transport("bluetooth", "can0")
+
+
+def test_create_controller_selects_matching_motor_drive_layer_constructor(monkeypatch):
+    calls = []
+
+    class FakeController:
+        def __init__(self, channel):
+            calls.append(("socketcan", channel))
+
+        @classmethod
+        def from_dm_serial(cls, channel, baud):
+            calls.append(("dm-serial", channel, baud))
+            return object()
+
+        @classmethod
+        def from_socketcanfd(cls, channel):
+            calls.append(("socketcanfd", channel))
+            return object()
+
+    monkeypatch.setattr(backend, "Controller", FakeController)
+
+    create_controller(transport="dm-serial", channel="/dev/ttyACM0", baud=500000)
+    create_controller(transport="socketcan", channel="can0")
+    create_controller(transport="socketcanfd", channel="can1")
+
+    assert calls == [
+        ("dm-serial", "/dev/ttyACM0", 500000),
+        ("socketcan", "can0"),
+        ("socketcanfd", "can1"),
+    ]
+
+
+def state(
+    arbitration_id: int,
+    *,
+    status_code: int = 0,
+    pos: float = 1.0695,
+    vel: float = 0.0,
+    torq: float = 0.0,
+    t_mos: float = 30.0,
+    t_rotor: float = 31.0,
+) -> str:
+    return (
+        "MotorState(can_id=6, arbitration_id="
+        f"{arbitration_id}, status_code={status_code}, pos={pos}, vel={vel}, "
+        f"torq={torq}, t_mos={t_mos}, t_rotor={t_rotor})"
+    )
+
+
+def test_parse_scan_ids_accepts_only_validated_hit_lines():
+    output = "\n".join(
+        [
+            "[.. ] id=0x1 no reply: timeout",
+            f"[hit] id=0x6 feedback_id=0x206 state={state(0x206)}",
+            # Wrong arbitration ID: this is the reported ID-15 false positive.
+            f"[hit] id=0xF feedback_id=0x20f state={state(0x206)}",
+            f"[hit] id=0x7 feedback_id=0x207 state={state(0x207, t_mos=255)}",
+            f"[hit] id=0x8 feedback_id=0x208 state={state(0x208, pos=float('nan'))}",
+            # Position, velocity and torque all at this model's encoding limits.
+            f"[hit] id=0x9 feedback_id=0x209 state={state(0x209, pos=12.5, vel=10, torq=28)}",
+            "[hit] id=0xA feedback_id=0x20A model=4340P",
+        ]
+    )
+
+    assert parse_scan_ids(output, model="4340P") == [6]

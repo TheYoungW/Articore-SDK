@@ -40,7 +40,13 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import yaml
 
-from ..driver import CallError, Controller, Mode
+from ..driver import (
+    CallError,
+    Controller,
+    Mode,
+    create_controller,
+    resolve_transport,
+)
 
 _CFG_DIR = Path(__file__).resolve().parents[1] / "config"
 _MODEL_REGISTRY = _CFG_DIR / "models.yaml"
@@ -377,10 +383,12 @@ def load_cfg(
         data.get("end_effector_frame", "gripper_end")
     ).strip()
     channel = str(data.get("channel", "/dev/ttyACM0")).strip()
+    transport = str(data.get("transport", "auto")).strip().lower()
     baud = int(data.get("baud", 1_000_000))
     rate = _finite(data.get("rate", 500.0), field="rate")
     if not channel:
         raise ValueError("channel must not be empty")
+    resolve_transport(transport, channel)
     if baud <= 0:
         raise ValueError("baud must be positive")
     if rate <= 0.0:
@@ -395,6 +403,7 @@ def load_cfg(
         "urdf_path": None if urdf_path is None else str(urdf_path),
         "end_effector_frame": end_effector_frame,
         "channel": channel,
+        "transport": transport,
         "baud": baud,
         "rate": rate,
         "groups": groups,
@@ -901,6 +910,7 @@ class ArxDCan:
         hw_yaml: str | Path | None = None,
         channel: str | None = None,
         baud: int | None = None,
+        transport: str | None = None,
         joint_names: Optional[List[str]] = None,
         *,
         model: str | None = None,
@@ -922,9 +932,15 @@ class ArxDCan:
         )
         if channel:
             cfg["channel"] = channel
+        if transport is not None:
+            cfg["transport"] = transport
 
         self._name: str = cfg["name"]
         self._channel: str = cfg["channel"]
+        self._transport: str = resolve_transport(
+            str(cfg.get("transport", "auto")),
+            self._channel,
+        )
         self._baud: int = int(baud or cfg.get("baud", 1_000_000))
         self._rate: float = cfg["rate"]
         configured_joints: List[JointCfg] = cfg["joints"]
@@ -965,9 +981,11 @@ class ArxDCan:
         self._connected = True
 
     def _make_controller(self) -> Controller:
-        if self._channel.startswith("/dev/tty"):
-            return Controller.from_dm_serial(self._channel, self._baud)
-        return Controller(self._channel)
+        return create_controller(
+            transport=self._transport,
+            channel=self._channel,
+            baud=self._baud,
+        )
 
     def _setup_motors(self) -> None:
         if "main" not in self._ctrl_map:

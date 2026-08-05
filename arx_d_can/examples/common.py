@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from arx_d_can import ArxDCanArm
+from arx_d_can.driver import SUPPORTED_TRANSPORTS
 
 
 DEFAULT_PORT = "/dev/ttyACM0"
@@ -25,14 +26,27 @@ def add_connection_arguments(parser: ArgumentParser) -> None:
     )
     profile.add_argument(
         "--config-path",
+        "--hardware-config",
+        dest="config_path",
         type=Path,
         default=None,
         help="Custom arm hardware YAML; cannot be combined with --arm-model",
     )
     parser.add_argument(
         "--port",
+        "--channel",
+        dest="port",
         default=None,
-        help=f"USB2CAN serial port; default: profile value ({DEFAULT_PORT} for arx_d_can)",
+        help=(
+            "Transport channel: a serial device such as /dev/ttyACM0 or a "
+            "SocketCAN interface such as can0; default: profile value"
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=SUPPORTED_TRANSPORTS,
+        default=None,
+        help="Transport backend; default: profile value (legacy profiles infer from channel)",
     )
     parser.add_argument(
         "--baud",
@@ -47,6 +61,7 @@ def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> 
         return ArxDCanArm(
             port=DEFAULT_PORT,
             baud=DEFAULT_BAUD,
+            transport="dm-serial",
             control_mode="posvel",
             enable_gripper=enable_gripper,
         )
@@ -55,6 +70,7 @@ def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> 
         config_path=args.config_path,
         port=args.port,
         baud=args.baud,
+        transport=getattr(args, "transport", None),
         control_mode="posvel",
         enable_gripper=enable_gripper,
     )

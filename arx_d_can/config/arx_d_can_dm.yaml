@@ -3,6 +3,7 @@ urdf_path: models/Alicia_M_1_2_follower_ARX.urdf
 end_effector_frame: tool0
 
 channel: /dev/ttyACM0
+transport: dm-serial
 baud: 1000000
 rate: 500
 

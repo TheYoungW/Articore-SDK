@@ -4,6 +4,7 @@ end_effector_frame: l-link7
 
 # The left-arm USB2CAN exposes arm motor IDs 0x09..0x0F and gripper ID 0x01.
 channel: /dev/ttyACM0
+transport: dm-serial
 baud: 1000000
 rate: 500
 

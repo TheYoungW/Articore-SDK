@@ -1,8 +1,8 @@
 # ARX-D-CAN Python SDK
 
-独立的 ARX-D-CAN Python SDK，通过 USB2CAN 串口控制 Damiao 关节电机和
-可选夹爪。默认机型包含 6 个机械臂关节；默认串口为 `/dev/ttyACM0`，波特率为 `1000000`，控制模式为
-`POS_VEL`。
+独立的 ARX-D-CAN Python SDK，可通过 USB2CAN 串口或 Linux SocketCAN 控制
+Damiao 关节电机和可选夹爪。默认机型包含 6 个机械臂关节；默认连接为
+`dm-serial`、`/dev/ttyACM0`、波特率 `1000000`，控制模式为 `POS_VEL`。
 
 ## 安装
 
@@ -11,7 +11,8 @@ cd Articore-SDK
 python -m pip install .
 ```
 
-安装时会自动使用 `motor-drive-layer==0.5.1` 作为底层电机通信 SDK。
+安装时会自动使用 `motor-drive-layer==0.5.4` 作为底层电机通信 SDK。该版本是当前
+软件源提供的最新版，并包含 SocketCAN、SocketCAN-FD 和 dm-serial 后端。
 
 运动学、动力学和末端控制需要 Pinocchio：
 
@@ -20,6 +21,37 @@ python -m pip install ".[dynamics]"
 ```
 
 默认 URDF 已打进 wheel，不依赖开发者电脑上的绝对路径。
+
+## USB2CAN 与 SocketCAN
+
+SDK 的 `transport` 可选 `dm-serial`、`socketcan`、`socketcanfd` 或 `auto`：
+
+| transport | channel/port 示例 | 用途 | `baud` 的含义 |
+|---|---|---|---|
+| `dm-serial` | `/dev/ttyACM0` | 达妙串口 USB2CAN | 串口波特率 |
+| `socketcan` | `can0` | Linux 经典 CAN，例如 MCP2515 | 忽略；CAN 比特率由 Linux 配置 |
+| `socketcanfd` | `can0` | Linux CAN-FD 控制器 | 忽略；CAN-FD 参数由 Linux 配置 |
+| `auto` | 任一 | 兼容旧配置 | `/dev/tty*` 推断为 dm-serial，其他名称推断为 SocketCAN |
+
+命令行中的 `--port` 和 `--channel` 是同一个参数的两个名字。Python API 同时接受
+`channel=` 和为了兼容旧代码保留的 `port=`，即 SocketCAN 可写作
+`ArxDCanArm(transport="socketcan", channel="can0")`。两个别名不能同时指定不同值。
+建议新部署显式指定 `transport`，不要依赖自动推断。
+
+RK3588、MCP2515、经典 CAN 1 Mbps 的完整配置、扫描、读状态、控制和排错说明见
+[SocketCAN 使用说明](docs/socketcan.md)。最常用的扫描命令是：
+
+```bash
+python -m arx_d_can.examples.example_01_scan_ids \
+  --transport socketcan \
+  --channel can0 \
+  --feedback-base 0x200
+```
+
+这里 `--feedback-base 0x200` 不是固定值。扫描器按
+`feedback_id = feedback_base + (motor_id & 0x0F)` 注册临时电机；例如电机 ID 为
+`6`、实际反馈 ID 为 `0x206` 时，必须传 `0x200`。默认 `0x10` 适用于反馈 ID
+`0x11`～`0x1F` 的现有机型。
 
 ## 使用顺序
 

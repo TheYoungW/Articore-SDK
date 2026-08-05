@@ -12,7 +12,8 @@ from arx_d_can.actuator.arx_d_can import (
     _torque_range_scales,
     _velocity_range_scales,
 )
-from arx_d_can.driver import Controller
+from arx_d_can.driver import Controller, create_controller
+from arx_d_can.examples.common import add_connection_arguments
 
 
 CTRL_MODE_REGISTER = 10
@@ -203,9 +204,10 @@ def main(args: argparse.Namespace) -> None:
     if args.arm_only:
         joints = [joint for joint in joints if joint.name != "gripper"]
 
-    controller = Controller.from_dm_serial(
-        args.port or str(config["channel"]),
-        args.baud or int(config["baud"]),
+    controller = create_controller(
+        transport=getattr(args, "transport", None) or config.get("transport", "auto"),
+        channel=args.port or str(config["channel"]),
+        baud=args.baud or int(config["baud"]),
     )
     motors = []
     try:
@@ -246,15 +248,5 @@ if __name__ == "__main__":
     parser.add_argument("--timeout-ms", type=int, default=100)
     parser.add_argument("--temperature-warning", type=float, default=80.0)
     parser.add_argument("--arm-only", action="store_true", help="Do not inspect the gripper")
-    profile = parser.add_mutually_exclusive_group()
-    profile.add_argument("--arm-model", default=None)
-    profile.add_argument(
-        "--config-path",
-        "--hardware-config",
-        dest="config_path",
-        default=None,
-        help="Custom arm hardware YAML",
-    )
-    parser.add_argument("--port", default=None, help="Override profile USB2CAN serial port")
-    parser.add_argument("--baud", type=int, default=None, help="Override profile serial baudrate")
+    add_connection_arguments(parser)
     main(parser.parse_args())
