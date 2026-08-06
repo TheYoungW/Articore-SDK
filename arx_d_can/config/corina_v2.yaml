@@ -15,7 +15,8 @@ safety:
   enable_grace_s: 2.0
   watchdog_poll_s: 0.02
   watchdog_action: safe_hold
-  safe_hold_hz: 100.0
+  # Keep the coupled virtual-PD loop at the same rate while holding.
+  safe_hold_hz: 500.0
   feedback_fault_threshold: 3
 
 # Both legs share one CAN bus. Pinocchio traverses this branched URDF with the
@@ -68,14 +69,18 @@ joints:
     motor_id: 0x0B
     feedback_id: 0x2B
     model: "4310"
-    MIT: {kp: 18.0, kd: 2.0}
+    torque_range: 7.0
+    # Logical ankle Pitch gains; the SDK sends zero motor-side MIT gains.
+    MIT: {kp: 60.0, kd: 1.5}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
 
   - name: left_leg_joint6
     motor_id: 0x0C
     feedback_id: 0x2C
     model: "4310"
-    MIT: {kp: 18.0, kd: 2.0}
+    torque_range: 7.0
+    # Logical ankle Roll gains; the SDK sends zero motor-side MIT gains.
+    MIT: {kp: 30.0, kd: 0.8}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
 
   - name: right_leg_joint1
@@ -114,12 +119,16 @@ joints:
     motor_id: 0x05
     feedback_id: 0x25
     model: "4310"
-    MIT: {kp: 18.0, kd: 2.0}
+    torque_range: 7.0
+    # Logical ankle Pitch gains; the SDK sends zero motor-side MIT gains.
+    MIT: {kp: 60.0, kd: 1.5}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
 
   - name: right_leg_joint6
     motor_id: 0x06
     feedback_id: 0x26
     model: "4310"
-    MIT: {kp: 18.0, kd: 2.0}
+    torque_range: 7.0
+    # Logical ankle Roll gains; the SDK sends zero motor-side MIT gains.
+    MIT: {kp: 30.0, kd: 0.8}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}

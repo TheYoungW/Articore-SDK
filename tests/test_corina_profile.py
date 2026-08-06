@@ -67,7 +67,7 @@ def test_corina_v2_joint_directions_match_hardware_convention() -> None:
     ]
 
 
-def test_corina_v2_uses_existing_conservative_gain_defaults() -> None:
+def test_corina_v2_uses_joint_space_ankle_gain_defaults() -> None:
     joints = load_cfg(model="corina_v2")["joints"]
 
     for joint in joints:
@@ -80,6 +80,24 @@ def test_corina_v2_uses_existing_conservative_gain_defaults() -> None:
                 joint.pos_ki,
                 joint.vlim,
             ) == (0.0125, 0.004, 150.0, 0.5, 5.0)
+        elif joint.name.endswith("joint5"):
+            assert (joint.kp, joint.kd, joint.torque_range) == (60.0, 1.5, 7.0)
+            assert (
+                joint.vel_kp,
+                joint.vel_ki,
+                joint.pos_kp,
+                joint.pos_ki,
+                joint.vlim,
+            ) == (0.005, 0.002, 50.0, 1.0, 3.0)
+        elif joint.name.endswith("joint6"):
+            assert (joint.kp, joint.kd, joint.torque_range) == (30.0, 0.8, 7.0)
+            assert (
+                joint.vel_kp,
+                joint.vel_ki,
+                joint.pos_kp,
+                joint.pos_ki,
+                joint.vlim,
+            ) == (0.005, 0.002, 50.0, 1.0, 3.0)
         else:
             assert (joint.kp, joint.kd) == (18.0, 2.0)
             assert (

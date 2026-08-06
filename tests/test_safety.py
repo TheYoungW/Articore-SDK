@@ -224,6 +224,49 @@ def test_watchdog_holds_last_successful_command_without_disabling() -> None:
         arm.close()
 
 
+def test_mit_watchdog_replays_complete_command_without_yaml_fallback() -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="mit",
+        arm_joints=(JOINT,),
+        watchdog_enabled=True,
+        command_timeout_s=0.03,
+        enable_grace_s=0.03,
+        watchdog_poll_s=0.005,
+        watchdog_action="safe_hold",
+        safe_hold_hz=100.0,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        arm.send_joint_positions(
+            [0.25],
+            velocities=[0.4],
+            torques=[0.6],
+            mit_kp=[3.0],
+            mit_kd=[0.2],
+        )
+        wait_for_fault(arm)
+        deadline = time.monotonic() + 0.2
+        while len(robot.arm.sent_mit) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        assert len(robot.arm.sent_mit) >= 2
+        np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.25])
+        np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.4])
+        np.testing.assert_allclose(robot.arm.sent_mit_kp[-1], [3.0])
+        np.testing.assert_allclose(robot.arm.sent_mit_kd[-1], [0.2])
+        np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.6])
+        assert arm._last_mit_command is not None
+        assert arm._last_mit_command.kp == (3.0,)
+        assert arm._last_mit_command.kd == (0.2,)
+    finally:
+        arm.close()
+
+
 def test_watchdog_can_be_configured_to_disable() -> None:
     arm, robot = make_arm(watchdog_action="disable")
     try:
@@ -478,8 +521,8 @@ def test_mit_packet_can_override_kp_and_kd_without_changing_defaults() -> None:
 
         np.testing.assert_allclose(robot.arm.sent_mit_kp[0], [3.0])
         np.testing.assert_allclose(robot.arm.sent_mit_kd[0], [0.2])
-        assert robot.arm.sent_mit_kp[1] is None
-        assert robot.arm.sent_mit_kd[1] is None
+        np.testing.assert_allclose(robot.arm.sent_mit_kp[1], [JOINT.mit_kp])
+        np.testing.assert_allclose(robot.arm.sent_mit_kd[1], [JOINT.mit_kd])
     finally:
         arm.close()
 
@@ -507,7 +550,7 @@ def test_scalar_zero_mit_gains_apply_to_every_joint() -> None:
 
         assert robot.arm.mode_calls == ["pv", "mit"]
         np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.0])
-        assert robot.arm.sent_mit_velocities[-1] is None
+        np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_kp[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_kd[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_torques[-1], [0.4])

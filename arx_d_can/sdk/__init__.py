@@ -1,6 +1,7 @@
 """Standalone ARX-D-CAN arm SDK."""
 from __future__ import annotations
 
+import logging
 import math
 import subprocess
 import sys
@@ -52,6 +53,32 @@ class ArxDCanState:
     @property
     def positions(self) -> tuple[float, ...]:
         return self.arm.positions
+
+
+@dataclass(slots=True, frozen=True)
+class MitCommand:
+    """One complete logical-joint MIT command retained by the driver."""
+
+    positions: tuple[float, ...]
+    velocities: tuple[float, ...]
+    kp: tuple[float, ...]
+    kd: tuple[float, ...]
+    feedforward_torques: tuple[float, ...]
+    timestamp: float
+
+
+@dataclass(slots=True, frozen=True)
+class CoupledTorqueSaturation:
+    """Latest physical-motor torque limiting result for coupled joints."""
+
+    active: bool
+    motor_names: tuple[str, ...]
+    requested_torques: tuple[float, ...]
+    applied_torques: tuple[float, ...]
+    timestamp: float
+
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(slots=True, frozen=True)
@@ -182,7 +209,7 @@ def _config_from_loaded(
     port: str | None = None,
     baud: int | None = None,
     transport: str | None = None,
-    control_hz: float = 100.0,
+    control_hz: float | None = None,
     arm_control_mode: str = "posvel",
 ) -> ArxDCanConfig:
     joints_by_name = {
@@ -214,7 +241,9 @@ def _config_from_loaded(
             data.get("transport", "auto") if transport is None else transport
         ),
         baud=int(data.get("baud", 1_000_000) if baud is None else baud),
-        control_hz=control_hz,
+        control_hz=float(
+            data.get("rate", 100.0) if control_hz is None else control_hz
+        ),
         arm_control_mode=arm_control_mode,
         arm_joints=tuple(joints_by_name[name] for name in arm_names),
         gripper=joints_by_name.get(gripper_names[0]) if gripper_names else None,
@@ -263,7 +292,7 @@ def default_config(
     channel: str | None = None,
     baud: int | None = None,
     transport: str | None = None,
-    control_hz: float = 100.0,
+    control_hz: float | None = None,
     arm_control_mode: str = "posvel",
 ) -> ArxDCanConfig:
     """Build the public SDK config from one built-in or custom model profile."""
@@ -420,7 +449,13 @@ class ArxDCanArm:
             transformed_indices = self._joint_transform.transformed_indices
             loaded_config = dict(loaded_config)
             loaded_config["joints"] = [
-                replace(joint, lower_limit=None, upper_limit=None)
+                replace(
+                    joint,
+                    kp=0.0,
+                    kd=0.0,
+                    lower_limit=None,
+                    upper_limit=None,
+                )
                 if index in transformed_indices
                 else joint
                 for index, joint in enumerate(loaded_config["joints"])
@@ -467,8 +502,19 @@ class ArxDCanArm:
         self._watchdog_deadline: float | None = None
         self._feedback_error_count = 0
         self._last_joint_command: tuple[float, ...] | None = None
+        self._last_mit_command: MitCommand | None = None
         self._last_gripper_command: float | None = None
         self._last_state: ArxDCanState | None = None
+        self._coupled_control_stop = threading.Event()
+        self._coupled_control_wakeup = threading.Event()
+        self._coupled_control_thread: threading.Thread | None = None
+        self._coupled_torque_saturation = CoupledTorqueSaturation(
+            active=False,
+            motor_names=(),
+            requested_torques=(),
+            applied_torques=(),
+            timestamp=time.monotonic(),
+        )
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
         self._gripper_command_lock = threading.RLock()
         self._gripper_force_controller: GripperForceController | None = None
@@ -510,6 +556,12 @@ class ArxDCanArm:
         return self._safe_holding
 
     @property
+    def coupled_torque_saturation(self) -> CoupledTorqueSaturation:
+        """Return the most recent coupled-motor torque saturation status."""
+        with self._state_lock:
+            return self._coupled_torque_saturation
+
+    @property
     def gripper_control_state(self) -> GripperControlState:
         if self._gripper_force_controller is None:
             return GripperControlState.IDLE
@@ -527,6 +579,9 @@ class ArxDCanArm:
             self._fault_reason = None
             self._safe_holding = False
             self._feedback_error_count = 0
+            self._last_joint_command = None
+            self._last_mit_command = None
+            self._last_gripper_command = None
             self._last_state = None
 
     def configure(self, mode: str | None = None) -> None:
@@ -639,6 +694,270 @@ class ArxDCanArm:
             ),
         )
 
+    def _resolved_mit_gains(
+        self,
+        values: np.ndarray | None,
+        *,
+        gain: str,
+    ) -> np.ndarray:
+        if values is not None:
+            return np.asarray(values, dtype=np.float64).reshape(-1).copy()
+        attribute = "mit_kp" if gain == "kp" else "mit_kd"
+        return np.asarray(
+            [getattr(joint, attribute) for joint in self.config.arm_joints],
+            dtype=np.float64,
+        )
+
+    def _make_mit_command(
+        self,
+        positions: Sequence[float],
+        velocities: Sequence[float],
+        kp: Sequence[float],
+        kd: Sequence[float],
+        feedforward_torques: Sequence[float],
+    ) -> MitCommand:
+        logical_positions = self._clamp_transformed_virtual_positions(positions)
+        return MitCommand(
+            positions=tuple(float(value) for value in logical_positions),
+            velocities=tuple(float(value) for value in velocities),
+            kp=tuple(float(value) for value in kp),
+            kd=tuple(float(value) for value in kd),
+            feedforward_torques=tuple(
+                float(value) for value in feedforward_torques
+            ),
+            timestamp=time.monotonic(),
+        )
+
+    def _compose_mit_motor_command(
+        self,
+        command: MitCommand,
+        *,
+        motor_positions: Sequence[float] | None = None,
+        motor_velocities: Sequence[float] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Resolve one logical MIT command into physical motor coordinates."""
+        logical_position = np.asarray(command.positions, dtype=np.float64)
+        logical_velocity = np.asarray(command.velocities, dtype=np.float64)
+        logical_kp = np.asarray(command.kp, dtype=np.float64)
+        logical_kd = np.asarray(command.kd, dtype=np.float64)
+        logical_tau = np.asarray(command.feedforward_torques, dtype=np.float64)
+        if self._joint_transform is None:
+            return (
+                logical_position.copy(),
+                logical_velocity.copy(),
+                logical_kp.copy(),
+                logical_kd.copy(),
+                logical_tau.copy(),
+            )
+        if motor_positions is None or motor_velocities is None:
+            raise RuntimeError("coupled MIT control requires cached motor feedback")
+
+        physical_position = np.asarray(
+            motor_positions, dtype=np.float64
+        ).reshape(-1)
+        physical_velocity = np.asarray(
+            motor_velocities, dtype=np.float64
+        ).reshape(-1)
+        joint_count = len(self.config.arm_joints)
+        if (
+            physical_position.size != joint_count
+            or physical_velocity.size != joint_count
+        ):
+            raise RuntimeError("coupled MIT feedback does not cover every arm motor")
+
+        actual_position = self._joint_transform.motor_positions_to_virtual(
+            physical_position
+        )
+        actual_velocity = self._joint_transform.motor_velocities_to_virtual(
+            physical_position,
+            physical_velocity,
+        )
+        transformed_indices = sorted(self._joint_transform.transformed_indices)
+        virtual_tau = logical_tau.copy()
+        virtual_tau[transformed_indices] += (
+            logical_kp[transformed_indices]
+            * (
+                logical_position[transformed_indices]
+                - actual_position[transformed_indices]
+            )
+            + logical_kd[transformed_indices]
+            * (
+                logical_velocity[transformed_indices]
+                - actual_velocity[transformed_indices]
+            )
+        )
+
+        motor_position_target = self._joint_transform.virtual_positions_to_motor(
+            logical_position
+        )
+        motor_velocity_target = self._joint_transform.virtual_velocities_to_motor(
+            logical_position,
+            logical_velocity,
+        )
+        motor_tau = self._joint_transform.virtual_torques_to_motor(
+            actual_position,
+            virtual_tau,
+        )
+        motor_kp = logical_kp.copy()
+        motor_kd = logical_kd.copy()
+        motor_kp[transformed_indices] = 0.0
+        motor_kd[transformed_indices] = 0.0
+
+        motor_tau = self._limit_coupled_motor_torques(motor_tau)
+        return (
+            motor_position_target,
+            motor_velocity_target,
+            motor_kp,
+            motor_kd,
+            motor_tau,
+        )
+
+    def _limit_coupled_motor_torques(self, requested: np.ndarray) -> np.ndarray:
+        applied = np.asarray(requested, dtype=np.float64).copy()
+        transform = self._joint_transform
+        if transform is None:
+            return applied
+        for index in sorted(transform.transformed_indices):
+            limit = self.config.arm_joints[index].torque_range
+            if limit is not None:
+                applied[index] = float(np.clip(applied[index], -limit, limit))
+        self._record_coupled_torque_saturation(requested, applied)
+        return applied
+
+    def _record_coupled_torque_saturation(
+        self,
+        requested: np.ndarray,
+        applied: np.ndarray,
+    ) -> None:
+        transform = self._joint_transform
+        if transform is None:
+            return
+        indices = sorted(transform.transformed_indices)
+        saturated = [
+            index
+            for index in indices
+            if not math.isclose(
+                float(requested[index]),
+                float(applied[index]),
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
+        ]
+        status = CoupledTorqueSaturation(
+            active=bool(saturated),
+            motor_names=tuple(
+                self.config.arm_joints[index].name for index in saturated
+            ),
+            requested_torques=tuple(float(requested[index]) for index in indices),
+            applied_torques=tuple(float(applied[index]) for index in indices),
+            timestamp=time.monotonic(),
+        )
+        with self._state_lock:
+            previous = self._coupled_torque_saturation
+            self._coupled_torque_saturation = status
+        if status.active and (
+            not previous.active or previous.motor_names != status.motor_names
+        ):
+            _LOG.warning(
+                "coupled motor torque saturated: %s",
+                ", ".join(status.motor_names),
+            )
+        elif previous.active and not status.active:
+            _LOG.info("coupled motor torque saturation cleared")
+
+    def _read_cached_arm_motor_state(self) -> tuple[np.ndarray, np.ndarray]:
+        position, velocity, _ = self.robot.get_state(
+            request_feedback=False,
+            require_complete=True,
+            joint_names=list(self.config.joint_names),
+        )
+        statuses = self.robot.get_status_codes(
+            joint_names=list(self.config.joint_names),
+        )
+        disabled = [name for name, status in statuses.items() if status == 0]
+        if disabled:
+            raise RuntimeError(
+                "coupled MIT motor unexpectedly disabled: " + ", ".join(disabled)
+            )
+        return np.asarray(position, dtype=np.float64), np.asarray(
+            velocity, dtype=np.float64
+        )
+
+    def _send_mit_command(self, command: MitCommand, *, strict: bool) -> None:
+        with self._io_lock:
+            if self._joint_transform is None:
+                vectors = self._compose_mit_motor_command(command)
+            else:
+                motor_position, motor_velocity = self._read_cached_arm_motor_state()
+                vectors = self._compose_mit_motor_command(
+                    command,
+                    motor_positions=motor_position,
+                    motor_velocities=motor_velocity,
+                )
+            position, velocity, kp, kd, torque = vectors
+            self.robot.arm.send_mit(
+                position,
+                vel=velocity,
+                kp=kp,
+                kd=kd,
+                tau=torque,
+                strict=strict,
+            )
+
+    def _start_coupled_control(self) -> None:
+        if self._joint_transform is None or self._mode != "mit" or not self._enabled:
+            return
+        thread = self._coupled_control_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._coupled_control_stop.clear()
+        self._coupled_control_wakeup.clear()
+        self._coupled_control_thread = threading.Thread(
+            target=self._coupled_control_loop,
+            name="arx-d-can-coupled-mit-control",
+            daemon=True,
+        )
+        self._coupled_control_thread.start()
+
+    def _stop_coupled_control(self) -> None:
+        self._coupled_control_stop.set()
+        self._coupled_control_wakeup.set()
+        thread = self._coupled_control_thread
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=1.0)
+        if thread is not threading.current_thread():
+            self._coupled_control_thread = None
+
+    def _coupled_control_loop(self) -> None:
+        period = 1.0 / self.config.control_hz
+        next_tick = time.perf_counter()
+        while not self._coupled_control_stop.is_set():
+            with self._state_lock:
+                command = self._last_mit_command
+                enabled = self._enabled
+                safe_holding = self._safe_holding
+            if not enabled:
+                return
+            if command is None or safe_holding:
+                self._coupled_control_wakeup.wait(period)
+                self._coupled_control_wakeup.clear()
+                next_tick = time.perf_counter()
+                continue
+            try:
+                self._send_mit_command(command, strict=True)
+            except Exception as exc:
+                self._begin_safe_hold(f"coupled MIT control failed: {exc}")
+            next_tick += period
+            delay = next_tick - time.perf_counter()
+            if delay <= 0.0:
+                next_tick = time.perf_counter()
+                continue
+            self._coupled_control_stop.wait(delay)
+
     def close(self, *, disable: bool = True) -> None:
         """Stop command production and close the bus.
 
@@ -646,6 +965,7 @@ class ArxDCanArm:
         for read-only clients that never configured, enabled, or commanded the
         robot and therefore must not transmit motor-control frames on exit.
         """
+        self._stop_coupled_control()
         self._stop_watchdog()
         error: Exception | None = None
         if self._connected:
@@ -713,18 +1033,51 @@ class ArxDCanArm:
                 if not np.all(np.isfinite(array)):
                     raise ValueError(f"{name} must be finite")
                 parsed[name] = array
-            (
-                initial_position_vector,
-                initial_velocity_vector,
-                initial_torque_vector,
-                _,
-            ) = self._transform_command_vectors(
-                parsed["initial_positions"],
-                velocities=parsed["initial_velocities"],
-                torques=parsed["initial_torques"],
-            )
             kp_vector = _mit_gain_vector(mit_kp, joint_count=joint_count, name="Kp")
             kd_vector = _mit_gain_vector(mit_kd, joint_count=joint_count, name="Kd")
+            kp_vector = self._resolved_mit_gains(kp_vector, gain="kp")
+            kd_vector = self._resolved_mit_gains(kd_vector, gain="kd")
+            initial_command = self._make_mit_command(
+                parsed["initial_positions"],
+                parsed["initial_velocities"],
+                kp_vector,
+                kd_vector,
+                parsed["initial_torques"],
+            )
+            if self._joint_transform is None:
+                initial_position_vector = np.asarray(initial_command.positions)
+                initial_velocity_vector = np.asarray(initial_command.velocities)
+                initial_torque_vector = np.asarray(initial_command.feedforward_torques)
+            else:
+                # Enabling must never seed coupled motors with virtual gains.
+                # Before the inner loop has fresh enabled feedback, apply only
+                # the transformed feed-forward torque; do not infer a PD error
+                # from the fitted forward/inverse model's residual.
+                initial_position_vector = (
+                    self._joint_transform.virtual_positions_to_motor(
+                        initial_command.positions
+                    )
+                )
+                initial_velocity_vector = (
+                    self._joint_transform.virtual_velocities_to_motor(
+                        initial_command.positions,
+                        initial_command.velocities,
+                    )
+                )
+                initial_torque_vector = (
+                    self._joint_transform.virtual_torques_to_motor(
+                        initial_command.positions,
+                        initial_command.feedforward_torques,
+                    )
+                )
+                transformed_indices = sorted(
+                    self._joint_transform.transformed_indices
+                )
+                kp_vector[transformed_indices] = 0.0
+                kd_vector[transformed_indices] = 0.0
+                initial_torque_vector = self._limit_coupled_motor_torques(
+                    initial_torque_vector
+                )
         try:
             if initial_position_vector is None:
                 self.robot.arm.enable()
@@ -748,14 +1101,17 @@ class ArxDCanArm:
             self._enabled = True
             if initial_positions is not None:
                 self._last_joint_command = tuple(float(value) for value in initial_positions)
+                self._last_mit_command = initial_command
             self._watchdog_deadline = time.monotonic() + max(
                 self.config.enable_grace_s,
                 self.config.command_timeout_s,
             )
         self._start_watchdog()
+        self._start_coupled_control()
 
     def disable(self) -> None:
         self._require_connected()
+        self._stop_coupled_control()
         self._stop_watchdog()
         try:
             self.robot.estop()
@@ -779,6 +1135,8 @@ class ArxDCanArm:
             self._enabled = False
             self._safe_holding = False
             self._watchdog_deadline = None
+            self._last_joint_command = None
+            self._last_mit_command = None
 
     def clear_fault(self) -> None:
         """Clear the SDK fault latch after healthy feedback is available."""
@@ -848,6 +1206,7 @@ class ArxDCanArm:
         self._require_operational()
         normalized = mode.strip().lower().replace("_", "")
         if normalized in ("posvel", "pv"):
+            self._stop_coupled_control()
             with self._io_lock:
                 if not self.robot.arm.mode_pos_vel():
                     raise RuntimeError("ARX-D-CAN arm did not enter POS_VEL mode")
@@ -1101,21 +1460,16 @@ class ArxDCanArm:
             [target[joint.name] for joint in self.config.arm_joints],
             dtype=np.float64,
         )
-        (
-            motor_position_target,
-            velocity_target,
-            torque_target,
-            velocity_limit_target,
-        ) = self._transform_command_vectors(
-            logical_position_target,
-            velocities=velocity_target,
-            torques=torque_target,
-            velocity_limits=velocity_limit_target,
-        )
         try:
             if active_mode in ("posvel", "pv"):
                 if self._mode != "posvel":
                     self.configure_mode("posvel")
+                motor_position_target, _, _, velocity_limit_target = (
+                    self._transform_command_vectors(
+                        logical_position_target,
+                        velocity_limits=velocity_limit_target,
+                    )
+                )
                 with self._io_lock:
                     self.robot.arm.send_pos_vel(
                         motor_position_target,
@@ -1131,20 +1485,31 @@ class ArxDCanArm:
             if active_mode == "mit":
                 if self._mode != "mit":
                     self.configure_mode("mit")
-                with self._io_lock:
-                    self.robot.arm.send_mit(
-                        motor_position_target,
-                        vel=velocity_target,
-                        kp=mit_kp_target,
-                        kd=mit_kd_target,
-                        tau=torque_target,
-                        strict=True,
-                    )
-                self._record_successful_command(
-                    joint_positions=tuple(
-                        target[joint.name] for joint in self.config.arm_joints
-                    )
+                command = self._make_mit_command(
+                    logical_position_target,
+                    (
+                        np.zeros(joint_count)
+                        if velocity_target is None
+                        else velocity_target
+                    ),
+                    self._resolved_mit_gains(mit_kp_target, gain="kp"),
+                    self._resolved_mit_gains(mit_kd_target, gain="kd"),
+                    np.zeros(joint_count) if torque_target is None else torque_target,
                 )
+                thread = self._coupled_control_thread
+                background_running = (
+                    self._joint_transform is not None
+                    and thread is not None
+                    and thread.is_alive()
+                )
+                if self._enabled and not background_running:
+                    self._send_mit_command(command, strict=True)
+                self._record_successful_command(
+                    joint_positions=command.positions,
+                    mit_command=command,
+                )
+                self._start_coupled_control()
+                self._coupled_control_wakeup.set()
                 return
         except Exception as exc:
             holding = self._begin_safe_hold(f"joint command failed: {exc}")
@@ -1309,6 +1674,11 @@ class ArxDCanArm:
         return names
 
     def _validate_safety_config(self) -> None:
+        if (
+            not math.isfinite(self.config.control_hz)
+            or self.config.control_hz <= 0.0
+        ):
+            raise ValueError("control_hz must be finite and positive")
         if self.config.watchdog_enabled and self.config.command_timeout_s <= 0.0:
             raise ValueError("command_timeout_s must be positive")
         if self.config.enable_grace_s < 0.0:
@@ -1335,11 +1705,14 @@ class ArxDCanArm:
         self,
         *,
         joint_positions: tuple[float, ...] | None = None,
+        mit_command: MitCommand | None = None,
         gripper_position: float | None = None,
     ) -> None:
         with self._state_lock:
             if joint_positions is not None:
                 self._last_joint_command = joint_positions
+            if mit_command is not None:
+                self._last_mit_command = mit_command
             if gripper_position is not None:
                 self._last_gripper_command = gripper_position
             if self._enabled:
@@ -1437,17 +1810,19 @@ class ArxDCanArm:
                 if not self._safe_holding or not self._enabled:
                     return
                 joint_target = self._last_joint_command
+                mit_command = self._last_mit_command
                 gripper_target = self._last_gripper_command
             try:
-                with self._io_lock:
-                    if joint_target is not None:
+                if joint_target is not None:
+                    if self._mode == "mit" and mit_command is not None:
+                        self._send_mit_command(mit_command, strict=False)
+                    else:
                         target, _, _, _ = self._transform_command_vectors(
                             joint_target
                         )
-                        if self._mode == "mit":
-                            self.robot.arm.send_mit(target, strict=False)
-                        else:
+                        with self._io_lock:
                             self.robot.arm.send_pos_vel(target, strict=False)
+                with self._io_lock:
                     if gripper_target is not None:
                         kp = self.config.gripper_force_control.hold_kp
                         kd = self.config.gripper_force_control.hold_kd
