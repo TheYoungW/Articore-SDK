@@ -13,6 +13,7 @@ def test_zero_example_runs_with_default_arm_only_selection(monkeypatch):
 
     assert captured["port"] == "/dev/null"
     assert captured["include_gripper"] is False
+    assert captured["joints"] is None
 
 
 def test_zero_example_forwards_gripper_selection(monkeypatch):
@@ -33,3 +34,23 @@ def test_zero_example_forwards_gripper_selection(monkeypatch):
 
     assert captured["port"] == "/dev/ttyACM3"
     assert captured["include_gripper"] is True
+
+
+def test_zero_example_forwards_selected_joints(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        example,
+        "zero_current_position",
+        lambda args: captured.update(vars(args)),
+    )
+
+    example.main(
+        [
+            "--port",
+            "/dev/ttyACM4",
+            "--joint",
+            "l-joint4",
+        ]
+    )
+
+    assert captured["joints"] == ["l-joint4"]

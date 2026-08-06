@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import math
+import threading
 import time
 
 import numpy as np
@@ -29,6 +30,7 @@ def _gain_vector(
     *,
     joint_count: int,
     name: str,
+    allow_negative: bool = False,
 ) -> np.ndarray:
     values = np.asarray(value, dtype=np.float64)
     if values.ndim == 0:
@@ -37,7 +39,9 @@ def _gain_vector(
         values = values.reshape(-1)
     if len(values) != joint_count:
         raise ValueError(f"expected {joint_count} {name} values, got {len(values)}")
-    if np.any(~np.isfinite(values)) or np.any(values < 0.0):
+    if np.any(~np.isfinite(values)):
+        raise ValueError(f"{name} values must be finite")
+    if not allow_negative and np.any(values < 0.0):
         raise ValueError(f"{name} values must be finite and non-negative")
     return values
 
@@ -57,16 +61,12 @@ class GravityCompensationMode:
         arm: ArxDCanArm,
         *,
         hz: float = 100.0,
-        transition_seconds: float = 3.0,
-        settle_seconds: float = 0.5,
+        transition_seconds: float = 0.0,
+        settle_seconds: float = 0.0,
         gravity_scale: float = 1.0,
         joint_scales: Sequence[float] | None = None,
         damping: float | Sequence[float] = 0.0,
-        max_velocity: float = math.radians(20.0),
-        limit_margin: float = math.radians(5.0),
-        torque_limit_ratio: float = 0.2,
-        max_torques: Sequence[float] | None = None,
-        stationary_velocity: float = math.radians(3.0),
+        feedback_check_hz: float = 10.0,
         gravity_provider: GravityProvider | None = None,
     ) -> None:
         self.arm = arm
@@ -81,26 +81,13 @@ class GravityCompensationMode:
             raise ValueError("settle_seconds must be finite and non-negative")
         if not math.isfinite(gravity_scale) or gravity_scale < 0.0:
             raise ValueError("gravity_scale must be finite and non-negative")
-        if not math.isfinite(max_velocity) or max_velocity <= 0.0:
-            raise ValueError("max_velocity must be finite and positive")
-        if not math.isfinite(limit_margin) or limit_margin < 0.0:
-            raise ValueError("limit_margin must be finite and non-negative")
-        if (
-            not math.isfinite(torque_limit_ratio)
-            or torque_limit_ratio <= 0.0
-            or torque_limit_ratio > 1.0
-        ):
-            raise ValueError("torque_limit_ratio must be in (0, 1]")
-        if not math.isfinite(stationary_velocity) or stationary_velocity <= 0.0:
-            raise ValueError("stationary_velocity must be finite and positive")
-
+        if not math.isfinite(feedback_check_hz) or feedback_check_hz < 0.0:
+            raise ValueError("feedback_check_hz must be finite and non-negative")
         self.hz = float(hz)
         self.transition_seconds = float(transition_seconds)
         self.settle_seconds = float(settle_seconds)
         self.gravity_scale = float(gravity_scale)
-        self.max_velocity = float(max_velocity)
-        self.limit_margin = float(limit_margin)
-        self.stationary_velocity = float(stationary_velocity)
+        self.feedback_check_hz = float(feedback_check_hz)
         self._period = 1.0 / self.hz
         self._zeros = np.zeros(self._joint_count, dtype=np.float64)
         self._damping = _gain_vector(
@@ -112,6 +99,7 @@ class GravityCompensationMode:
             1.0 if joint_scales is None else joint_scales,
             joint_count=self._joint_count,
             name="joint_scales",
+            allow_negative=True,
         )
         self._default_kp = np.asarray(
             [joint.mit_kp for joint in arm.config.arm_joints],
@@ -121,30 +109,14 @@ class GravityCompensationMode:
             [joint.mit_kd for joint in arm.config.arm_joints],
             dtype=np.float64,
         )
-        if max_torques is None:
-            ranges = np.asarray(
-                [
-                    joint.torque_range if joint.torque_range is not None else 10.0
-                    for joint in arm.config.arm_joints
-                ],
-                dtype=np.float64,
-            )
-            self._max_torques = torque_limit_ratio * ranges
-        else:
-            self._max_torques = _gain_vector(
-                max_torques,
-                joint_count=self._joint_count,
-                name="max_torques",
-            )
-            if np.any(self._max_torques <= 0.0):
-                raise ValueError("max_torques values must be positive")
-
         self._gravity_provider = gravity_provider or self._build_gravity_provider()
         self._started = False
         self._owns_connection = False
         self._active_started = 0.0
         self._last_sample: GravityCompensationSample | None = None
         self._transition_safe = True
+        self._feedback_monitor_stop = threading.Event()
+        self._feedback_monitor_thread: threading.Thread | None = None
 
     @property
     def active(self) -> bool:
@@ -153,10 +125,6 @@ class GravityCompensationMode:
     @property
     def last_sample(self) -> GravityCompensationSample | None:
         return self._last_sample
-
-    @property
-    def max_torques(self) -> tuple[float, ...]:
-        return tuple(float(value) for value in self._max_torques)
 
     def _build_gravity_provider(self) -> GravityProvider:
         if self.arm.config.urdf_path is None:
@@ -192,18 +160,10 @@ class GravityCompensationMode:
         torques = self.gravity_scale * self._joint_scales * raw
         if np.any(~np.isfinite(torques)):
             raise RuntimeError("gravity provider returned non-finite torques")
-        exceeded = np.flatnonzero(np.abs(torques) > self._max_torques)
-        if exceeded.size:
-            details = ", ".join(
-                f"{self.arm.joint_names[index]}={torques[index]:+.3f}Nm "
-                f"(limit {self._max_torques[index]:.3f}Nm)"
-                for index in exceeded
-            )
-            raise RuntimeError(f"gravity torque limit exceeded: {details}")
         return torques
 
-    def _read_checked_state(self, *, require_stationary: bool = False):
-        state = self.arm.read_state(request_feedback=True)
+    def _read_checked_state(self, *, request_feedback: bool = True):
+        state = self.arm.read_state(request_feedback=request_feedback)
         if self.arm.faulted or self.arm.safe_holding:
             raise RuntimeError(
                 self.arm.fault_reason or "arm entered fault-safe holding"
@@ -214,23 +174,49 @@ class GravityCompensationMode:
             raise RuntimeError("arm feedback joint count changed")
         if np.any(~np.isfinite(positions)) or np.any(~np.isfinite(velocities)):
             raise RuntimeError("arm feedback contains non-finite values")
-        velocity_limit = self.stationary_velocity if require_stationary else self.max_velocity
-        if np.max(np.abs(velocities)) > velocity_limit:
-            raise RuntimeError(
-                f"joint velocity exceeded {math.degrees(velocity_limit):.3f}deg/s"
-            )
-        for index, joint in enumerate(self.arm.config.arm_joints):
-            if (
-                joint.lower_limit is not None
-                and positions[index] < joint.lower_limit + self.limit_margin
-            ):
-                raise RuntimeError(f"{joint.name} approached its lower limit")
-            if (
-                joint.upper_limit is not None
-                and positions[index] > joint.upper_limit - self.limit_margin
-            ):
-                raise RuntimeError(f"{joint.name} approached its upper limit")
         return state, positions, velocities
+
+    def _feedback_monitor_loop(self) -> None:
+        period = 1.0 / self.feedback_check_hz
+        while not self._feedback_monitor_stop.wait(period):
+            if not self._started or not self.arm.connected:
+                return
+            try:
+                refresh = getattr(self.arm, "refresh_feedback_background", None)
+                if refresh is None:
+                    self.arm.read_state(request_feedback=True)
+                else:
+                    refresh()
+            except Exception:
+                # ArxDCanArm records consecutive feedback failures and enters
+                # safe hold at its configured threshold.  The real-time loop
+                # observes that state without waiting on this request.
+                continue
+
+    def _start_feedback_monitor(self) -> None:
+        if self.feedback_check_hz <= 0.0:
+            return
+        thread = self._feedback_monitor_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._feedback_monitor_stop.clear()
+        self._feedback_monitor_thread = threading.Thread(
+            target=self._feedback_monitor_loop,
+            name="arx-d-can-feedback-monitor",
+            daemon=True,
+        )
+        self._feedback_monitor_thread.start()
+
+    def _stop_feedback_monitor(self) -> None:
+        self._feedback_monitor_stop.set()
+        thread = self._feedback_monitor_thread
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join()
+        self._feedback_monitor_thread = None
 
     def _send(
         self,
@@ -251,6 +237,23 @@ class GravityCompensationMode:
             require_enabled=require_enabled,
         )
 
+    def _gripper_position(self, state) -> float | None:
+        """Return a finite gripper position when this arm controls a gripper."""
+        if not getattr(self.arm, "enable_gripper", False):
+            return None
+        if state.gripper is None:
+            raise RuntimeError("gripper feedback is unavailable")
+        position = float(state.gripper.position)
+        if not math.isfinite(position):
+            raise RuntimeError("gripper feedback contains a non-finite position")
+        return position
+
+    def _refresh_gripper_command(self, state) -> None:
+        """Keep an enabled gripper alive while tracking its feedback position."""
+        position = self._gripper_position(state)
+        if position is not None:
+            self.arm.set_gripper_motor_value(position)
+
     def _run_transition(self, hold_position: np.ndarray, *, entering: bool) -> None:
         if self.transition_seconds <= 0.0:
             state, positions, _ = self._read_checked_state()
@@ -262,13 +265,13 @@ class GravityCompensationMode:
                 kp=(1.0 - alpha) * self._default_kp,
                 kd=(1.0 - alpha) * self._default_kd + alpha * self._damping,
             )
+            self._refresh_gripper_command(state)
             return
 
         steps = max(1, math.ceil(self.transition_seconds * self.hz))
         started = time.monotonic()
         for index in range(steps + 1):
             state, positions, _ = self._read_checked_state()
-            del state
             gravity = self._gravity_torques(positions)
             progress = index / steps
             gravity_alpha = progress if entering else 1.0 - progress
@@ -281,6 +284,7 @@ class GravityCompensationMode:
                     + gravity_alpha * self._damping
                 ),
             )
+            self._refresh_gripper_command(state)
             deadline = started + (index + 1) * self._period
             time.sleep(max(0.0, deadline - time.monotonic()))
 
@@ -296,10 +300,8 @@ class GravityCompensationMode:
                 raise RuntimeError(
                     "arm must be disabled before entering gravity compensation"
                 )
-            state, initial_position, _ = self._read_checked_state(
-                require_stationary=True
-            )
-            del state
+            state, initial_position, _ = self._read_checked_state()
+            initial_gripper_position = self._gripper_position(state)
             self._gravity_torques(initial_position)
             self.arm.configure("mit")
             self._send(
@@ -310,17 +312,23 @@ class GravityCompensationMode:
                 require_enabled=False,
             )
             self.arm.enable()
+            if initial_gripper_position is not None:
+                # The gripper was enabled together with the arm.  Seed its MIT
+                # command immediately so it cannot time out before the first
+                # gravity-compensation feedback cycle.
+                self.arm.set_gripper_motor_value(initial_gripper_position)
 
             settle_deadline = time.monotonic() + self.settle_seconds
             next_tick = time.monotonic()
             while time.monotonic() < settle_deadline:
-                self._read_checked_state()
+                state, _, _ = self._read_checked_state()
                 self._send(
                     initial_position,
                     self._zeros,
                     kp=self._default_kp,
                     kd=self._default_kd,
                 )
+                self._refresh_gripper_command(state)
                 next_tick += self._period
                 time.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -328,8 +336,10 @@ class GravityCompensationMode:
             self._started = True
             self._transition_safe = True
             self._active_started = time.monotonic()
+            self._start_feedback_monitor()
             return self.step()
         except Exception:
+            self._stop_feedback_monitor()
             if self.arm.connected and self.arm.enabled:
                 try:
                     self.arm.disable()
@@ -348,7 +358,9 @@ class GravityCompensationMode:
         if not self._started:
             raise RuntimeError("gravity compensation is not active")
         try:
-            _, positions, velocities = self._read_checked_state()
+            state, positions, velocities = self._read_checked_state(
+                request_feedback=False
+            )
             torques = self._gravity_torques(positions)
             self._send(
                 positions,
@@ -356,6 +368,7 @@ class GravityCompensationMode:
                 kp=self._zeros,
                 kd=self._damping,
             )
+            self._refresh_gripper_command(state)
         except Exception:
             self._transition_safe = False
             raise
@@ -391,6 +404,7 @@ class GravityCompensationMode:
     def stop(self) -> None:
         """Restore the configured MIT gains, then disable the arm."""
         transition_error: Exception | None = None
+        self._stop_feedback_monitor()
         try:
             if (
                 self._started

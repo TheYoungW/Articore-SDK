@@ -246,6 +246,25 @@ SDK 会同时反转位置、速度和力矩的指令及反馈，其他关节省�
 若实际电机的 MIT 力矩映射范围与底层型号默认值不同，设置
 `torque_range`；SDK 会同时换算 MIT 前馈力矩和反馈力矩。
 
+### Corina V2 双腿
+
+Corina V2 作为一个 12 关节机型注册，使用同一条 CAN 总线。右腿 ESC ID 为
+`0x01～0x06`，左腿为 `0x07～0x0C`。所有 ESC ID 均保持在达妙状态帧可唯一表达的
+4 位范围内，避免 `0x11/0x12` 与 `0x01/0x02` 的低 4 位冲突。反馈/MST ID 统一为
+`ESC_ID + 0x20`：右腿是 `0x21～0x26`，左腿是 `0x27～0x2C`。
+
+```python
+from arx_d_can import ArxDCanArm
+
+robot = ArxDCanArm(model="corina_v2", port="/dev/ttyACM0")
+print(robot.joint_names)
+```
+
+控制参数暂时沿用 SDK 中 4340P/4310 的保守默认值，电机方向默认均为正向。
+`groups.arm.joints` 包含双腿全部 12 个关节。为匹配 Pinocchio 对该分支 URDF 的模型
+顺序，所有位置、速度和力矩数组按先左腿 6 轴、后右腿 6 轴的顺序传入。首次使能前
+应悬挂机器人，逐关节核对零位、方向和增益。
+
 ### Yunyi V1.0 双臂
 
 Yunyi V1.0 只保留一份完整双臂模型：

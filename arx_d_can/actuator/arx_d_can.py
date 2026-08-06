@@ -1398,15 +1398,22 @@ class ArxDCan:
 
     # ── 生命周期 ────────────────────────────────────────────────────────
 
-    def disconnect(self) -> None:
+    def disconnect(self, *, disable: bool = True) -> None:
+        """Close the bus, optionally disabling motors first.
+
+        ``disable=False`` is intended only for clients that never enabled or
+        commanded a motor, such as read-only diagnostics.  Motion code should
+        keep the default so physical disable is attempted and verified.
+        """
         if not self._connected:
             return
         self.stop_control_loop()
         errors = []
-        try:
-            self.disable_all()
-        except Exception as exc:
-            errors.append(str(exc))
+        if disable:
+            try:
+                self.disable_all()
+            except Exception as exc:
+                errors.append(str(exc))
         time.sleep(0.1)
         for ctrl in self._ctrl_map.values():
             try:

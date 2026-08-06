@@ -36,13 +36,16 @@ def parse_joint_values(
     *,
     expected_count: int,
     name: str,
+    allow_negative: bool = False,
 ) -> tuple[float, ...]:
     values = tuple(float(value) for value in text.split(",") if value.strip())
     if len(values) != expected_count:
         raise ValueError(
             f"expected {expected_count} comma-separated {name} values, got {len(values)}"
         )
-    if any(not math.isfinite(value) or value < 0.0 for value in values):
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError(f"{name} values must be finite")
+    if not allow_negative and any(value < 0.0 for value in values):
         raise ValueError(f"{name} values must be finite and non-negative")
     return values
 
@@ -63,6 +66,7 @@ def main(args: argparse.Namespace) -> None:
             args.joint_scales,
             expected_count=len(arm.joint_names),
             name="joint scale",
+            allow_negative=True,
         )
     )
     mode = GravityCompensationMode(
@@ -73,15 +77,13 @@ def main(args: argparse.Namespace) -> None:
         gravity_scale=args.gravity_scale,
         joint_scales=joint_scales,
         damping=args.damping,
-        max_velocity=math.radians(args.max_velocity),
-        limit_margin=math.radians(args.limit_margin),
-        torque_limit_ratio=args.torque_limit_ratio,
     )
     last_report = -1.0
+    report_period = 1.0 / args.report_hz
 
     def report(sample) -> None:
         nonlocal last_report
-        if sample.elapsed_s - last_report < 1.0:
+        if sample.elapsed_s - last_report < report_period:
             return
         last_report = sample.elapsed_s
         max_velocity = math.degrees(
@@ -142,16 +144,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Command and feedback rate (default: 100)",
     )
     parser.add_argument(
+        "--report-hz",
+        type=positive_float,
+        default=1.0,
+        help="Status output rate (default: 1)",
+    )
+    parser.add_argument(
         "--transition-seconds",
         type=non_negative_float,
-        default=3.0,
-        help="Time to ramp stiffness and gravity torque (default: 3)",
+        default=0.0,
+        help="Optional time to ramp stiffness and gravity torque (default: 0)",
     )
     parser.add_argument(
         "--settle-seconds",
         type=non_negative_float,
-        default=0.5,
-        help="Current-position hold before the transition (default: 0.5)",
+        default=0.0,
+        help="Optional current-position hold before gravity torque (default: 0)",
     )
     parser.add_argument(
         "--gravity-scale",
@@ -162,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--joint-scales",
         help=(
-            "Comma-separated non-negative per-joint gravity multipliers; "
+            "Comma-separated signed per-joint gravity multipliers; "
             "default: all 1"
         ),
     )
@@ -171,24 +179,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=non_negative_float,
         default=0.0,
         help="Final MIT Kd; Kp is always 0 (default: 0, pure torque)",
-    )
-    parser.add_argument(
-        "--max-velocity",
-        type=positive_float,
-        default=20.0,
-        help="Abort threshold in deg/s (default: 20)",
-    )
-    parser.add_argument(
-        "--limit-margin",
-        type=non_negative_float,
-        default=5.0,
-        help="Abort distance from a URDF joint limit in degrees (default: 5)",
-    )
-    parser.add_argument(
-        "--torque-limit-ratio",
-        type=positive_float,
-        default=0.2,
-        help="Per-joint command limit as a fraction of configured range (default: 0.2)",
     )
     parser.add_argument(
         "--countdown",

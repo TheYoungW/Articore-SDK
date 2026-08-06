@@ -1,0 +1,118 @@
+name: Corina V2
+urdf_path: models/Corinav2.urdf
+# The SDK currently exposes one end-effector frame; use the right foot by default.
+end_effector_frame: right_leg_link6
+
+channel: /dev/ttyACM0
+transport: dm-serial
+baud: 1000000
+rate: 500
+
+safety:
+  watchdog_enabled: true
+  command_timeout_s: 0.25
+  enable_grace_s: 2.0
+  watchdog_poll_s: 0.02
+  watchdog_action: safe_hold
+  safe_hold_hz: 100.0
+  feedback_fault_threshold: 3
+
+# Both legs share one CAN bus. Pinocchio traverses this branched URDF with the
+# left leg first, so command/state arrays follow left leg, then right leg.
+groups:
+  arm:
+    joints:
+      [left_leg_joint1, left_leg_joint2, left_leg_joint3,
+       left_leg_joint4, left_leg_joint5, left_leg_joint6,
+       right_leg_joint1, right_leg_joint2, right_leg_joint3,
+       right_leg_joint4, right_leg_joint5, right_leg_joint6]
+
+# Conservative defaults follow the existing SDK profiles. The 27 Nm joints use
+# the 4340P defaults; the 7 Nm joints use the 4310 defaults. Verify directions,
+# zero positions, and gains on suspended hardware before normal operation.
+# Keep every ESC ID inside the unique 4-bit Damiao status-ID range. On this
+# robot each feedback/MST ID is the corresponding ESC ID plus 0x20.
+joints:
+  - name: left_leg_joint1
+    motor_id: 0x07
+    feedback_id: 0x27
+    model: "4340P"
+    MIT: {kp: 120.0, kd: 8.0}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 5.0}
+
+  - name: left_leg_joint2
+    motor_id: 0x08
+    feedback_id: 0x28
+    model: "4340P"
+    MIT: {kp: 120.0, kd: 8.0}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 5.0}
+
+  - name: left_leg_joint3
+    motor_id: 0x09
+    feedback_id: 0x29
+    model: "4310"
+    MIT: {kp: 18.0, kd: 2.0}
+    POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
+
+  - name: left_leg_joint4
+    motor_id: 0x0A
+    feedback_id: 0x2A
+    model: "4340P"
+    MIT: {kp: 120.0, kd: 8.0}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 5.0}
+
+  - name: left_leg_joint5
+    motor_id: 0x0B
+    feedback_id: 0x2B
+    model: "4310"
+    MIT: {kp: 18.0, kd: 2.0}
+    POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
+
+  - name: left_leg_joint6
+    motor_id: 0x0C
+    feedback_id: 0x2C
+    model: "4310"
+    MIT: {kp: 18.0, kd: 2.0}
+    POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
+
+  - name: right_leg_joint1
+    motor_id: 0x01
+    feedback_id: 0x21
+    model: "4340P"
+    MIT: {kp: 120.0, kd: 8.0}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 5.0}
+
+  - name: right_leg_joint2
+    motor_id: 0x02
+    feedback_id: 0x22
+    model: "4340P"
+    MIT: {kp: 120.0, kd: 8.0}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 5.0}
+
+  - name: right_leg_joint3
+    motor_id: 0x03
+    feedback_id: 0x23
+    model: "4310"
+    MIT: {kp: 18.0, kd: 2.0}
+    POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
+
+  - name: right_leg_joint4
+    motor_id: 0x04
+    feedback_id: 0x24
+    model: "4340P"
+    MIT: {kp: 120.0, kd: 8.0}
+    POS_VEL: {vel_kp: 0.0125, vel_ki: 0.004, pos_kp: 150.0, pos_ki: 0.5, vlim: 5.0}
+
+  - name: right_leg_joint5
+    motor_id: 0x05
+    feedback_id: 0x25
+    model: "4310"
+    MIT: {kp: 18.0, kd: 2.0}
+    POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
+
+  - name: right_leg_joint6
+    motor_id: 0x06
+    feedback_id: 0x26
+    model: "4310"
+    MIT: {kp: 18.0, kd: 2.0}
+    POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}

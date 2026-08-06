@@ -17,18 +17,19 @@ def print_state(arm, *, sample_index: int | None = None) -> None:
         f"{name}={math.degrees(pos):+.3f}"
         for name, pos in zip(state.arm.names, state.arm.positions)
     )
-    print(f"{prefix}arm_pos(deg): {arm_positions}")
+    print(f"{prefix}arm_pos(deg): {arm_positions}", flush=True)
     arm_velocities = " ".join(
         f"{name}={math.degrees(vel):+.3f}"
         for name, vel in zip(state.arm.names, state.arm.velocities)
     )
-    print(f"{prefix}arm_vel(deg/s): {arm_velocities}")
+    print(f"{prefix}arm_vel(deg/s): {arm_velocities}", flush=True)
     if state.gripper is not None:
         print(
             f"{prefix}{state.gripper.name}: "
             f"pos={math.degrees(state.gripper.position):+.3f} deg "
             f"vel={math.degrees(state.gripper.velocity):+.3f} deg/s "
-            f"tau={state.gripper.torque:+.6f}"
+            f"tau={state.gripper.torque:+.6f}",
+            flush=True,
         )
 
 
@@ -53,7 +54,7 @@ def main(args: argparse.Namespace) -> None:
             try:
                 print_state(arm, sample_index=sample_index)
             except RuntimeError as exc:
-                print(f"[{sample_index:04d}] feedback_error: {exc}")
+                print(f"[{sample_index:04d}] feedback_error: {exc}", flush=True)
             time.sleep(period)
     finally:
         arm.close()

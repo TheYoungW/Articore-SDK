@@ -1,3 +1,4 @@
+import threading
 import time
 
 import numpy as np
@@ -244,6 +245,67 @@ def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover()
         assert not arm.safe_holding
         assert arm.enabled
     finally:
+        arm.close()
+
+
+def test_background_feedback_refresh_does_not_hold_command_io_lock() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    feedback_entered = threading.Event()
+    feedback_release = threading.Event()
+    command_finished = threading.Event()
+    original_get_state = robot.get_state
+
+    def blocking_get_state(**kwargs):
+        if kwargs.get("request_feedback", True):
+            feedback_entered.set()
+            assert feedback_release.wait(0.5)
+        return original_get_state(**kwargs)
+
+    robot.get_state = blocking_get_state
+    feedback_thread = threading.Thread(target=arm.refresh_feedback_background)
+    command_thread = threading.Thread(
+        target=lambda: (
+            arm.send_joint_positions([0.25]),
+            command_finished.set(),
+        )
+    )
+    try:
+        feedback_thread.start()
+        assert feedback_entered.wait(0.2)
+        command_thread.start()
+        assert command_finished.wait(0.2)
+    finally:
+        feedback_release.set()
+        feedback_thread.join()
+        command_thread.join()
+        arm.close()
+
+
+def test_cached_reads_do_not_clear_background_feedback_failure_count() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    arm.send_joint_positions([0.3])
+    arm.read_state()
+    original_get_state = robot.get_state
+
+    def fail_only_fresh_feedback(**kwargs):
+        if kwargs.get("request_feedback", True):
+            raise RuntimeError("missing motor IDs: 15")
+        return original_get_state(**kwargs)
+
+    robot.get_state = fail_only_fresh_feedback
+    try:
+        for _ in range(2):
+            arm.refresh_feedback_background()
+            arm.read_state(request_feedback=False)
+            assert not arm.faulted
+
+        arm.refresh_feedback_background()
+
+        assert arm.faulted
+        assert arm.safe_holding
+        assert "3 consecutive" in (arm.fault_reason or "")
+    finally:
+        robot.get_state = original_get_state
         arm.close()
 
 

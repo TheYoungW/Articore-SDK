@@ -223,13 +223,23 @@ python -m arx_d_can.examples.example_10_set_zero_current_position \
   --port /dev/ttyACM0
 ```
 
+使用 `--joint` 可只写入指定关节，避免改变其他关节已经校准好的持久零点：
+
+```bash
+python -m arx_d_can.examples.example_10_set_zero_current_position \
+  --arm-model yunyi_v1_0_left \
+  --port /dev/ttyACM4 \
+  --joint l-joint4
+```
+
 默认不调夹爪；如需同时将夹爪当前位置设为零，增加 `--include-gripper`。调零会修改
 电机持久零点，执行前必须托稳机械臂并确认各关节处于正确的机械零位。
 
 ## 11 录制和回放轨迹
 
-录制时不会使能电机，可手动拖动机械臂。默认以 100 Hz 录制 10 秒，频率最高
-500 Hz，全部机械臂关节和夹爪位置保存在 JSON 文件中：
+录制时不会使能电机，可手动拖动机械臂。默认按墙钟时间录制 10 秒，并以 100 Hz
+为目标采样频率，目标频率最高 500 Hz。JSON 会保存每个样本的真实相对时间戳以及
+全部机械臂关节和夹爪位置；处理超期时会跳过过期周期，不会延长录制时间补足样本：
 
 ```bash
 python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
@@ -239,7 +249,39 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
   --port /dev/ttyACM0
 ```
 
-回放不需要再指定频率，会自动按照文件中记录的频率执行：
+如果失能状态下机械臂不易拖动，可增加 `--enable`。录制进程会使用 MIT 模式使能，
+并持续发送 `Kp=0、Kd=0、torque=0` 的零刚度命令。该模式不计算或发送重力补偿
+力矩；录制结束或异常退出时自动失能：
+
+```bash
+python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
+  record trajectory.json \
+  --seconds 10 \
+  --hz 100 \
+  --arm-model yunyi_v1_0_left \
+  --port /dev/ttyACM4 \
+  --enable
+```
+
+MIT 数据帧包含当前位置，但由于 `Kp=0`，不会产生位置保持力。使能前必须托稳
+机械臂，并与关节限位保持距离。
+
+需要在 Pinocchio 重力补偿状态下示教录制时，使用
+`--gravity-compensation`。录制循环会以指定频率实时更新重力力矩并保存关节和夹爪
+位置，结束时自动失能：
+
+```bash
+python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
+  record yunyi_left_trajectory.json \
+  --seconds 10 \
+  --hz 200 \
+  --arm-model yunyi_v1_0_left \
+  --port /dev/ttyACM4 \
+  --gravity-compensation
+```
+
+回放不需要再指定频率，新格式轨迹会严格按照文件中的逐点时间戳执行。旧格式文件
+没有时间戳，只能继续按照其中的名义频率执行：
 
 ```bash
 python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
@@ -254,8 +296,9 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
 
 示例 12 使用 MIT 模式实时计算并发送 URDF 重力力矩。活动阶段默认显式发送
 `Kp=0、Kd=0`，机械臂不会保持位置，必须先托住机械臂并远离关节限位。程序会从
-当前位置保持平滑切换到重力补偿，退出时恢复 YAML MIT 增益，然后失能全部机械臂
-关节：
+使能后默认直接切换到重力补偿，退出时恢复 YAML MIT 增益，然后失能全部机械臂
+关节。如需先保持当前位置或渐变接管，可显式设置 `--settle-seconds` 或
+`--transition-seconds`：
 
 ```bash
 python -m arx_d_can.examples.example_12_gravity_compensation \
@@ -275,8 +318,7 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
   --joint-scales "1,1.55,1.55,1,1,1,1"
 ```
 
-默认安全检查包括：关节速度不超过 `20 deg/s`、与 URDF 限位至少保持 `5°` 距离，
-且每个关节的重力力矩命令不超过配置力矩范围的 20%。这些阈值可通过
-`--max-velocity`、`--limit-margin` 和 `--torque-limit-ratio` 调整。运行该示例需要
-安装 `pin>=3.0`；如果当前 shell 加载的 ROS `PYTHONPATH` 覆盖了 conda 环境中的
-Pinocchio，可用 `env -u PYTHONPATH` 放在命令前。
+该模式不会针对关节速度、URDF 关节范围或 Pinocchio 重力力矩设置 SDK 软件阈值；
+通信、电机故障和无效反馈仍会中止运行。运行该示例需要安装 `pin>=3.0`；如果当前
+shell 加载的 ROS `PYTHONPATH` 覆盖了 conda 环境中的 Pinocchio，可用
+`env -u PYTHONPATH` 放在命令前。

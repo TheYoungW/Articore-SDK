@@ -105,7 +105,17 @@ def main(args: argparse.Namespace) -> None:
             print(f"  {state.gripper.name}: {state.gripper.position:+.6f} rad")
 
         before_positions = named_positions(state)
-        joint_names = list(state.arm.names)
+        available_arm_names = tuple(state.arm.names)
+        selected_joints = getattr(args, "joints", None)
+        if selected_joints:
+            unknown = set(selected_joints).difference(available_arm_names)
+            if unknown:
+                raise ValueError(
+                    "unknown arm joints: " + ", ".join(sorted(unknown))
+                )
+            joint_names = list(dict.fromkeys(selected_joints))
+        else:
+            joint_names = list(available_arm_names)
         if args.include_gripper:
             if state.gripper is None:
                 raise RuntimeError("gripper feedback is unavailable")
@@ -144,6 +154,15 @@ def build_parser(
         "--include-gripper",
         action="store_true",
         help="Also zero the gripper; default only zeros the configured arm joints",
+    )
+    parser.add_argument(
+        "--joint",
+        dest="joints",
+        action="append",
+        help=(
+            "Zero only this arm joint; repeat to select multiple joints. "
+            "Default: all configured arm joints"
+        ),
     )
     parser.add_argument("--stationary-seconds", type=float, default=1.0)
     parser.add_argument("--stationary-hz", type=float, default=20.0)

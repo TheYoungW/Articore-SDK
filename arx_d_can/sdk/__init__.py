@@ -524,13 +524,21 @@ class ArxDCanArm:
             raise
         self._configured = True
 
-    def close(self) -> None:
-        """Stop command production, disable every motor, and close the bus."""
+    def close(self, *, disable: bool = True) -> None:
+        """Stop command production and close the bus.
+
+        The default disables every motor first.  ``disable=False`` is reserved
+        for read-only clients that never configured, enabled, or commanded the
+        robot and therefore must not transmit motor-control frames on exit.
+        """
         self._stop_watchdog()
         error: Exception | None = None
         if self._connected:
             try:
-                self.robot.disconnect()
+                if disable:
+                    self.robot.disconnect()
+                else:
+                    self.robot.disconnect(disable=False)
             except Exception as exc:
                 error = exc
         with self._state_lock:
@@ -678,32 +686,75 @@ class ArxDCanArm:
         raise ValueError("mode must be 'posvel' or 'mit'")
 
     def read_state(self, *, request_feedback: bool = True) -> ArxDCanState:
+        """Read state while serializing access with normal command traffic."""
+        return self._read_state(
+            request_feedback=request_feedback,
+            serialize_io=True,
+        )
+
+    def refresh_feedback_background(self) -> ArxDCanState:
+        """Request complete feedback without holding the SDK command lock.
+
+        This method is intended for a dedicated low-rate monitor thread.  The
+        motor-drive-layer serial transport and paced transmit bus serialize
+        their own I/O, so a feedback timeout here does not hold up the primary
+        command loop through ``_io_lock``.
+        """
+        return self._read_state(
+            request_feedback=True,
+            serialize_io=False,
+        )
+
+    def _read_state(
+        self,
+        *,
+        request_feedback: bool,
+        serialize_io: bool,
+    ) -> ArxDCanState:
         self._require_connected()
         active_joint_names = self._active_joint_names()
+
+        def read_raw_state():
+            pos, vel, tau = self.robot.get_state(
+                request_feedback=request_feedback,
+                require_complete=request_feedback,
+                joint_names=active_joint_names,
+            )
+            status_codes = self.robot.get_status_codes(
+                joint_names=active_joint_names,
+            )
+            return pos, vel, tau, status_codes
+
         try:
-            with self._io_lock:
-                pos, vel, tau = self.robot.get_state(
-                    request_feedback=request_feedback,
-                    require_complete=request_feedback,
-                    joint_names=active_joint_names,
-                )
-                status_codes = self.robot.get_status_codes(
-                    joint_names=active_joint_names,
-                )
+            if serialize_io:
+                with self._io_lock:
+                    pos, vel, tau, status_codes = read_raw_state()
+            else:
+                pos, vel, tau, status_codes = read_raw_state()
         except Exception as exc:
-            self._feedback_error_count += 1
-            if self._enabled and self._feedback_error_count >= max(
-                1, self.config.feedback_fault_threshold
-            ):
+            if request_feedback:
+                with self._state_lock:
+                    self._feedback_error_count += 1
+                    feedback_error_count = self._feedback_error_count
+                if self._enabled and feedback_error_count >= max(
+                    1, self.config.feedback_fault_threshold
+                ):
+                    self._begin_safe_hold(
+                        f"feedback failed {feedback_error_count} consecutive times: "
+                        f"{exc}"
+                    )
+            elif self._enabled:
                 self._begin_safe_hold(
-                    f"feedback failed {self._feedback_error_count} consecutive times: {exc}"
+                    f"cached feedback became invalid: {exc}"
                 )
             with self._state_lock:
                 last_state = self._last_state
             if self._enabled and last_state is not None:
                 return last_state
             raise
-        self._feedback_error_count = 0
+        if request_feedback:
+            with self._state_lock:
+                self._feedback_error_count = 0
         disabled_motors = [
             name for name, status in status_codes.items() if status == 0
         ]
@@ -719,7 +770,7 @@ class ArxDCanArm:
                     self._fault_reason = (
                         f"{reason}; holding last successful command"
                     )
-        elif self._safe_holding:
+        elif self._safe_holding and request_feedback:
             self._resume_from_safe_hold()
         arm_count = len(self.config.arm_joints)
         arm_pos = pos[:arm_count]
