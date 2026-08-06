@@ -11,8 +11,8 @@ cd Articore-SDK
 python -m pip install .
 ```
 
-安装时会自动使用 `motor-drive-layer==0.5.4` 作为底层电机通信 SDK。该版本是当前
-软件源提供的最新版，并包含 SocketCAN、SocketCAN-FD 和 dm-serial 后端。
+安装时会自动使用 `motor-drive-layer==0.5.6` 作为底层电机通信 SDK。该版本包含
+dm-serial 批量反馈加固，以及 SocketCAN、SocketCAN-FD 和 dm-serial 后端。
 
 运动学、动力学和末端控制需要 Pinocchio：
 

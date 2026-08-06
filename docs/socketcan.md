@@ -6,7 +6,7 @@ Articore-SDK 支持直接使用 Linux SocketCAN。适用场景包括 RK3588 上�
 
 ## 1. 依赖和版本
 
-项目固定依赖 `motor-drive-layer==0.5.4`。安装或更新项目后确认版本：
+项目固定依赖 `motor-drive-layer==0.5.6`。安装或更新项目后确认版本：
 
 ```bash
 python -m pip install -e .
