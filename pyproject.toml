@@ -37,4 +37,4 @@ packages = [
   "arx_d_can.trajectory",
 ]
 [tool.setuptools.package-data]
-arx_d_can = ["config/*.yaml", "examples/README.md", "models/*.urdf"]
+arx_d_can = ["config/*.yaml", "examples/README.md", "models/*.urdf", "models/*.json"]

@@ -184,6 +184,21 @@ class FakeDirectionalMotor(FakeZeroMotor):
         self.vel_commands.append(vel)
 
 
+class FakeInterleavedMotor(FakeDirectionalMotor):
+    def __init__(self, name, events):
+        super().__init__()
+        self.name = name
+        self.events = events
+
+    def enable(self):
+        self.events.append(("enable", self.name))
+        super().enable()
+
+    def send_mit(self, pos, vel, kp, kd, tau):
+        self.events.append(("send_mit", self.name, pos, vel, kp, kd, tau))
+        super().send_mit(pos, vel, kp, kd, tau)
+
+
 def make_zero_arm(*motors):
     arm = ArxDCan.__new__(ArxDCan)
     arm._all_joints = [
@@ -334,6 +349,54 @@ def test_joint_group_enable_verifies_every_motor(monkeypatch):
     assert second.status_code == 1
     assert first.fresh_requests == 1
     assert second.fresh_requests == 1
+
+
+def test_joint_group_enable_immediately_holds_each_motor_at_seed_position(
+    monkeypatch,
+):
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+    events = []
+    first = FakeInterleavedMotor("joint1", events)
+    second = FakeInterleavedMotor("joint2", events)
+    joints = [
+        JointCfg(
+            name="joint1",
+            motor_id=1,
+            feedback_id=0x11,
+            model="4340P",
+        ),
+        JointCfg(
+            name="joint2",
+            motor_id=2,
+            feedback_id=0x12,
+            model="4340P",
+            direction=-1,
+        ),
+    ]
+    group = JointGroup(
+        "arm",
+        ["joint1", "joint2"],
+        joints,
+        {"joint1": first, "joint2": second},
+        {"main": FakePollController()},
+    )
+
+    group.enable(
+        poll_max=2,
+        poll_interval=0.0,
+        mit_position=[-0.35, -0.42],
+        mit_velocity=[0.0, 0.0],
+        mit_kp=[120.0, 18.0],
+        mit_kd=[8.0, 2.0],
+        mit_tau=[0.0, 0.0],
+    )
+
+    assert events == [
+        ("enable", "joint1"),
+        ("send_mit", "joint1", -0.35, 0.0, 120.0, 8.0, 0.0),
+        ("enable", "joint2"),
+        ("send_mit", "joint2", 0.42, -0.0, 18.0, 2.0, -0.0),
+    ]
 
 
 def test_joint_group_enable_rejects_faulted_motor_and_rolls_back(monkeypatch):

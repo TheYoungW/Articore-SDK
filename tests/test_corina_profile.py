@@ -45,6 +45,28 @@ def test_corina_v2_motor_ids_match_each_leg_on_one_bus() -> None:
     ] * 2
 
 
+def test_corina_v2_joint_directions_match_hardware_convention() -> None:
+    joints = load_cfg(model="corina_v2")["joints"]
+    by_name = {joint.name: joint for joint in joints}
+
+    assert [by_name[name].direction for name in LEFT_JOINTS] == [
+        1,
+        -1,
+        -1,
+        1,
+        1,
+        1,
+    ]
+    assert [by_name[name].direction for name in RIGHT_JOINTS] == [
+        -1,
+        -1,
+        -1,
+        -1,
+        1,
+        1,
+    ]
+
+
 def test_corina_v2_uses_existing_conservative_gain_defaults() -> None:
     joints = load_cfg(model="corina_v2")["joints"]
 

@@ -48,6 +48,7 @@ class FakeGroup:
         self.sent_mit_torques: list[np.ndarray | None] = []
         self.sent_mit_kp: list[np.ndarray | None] = []
         self.sent_mit_kd: list[np.ndarray | None] = []
+        self.enable_kwargs = None
 
     def mode_pos_vel(self) -> bool:
         self.mode_calls.append("pv")
@@ -57,7 +58,8 @@ class FakeGroup:
         self.mode_calls.append("mit")
         return True
 
-    def enable(self) -> None:
+    def enable(self, **kwargs) -> None:
+        self.enable_kwargs = kwargs
         self.enabled = True
 
     def send_pos_vel(self, target, *, vlim=None, strict=True) -> None:
@@ -164,6 +166,38 @@ def make_arm(
     arm.configure()
     arm.enable()
     return arm, robot
+
+
+def test_mit_enable_passes_exact_initial_hold_to_joint_group() -> None:
+    config = ArxDCanConfig(
+        arm_joints=(JOINT,),
+        arm_control_mode="mit",
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure("mit")
+    try:
+        arm.enable(
+            initial_positions=[-0.347],
+            initial_velocities=[0.0],
+            initial_torques=[0.0],
+            mit_kp=[120.0],
+            mit_kd=[8.0],
+        )
+
+        assert robot.arm.enable_kwargs is not None
+        np.testing.assert_allclose(
+            robot.arm.enable_kwargs["mit_position"], [-0.347]
+        )
+        np.testing.assert_allclose(robot.arm.enable_kwargs["mit_velocity"], [0.0])
+        np.testing.assert_allclose(robot.arm.enable_kwargs["mit_tau"], [0.0])
+        np.testing.assert_allclose(robot.arm.enable_kwargs["mit_kp"], [120.0])
+        np.testing.assert_allclose(robot.arm.enable_kwargs["mit_kd"], [8.0])
+    finally:
+        arm.close()
 
 
 def wait_for_fault(arm: ArxDCanArm, timeout: float = 0.5) -> None:

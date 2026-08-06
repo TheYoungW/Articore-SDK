@@ -260,10 +260,13 @@ robot = ArxDCanArm(model="corina_v2", port="/dev/ttyACM0")
 print(robot.joint_names)
 ```
 
-控制参数暂时沿用 SDK 中 4340P/4310 的保守默认值，电机方向默认均为正向。
-`groups.arm.joints` 包含双腿全部 12 个关节。为匹配 Pinocchio 对该分支 URDF 的模型
-顺序，所有位置、速度和力矩数组按先左腿 6 轴、后右腿 6 轴的顺序传入。首次使能前
-应悬挂机器人，逐关节核对零位、方向和增益。
+控制参数暂时沿用 SDK 中 4340P/4310 的保守默认值。实机方向标定为右腿关节1～4
+以及左腿关节2～3使用 `direction: -1`，其余关节为正向。`groups.arm.joints` 包含
+双腿全部 12 个关节。为匹配 Pinocchio 对该分支 URDF 的模型顺序，所有位置、速度
+和力矩数组按先左腿 6 轴、后右腿 6 轴的顺序传入。
+
+Corina 的关节5/6按 URDF 定义分别作为脚端 Pitch/Roll 使用。读取状态、位置轨迹、
+MIT 速度和前馈力矩均使用这两个关节坐标；用户不需要配置额外的执行器换算。
 
 ### Yunyi V1.0 双臂
 

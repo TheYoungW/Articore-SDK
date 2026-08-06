@@ -14,6 +14,7 @@ import numpy as np
 
 from ..actuator import ArxDCan, JointCfg, load_cfg
 from ..driver import build_scan_command, parse_scan_ids
+from ..kinematics.coupled_joint_transform import CoupledJointTransform
 from .gripper_force_control import (
     GripperControlState,
     GripperForceControlConfig,
@@ -99,6 +100,7 @@ class ArxDCanConfig:
     model: str = "custom"
     hardware_config_path: str | None = None
     urdf_path: str | None = None
+    joint_transform_path: str | None = None
     end_effector_frame: str = "gripper_end"
 
     @property
@@ -201,6 +203,11 @@ def _config_from_loaded(
             None if data.get("hardware_path") is None else str(data["hardware_path"])
         ),
         urdf_path=None if data.get("urdf_path") is None else str(data["urdf_path"]),
+        joint_transform_path=(
+            None
+            if data.get("joint_transform_path") is None
+            else str(data["joint_transform_path"])
+        ),
         end_effector_frame=str(data.get("end_effector_frame", "gripper_end")),
         port=str(data.get("channel", "/dev/ttyACM0") if port is None else port),
         transport=str(
@@ -326,6 +333,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
         "model": config.model,
         "hardware_path": config.hardware_config_path,
         "urdf_path": config.urdf_path,
+        "joint_transform_path": config.joint_transform_path,
         "end_effector_frame": config.end_effector_frame,
         "channel": config.port,
         "transport": config.transport,
@@ -400,6 +408,23 @@ class ArxDCanArm:
                 transport=config.transport if transport is None else transport,
             )
             loaded_config = _actuator_config_from_sdk(self.config)
+        self._joint_transform = (
+            None
+            if self.config.joint_transform_path is None
+            else CoupledJointTransform.load(
+                self.config.joint_transform_path,
+                joint_names=self.config.joint_names,
+            )
+        )
+        if self._joint_transform is not None:
+            transformed_indices = self._joint_transform.transformed_indices
+            loaded_config = dict(loaded_config)
+            loaded_config["joints"] = [
+                replace(joint, lower_limit=None, upper_limit=None)
+                if index in transformed_indices
+                else joint
+                for index, joint in enumerate(loaded_config["joints"])
+            ]
         gain_scale = float(gripper_gain_scale)
         if not math.isfinite(gain_scale) or gain_scale <= 0.0:
             raise ValueError("gripper_gain_scale must be finite and positive")
@@ -524,6 +549,96 @@ class ArxDCanArm:
             raise
         self._configured = True
 
+    def _clamp_transformed_virtual_positions(
+        self,
+        positions: Sequence[float],
+    ) -> np.ndarray:
+        result = np.asarray(positions, dtype=np.float64).reshape(-1).copy()
+        if self._joint_transform is None:
+            return result
+        for index in self._joint_transform.transformed_indices:
+            joint = self.config.arm_joints[index]
+            if joint.lower_limit is not None:
+                result[index] = max(result[index], joint.lower_limit)
+            if joint.upper_limit is not None:
+                result[index] = min(result[index], joint.upper_limit)
+        return result
+
+    def _transform_command_vectors(
+        self,
+        positions: Sequence[float],
+        *,
+        velocities: Sequence[float] | None = None,
+        torques: Sequence[float] | None = None,
+        velocity_limits: Sequence[float] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+        virtual_positions = self._clamp_transformed_virtual_positions(positions)
+        if self._joint_transform is None:
+            return (
+                virtual_positions,
+                None if velocities is None else np.asarray(velocities, dtype=np.float64),
+                None if torques is None else np.asarray(torques, dtype=np.float64),
+                None
+                if velocity_limits is None
+                else np.asarray(velocity_limits, dtype=np.float64),
+            )
+        motor_positions = self._joint_transform.virtual_positions_to_motor(
+            virtual_positions
+        )
+        motor_velocities = (
+            None
+            if velocities is None
+            else self._joint_transform.virtual_velocities_to_motor(
+                virtual_positions,
+                velocities,
+            )
+        )
+        motor_torques = (
+            None
+            if torques is None
+            else self._joint_transform.virtual_torques_to_motor(
+                virtual_positions,
+                torques,
+            )
+        )
+        motor_velocity_limits = (
+            None
+            if velocity_limits is None
+            else self._joint_transform.virtual_velocity_limits_to_motor(
+                virtual_positions,
+                velocity_limits,
+            )
+        )
+        return (
+            motor_positions,
+            motor_velocities,
+            motor_torques,
+            motor_velocity_limits,
+        )
+
+    def _transform_feedback_vectors(
+        self,
+        positions: Sequence[float],
+        velocities: Sequence[float],
+        torques: Sequence[float],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        motor_positions = np.asarray(positions, dtype=np.float64)
+        motor_velocities = np.asarray(velocities, dtype=np.float64)
+        motor_torques = np.asarray(torques, dtype=np.float64)
+        if self._joint_transform is None:
+            return motor_positions, motor_velocities, motor_torques
+        return (
+            self._joint_transform.motor_positions_to_virtual(motor_positions),
+            self._joint_transform.motor_velocities_to_virtual(
+                motor_positions,
+                motor_velocities,
+            ),
+            self._joint_transform.motor_torques_to_virtual(
+                motor_positions,
+                motor_torques,
+            ),
+        )
+
     def close(self, *, disable: bool = True) -> None:
         """Stop command production and close the bus.
 
@@ -556,12 +671,71 @@ class ArxDCanArm:
         if error is not None:
             raise RuntimeError(f"ARX-D-CAN close failed: {error}") from error
 
-    def enable(self) -> None:
+    def enable(
+        self,
+        *,
+        initial_positions: Sequence[float] | None = None,
+        initial_velocities: Sequence[float] | None = None,
+        initial_torques: Sequence[float] | None = None,
+        mit_kp: float | Sequence[float] | None = None,
+        mit_kd: float | Sequence[float] | None = None,
+    ) -> None:
         self._require_operational()
         if not self._configured:
             raise RuntimeError("ARX-D-CAN arm must be configured before enable")
+        if initial_positions is not None and self._mode != "mit":
+            raise ValueError("initial position seeding is only supported in MIT mode")
+        joint_count = len(self.config.arm_joints)
+        initial_position_vector = None
+        initial_velocity_vector = None
+        initial_torque_vector = None
+        kp_vector = None
+        kd_vector = None
+        if initial_positions is not None:
+            vectors = {
+                "initial_positions": initial_positions,
+                "initial_velocities": (
+                    [0.0] * joint_count
+                    if initial_velocities is None
+                    else initial_velocities
+                ),
+                "initial_torques": (
+                    [0.0] * joint_count
+                    if initial_torques is None
+                    else initial_torques
+                ),
+            }
+            parsed = {}
+            for name, values in vectors.items():
+                if len(values) != joint_count:
+                    raise ValueError(f"{name} must contain {joint_count} values")
+                array = np.asarray(values, dtype=np.float64)
+                if not np.all(np.isfinite(array)):
+                    raise ValueError(f"{name} must be finite")
+                parsed[name] = array
+            (
+                initial_position_vector,
+                initial_velocity_vector,
+                initial_torque_vector,
+                _,
+            ) = self._transform_command_vectors(
+                parsed["initial_positions"],
+                velocities=parsed["initial_velocities"],
+                torques=parsed["initial_torques"],
+            )
+            kp_vector = _mit_gain_vector(mit_kp, joint_count=joint_count, name="Kp")
+            kd_vector = _mit_gain_vector(mit_kd, joint_count=joint_count, name="Kd")
         try:
-            self.robot.arm.enable()
+            if initial_position_vector is None:
+                self.robot.arm.enable()
+            else:
+                self.robot.arm.enable(
+                    mit_position=initial_position_vector,
+                    mit_velocity=initial_velocity_vector,
+                    mit_kp=kp_vector,
+                    mit_kd=kd_vector,
+                    mit_tau=initial_torque_vector,
+                )
             with self._gripper_command_lock:
                 if self.enable_gripper and self.config.gripper is not None:
                     self.robot.gripper.enable()
@@ -572,6 +746,8 @@ class ArxDCanArm:
             raise
         with self._state_lock:
             self._enabled = True
+            if initial_positions is not None:
+                self._last_joint_command = tuple(float(value) for value in initial_positions)
             self._watchdog_deadline = time.monotonic() + max(
                 self.config.enable_grace_s,
                 self.config.command_timeout_s,
@@ -776,6 +952,11 @@ class ArxDCanArm:
         arm_pos = pos[:arm_count]
         arm_vel = vel[:arm_count]
         arm_tau = tau[:arm_count]
+        arm_pos, arm_vel, arm_tau = self._transform_feedback_vectors(
+            arm_pos,
+            arm_vel,
+            arm_tau,
+        )
         gripper_state = None
         if self.config.gripper is not None and len(pos) > arm_count:
             gripper_state = MotorState(
@@ -916,13 +1097,28 @@ class ArxDCanArm:
                 raise ValueError("MIT Kp/Kd are only supported in MIT mode")
         if active_mode == "mit" and velocity_limit_target is not None:
             raise ValueError("velocity limits are only supported in PV mode")
+        logical_position_target = np.array(
+            [target[joint.name] for joint in self.config.arm_joints],
+            dtype=np.float64,
+        )
+        (
+            motor_position_target,
+            velocity_target,
+            torque_target,
+            velocity_limit_target,
+        ) = self._transform_command_vectors(
+            logical_position_target,
+            velocities=velocity_target,
+            torques=torque_target,
+            velocity_limits=velocity_limit_target,
+        )
         try:
             if active_mode in ("posvel", "pv"):
                 if self._mode != "posvel":
                     self.configure_mode("posvel")
                 with self._io_lock:
                     self.robot.arm.send_pos_vel(
-                        np.array([target[joint.name] for joint in self.config.arm_joints]),
+                        motor_position_target,
                         vlim=velocity_limit_target,
                         strict=True,
                     )
@@ -937,7 +1133,7 @@ class ArxDCanArm:
                     self.configure_mode("mit")
                 with self._io_lock:
                     self.robot.arm.send_mit(
-                        np.array([target[joint.name] for joint in self.config.arm_joints]),
+                        motor_position_target,
                         vel=velocity_target,
                         kp=mit_kp_target,
                         kd=mit_kd_target,
@@ -976,6 +1172,22 @@ class ArxDCanArm:
         self._require_operational()
         if self._enabled:
             raise RuntimeError("disable the arm before writing motor zero positions")
+        if self._joint_transform is not None:
+            coupled_names = {
+                self.config.arm_joints[index].name
+                for index in self._joint_transform.transformed_indices
+            }
+            requested_names = (
+                set(self.config.joint_names)
+                if joint_names is None
+                else {str(name) for name in joint_names}
+            )
+            protected = sorted(coupled_names.intersection(requested_names))
+            if protected:
+                raise RuntimeError(
+                    "model-defined coupled joints cannot be motor-zeroed: "
+                    + ", ".join(protected)
+                )
         return self.robot.set_zero(
             joint_names=list(joint_names) if joint_names is not None else None,
             verify_tolerance=verify_tolerance,
@@ -1229,7 +1441,9 @@ class ArxDCanArm:
             try:
                 with self._io_lock:
                     if joint_target is not None:
-                        target = np.asarray(joint_target, dtype=np.float64)
+                        target, _, _, _ = self._transform_command_vectors(
+                            joint_target
+                        )
                         if self._mode == "mit":
                             self.robot.arm.send_mit(target, strict=False)
                         else:

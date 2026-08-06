@@ -196,7 +196,12 @@ def _velocity_range_scales(joint: JointCfg) -> tuple[float, float]:
     return native_range / joint.velocity_range, joint.velocity_range / native_range
 
 
-def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
+def _resolve_resource_path(
+    hw_path: Path,
+    value: Any,
+    *,
+    description: str,
+) -> Path | None:
     if value in (None, ""):
         return None
     path = Path(str(value)).expanduser()
@@ -204,7 +209,11 @@ def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
-    raise FileNotFoundError(f"URDF not found for {hw_path}: {value}")
+    raise FileNotFoundError(f"{description} not found for {hw_path}: {value}")
+
+
+def _resolve_urdf_path(hw_path: Path, value: Any) -> Path | None:
+    return _resolve_resource_path(hw_path, value, description="URDF")
 
 
 def _apply_urdf_joint_limits(
@@ -378,6 +387,11 @@ def load_cfg(
 
     groups = _validate_groups(data.get("groups"), joints, path=hw_path)
     urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
+    joint_transform_path = _resolve_resource_path(
+        hw_path,
+        data.get("joint_transform_path"),
+        description="joint transform model",
+    )
     _apply_urdf_joint_limits(urdf_path, joints)
     end_effector_frame = str(
         data.get("end_effector_frame", "gripper_end")
@@ -401,6 +415,9 @@ def load_cfg(
         "model": selected_model or str(data.get("name", hw_path.stem)),
         "hardware_path": str(hw_path),
         "urdf_path": None if urdf_path is None else str(urdf_path),
+        "joint_transform_path": (
+            None if joint_transform_path is None else str(joint_transform_path)
+        ),
         "end_effector_frame": end_effector_frame,
         "channel": channel,
         "transport": transport,
@@ -550,18 +567,73 @@ class JointGroup:
         self,
         poll_max: int = 20,
         poll_interval: float = 0.05,
+        *,
+        mit_position: Optional[np.ndarray] = None,
+        mit_velocity: Optional[np.ndarray] = None,
+        mit_kp: Optional[np.ndarray] = None,
+        mit_kd: Optional[np.ndarray] = None,
+        mit_tau: Optional[np.ndarray] = None,
     ) -> None:
-        """Enable every motor and verify that each reports ENABLED."""
-        for jc in self._jcfgs:
-            self._mm[jc.name].enable()
-        time.sleep(0.05)
+        """Enable every motor, optionally seeding an immediate MIT hold."""
+        hold_vectors = None
+        if mit_position is not None:
+            n = self.num_joints
+            position = np.asarray(mit_position, dtype=np.float64).reshape(-1)
+            velocity = (
+                np.zeros(n)
+                if mit_velocity is None
+                else np.asarray(mit_velocity, dtype=np.float64).reshape(-1)
+            )
+            kp = (
+                self._mit_kp
+                if mit_kp is None
+                else np.asarray(mit_kp, dtype=np.float64).reshape(-1)
+            )
+            kd = (
+                self._mit_kd
+                if mit_kd is None
+                else np.asarray(mit_kd, dtype=np.float64).reshape(-1)
+            )
+            tau = (
+                np.zeros(n)
+                if mit_tau is None
+                else np.asarray(mit_tau, dtype=np.float64).reshape(-1)
+            )
+            vectors = (position, velocity, kp, kd, tau)
+            if any(vector.size != n for vector in vectors):
+                raise ValueError(f"MIT enable hold expects {n} values per vector")
+            if any(not np.all(np.isfinite(vector)) for vector in vectors):
+                raise ValueError("MIT enable hold values must be finite")
+            hold_vectors = vectors
 
         errors = []
-        for jc in self._jcfgs:
+        for index, jc in enumerate(self._jcfgs):
             try:
-                self._wait_for_enabled_state(jc, poll_max, poll_interval)
+                motor = self._mm[jc.name]
+                motor.enable()
+                if hold_vectors is not None:
+                    position, velocity, kp, kd, tau = hold_vectors
+                    velocity_command_scale, _ = _velocity_range_scales(jc)
+                    torque_command_scale, _ = _torque_range_scales(jc)
+                    limited_position = self._clamp_position(jc, float(position[index]))
+                    motor.send_mit(
+                        jc.direction * limited_position,
+                        jc.direction * float(velocity[index]) * velocity_command_scale,
+                        float(kp[index]),
+                        float(kd[index]),
+                        jc.direction * float(tau[index]) * torque_command_scale,
+                    )
             except Exception as exc:
                 errors.append(f"{jc.name}: {exc}")
+                break
+        time.sleep(0.05)
+
+        if not errors:
+            for jc in self._jcfgs:
+                try:
+                    self._wait_for_enabled_state(jc, poll_max, poll_interval)
+                except Exception as exc:
+                    errors.append(f"{jc.name}: {exc}")
         if not errors:
             return
 

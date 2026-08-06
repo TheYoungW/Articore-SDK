@@ -322,3 +322,20 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
 通信、电机故障和无效反馈仍会中止运行。运行该示例需要安装 `pin>=3.0`；如果当前
 shell 加载的 ROS `PYTHONPATH` 覆盖了 conda 环境中的 Pinocchio，可用
 `env -u PYTHONPATH` 放在命令前。
+
+## 13 单关节 URDF 范围测试
+
+示例 13 默认只连接并使能 Corina 右腿关节 1–4。程序逐个关节执行“当前位置、下侧
+测试点、上侧测试点、返回当前位置”，当前被测关节运动时，其余三个关节保持初始
+位置。默认测试到零位朝每侧 URDF 极限方向的 95%，每段轨迹 6 秒、200 Hz：
+
+```bash
+python -m arx_d_can.examples.example_13_test_joint_range \
+  --arm-model corina_v2 \
+  --port /dev/ttyACM5
+```
+
+程序使能前会打印当前角度、URDF 上下限和实际测试目标；当前反馈超出 URDF、关节
+缺少上下限或目标跟踪误差超过 1 度时会停止并失能。可用 `--range-percent 80` 修改
+行程比例，或用 `--joints` 指定其他关节。关节5/6应通过常规多关节轨迹接口按
+Pitch/Roll 坐标控制，不属于这个逐个关节维修测试示例的默认测试对象。
