@@ -81,7 +81,12 @@ def test_corina_v2_uses_joint_space_ankle_gain_defaults() -> None:
                 joint.vlim,
             ) == (0.0125, 0.004, 150.0, 0.5, 5.0)
         elif joint.name.endswith("joint5"):
-            assert (joint.kp, joint.kd) == (60.0, 1.5)
+            expected_gains = (
+                (360.0, 0.0)
+                if joint.name.startswith("right_")
+                else (60.0, 1.5)
+            )
+            assert (joint.kp, joint.kd) == expected_gains
             assert joint.torque_range is None
             assert joint.effort_limit == 7.0
             assert (
@@ -92,7 +97,12 @@ def test_corina_v2_uses_joint_space_ankle_gain_defaults() -> None:
                 joint.vlim,
             ) == (0.005, 0.002, 50.0, 1.0, 3.0)
         elif joint.name.endswith("joint6"):
-            assert (joint.kp, joint.kd) == (30.0, 0.8)
+            expected_gains = (
+                (360.0, 0.0)
+                if joint.name.startswith("right_")
+                else (30.0, 0.8)
+            )
+            assert (joint.kp, joint.kd) == expected_gains
             assert joint.torque_range is None
             assert joint.effort_limit == 7.0
             assert (
@@ -111,6 +121,17 @@ def test_corina_v2_uses_joint_space_ankle_gain_defaults() -> None:
                 joint.pos_ki,
                 joint.vlim,
             ) == (0.005, 0.002, 50.0, 1.0, 3.0)
+
+    right_ankle = {
+        joint.name: joint
+        for joint in joints
+        if joint.name in {"right_leg_joint5", "right_leg_joint6"}
+    }
+    for joint in right_ankle.values():
+        assert joint.coupled_effort_limit == pytest.approx(0.6)
+        assert joint.coupled_motor_kd == pytest.approx(0.3)
+        assert joint.coupled_torque_rise_rate == pytest.approx(1.0)
+        assert joint.coupled_torque_brake_rate == pytest.approx(40.0)
 
 
 def test_corina_v2_urdf_supplies_all_controlled_joint_limits() -> None:

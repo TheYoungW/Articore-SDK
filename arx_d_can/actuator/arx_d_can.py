@@ -152,6 +152,10 @@ class JointCfg:
     direction: float = 1.0
     torque_range: float | None = None
     effort_limit: float | None = None
+    coupled_effort_limit: float | None = None
+    coupled_motor_kd: float = 0.0
+    coupled_torque_rise_rate: float | None = None
+    coupled_torque_brake_rate: float | None = None
     velocity_range: float | None = None
     kp: float = 0.0
     kd: float = 0.0
@@ -336,8 +340,15 @@ def load_cfg(
             raise ValueError(f"joints[{index}] must be a mapping")
         mc = j.get("MIT", {})
         pc = j.get("POS_VEL", {})
-        if not isinstance(mc, dict) or not isinstance(pc, dict):
-            raise ValueError(f"joints[{index}] MIT and POS_VEL must be mappings")
+        cc = j.get("COUPLED", {})
+        if (
+            not isinstance(mc, dict)
+            or not isinstance(pc, dict)
+            or not isinstance(cc, dict)
+        ):
+            raise ValueError(
+                f"joints[{index}] MIT, POS_VEL, and COUPLED must be mappings"
+            )
         name = str(j.get("name", "")).strip()
         if not name:
             raise ValueError(f"joints[{index}].name is required")
@@ -367,6 +378,33 @@ def load_cfg(
             if raw_effort_limit is None
             else _finite(raw_effort_limit, field=f"{name}.effort_limit")
         )
+        raw_coupled_effort_limit = cc.get("effort_limit")
+        coupled_effort_limit = (
+            None
+            if raw_coupled_effort_limit is None
+            else _finite(
+                raw_coupled_effort_limit,
+                field=f"{name}.COUPLED.effort_limit",
+            )
+        )
+        raw_coupled_rise_rate = cc.get("torque_rise_rate")
+        coupled_rise_rate = (
+            None
+            if raw_coupled_rise_rate is None
+            else _finite(
+                raw_coupled_rise_rate,
+                field=f"{name}.COUPLED.torque_rise_rate",
+            )
+        )
+        raw_coupled_brake_rate = cc.get("torque_brake_rate")
+        coupled_brake_rate = (
+            None
+            if raw_coupled_brake_rate is None
+            else _finite(
+                raw_coupled_brake_rate,
+                field=f"{name}.COUPLED.torque_brake_rate",
+            )
+        )
         raw_velocity_range = j.get("velocity_range")
         velocity_range = (
             None
@@ -384,6 +422,13 @@ def load_cfg(
             ),
             torque_range=torque_range,
             effort_limit=effort_limit,
+            coupled_effort_limit=coupled_effort_limit,
+            coupled_motor_kd=_finite(
+                cc.get("motor_kd", 0.0),
+                field=f"{name}.COUPLED.motor_kd",
+            ),
+            coupled_torque_rise_rate=coupled_rise_rate,
+            coupled_torque_brake_rate=coupled_brake_rate,
             velocity_range=velocity_range,
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
             kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
@@ -401,6 +446,23 @@ def load_cfg(
             _torque_range_scales(joint)
         if joint.effort_limit is not None and joint.effort_limit <= 0.0:
             raise ValueError(f"{name}.effort_limit must be positive")
+        if (
+            joint.coupled_effort_limit is not None
+            and joint.coupled_effort_limit <= 0.0
+        ):
+            raise ValueError(f"{name}.COUPLED.effort_limit must be positive")
+        if joint.coupled_motor_kd < 0.0:
+            raise ValueError(f"{name}.COUPLED.motor_kd must not be negative")
+        if (
+            joint.coupled_torque_rise_rate is not None
+            and joint.coupled_torque_rise_rate <= 0.0
+        ):
+            raise ValueError(f"{name}.COUPLED.torque_rise_rate must be positive")
+        if (
+            joint.coupled_torque_brake_rate is not None
+            and joint.coupled_torque_brake_rate <= 0.0
+        ):
+            raise ValueError(f"{name}.COUPLED.torque_brake_rate must be positive")
         if joint.velocity_range is not None:
             if joint.velocity_range <= 0.0:
                 raise ValueError(f"{name}.velocity_range must be positive")

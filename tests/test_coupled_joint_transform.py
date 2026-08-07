@@ -95,6 +95,7 @@ def test_corina_sdk_transparently_converts_joint_commands(monkeypatch) -> None:
         captured.update(kwargs)
 
     monkeypatch.setattr(arm.robot.arm, "send_mit", capture)
+    monkeypatch.setattr(arm, "_start_coupled_control", lambda: None)
     actual_virtual = np.zeros(12)
     actual_motor = arm._joint_transform.virtual_positions_to_motor(actual_virtual)
     monkeypatch.setattr(
@@ -130,6 +131,7 @@ def test_corina_sdk_transparently_converts_joint_commands(monkeypatch) -> None:
     )
 
     command = arm._last_mit_command
+    arm._reset_coupled_motor_torque_state()
     expected_position, expected_velocity, expected_kp, expected_kd, expected_torque = (
         arm._compose_mit_motor_command(
             command,
@@ -143,7 +145,9 @@ def test_corina_sdk_transparently_converts_joint_commands(monkeypatch) -> None:
     assert captured["kp"] == pytest.approx(expected_kp)
     assert captured["kd"] == pytest.approx(expected_kd)
     assert captured["kp"][list(PAIR_INDICES)] == pytest.approx(0.0)
-    assert captured["kd"][list(PAIR_INDICES)] == pytest.approx(0.0)
+    assert captured["kd"][list(PAIR_INDICES)] == pytest.approx(
+        (0.0, 0.0, 0.3, 0.3)
+    )
     assert arm._last_joint_command == pytest.approx(tuple(virtual_position))
     assert command.positions == pytest.approx(tuple(virtual_position))
     assert command.velocities == pytest.approx(tuple(virtual_velocity))
@@ -182,7 +186,7 @@ def test_virtual_pd_single_axis_does_not_create_cross_axis_torque(axis: int) -> 
     expected[axis] = kp[indices[axis]] * math.radians(1.0)
     assert recovered[list(indices)] == pytest.approx(expected, abs=0.03)
     assert motor_kp[list(indices)] == pytest.approx(0.0)
-    assert motor_kd[list(indices)] == pytest.approx(0.0)
+    assert motor_kd[list(indices)] == pytest.approx((0.3, 0.3))
 
 
 def test_virtual_pd_matches_logical_formula_at_random_states() -> None:
@@ -265,17 +269,45 @@ def test_corina_coupled_motor_torque_is_limited_and_reported() -> None:
         motor_velocities=np.zeros(12),
     )
 
-    assert np.max(np.abs(motor_tau[list(PAIR_INDICES)])) <= 7.0
+    assert np.max(np.abs(motor_tau[10:12])) <= 0.6
     status = arm.coupled_torque_saturation
     assert status.active
     assert status.motor_names
-    assert max(abs(value) for value in status.applied_torques) <= 7.0
+    assert max(abs(value) for value in status.applied_torques) <= 0.6
+
+
+def test_corina_coupled_limit_preserves_each_pair_torque_direction() -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    requested = np.zeros(12)
+    requested[10:12] = (1.0, -2.0)
+
+    applied = arm._limit_coupled_motor_torques(requested)
+
+    assert applied[10:12] == pytest.approx((0.3, -0.6))
+    assert applied[10] / applied[11] == pytest.approx(-0.5)
+
+
+def test_corina_coupled_torque_uses_slow_push_and_fast_brake_rates() -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    arm._enabled = True
+    requested = np.zeros(12)
+    requested[10:12] = (0.5, -0.25)
+
+    first = arm._slew_coupled_motor_torques(requested)
+    second = arm._slew_coupled_motor_torques(requested)
+    assert first[10:12] == pytest.approx((0.004, -0.004))
+    assert second[10:12] == pytest.approx((0.008, -0.008))
+
+    arm._coupled_previous_motor_tau[10:12] = (0.5, -0.25)
+    braking = arm._slew_coupled_motor_torques(np.zeros(12))
+    assert braking[10:12] == pytest.approx((0.34, -0.09))
 
 
 def test_corina_uses_250_hz_virtual_control_rate() -> None:
     arm = ArxDCanArm(model="corina_v2", control_mode="mit")
     assert arm.config.control_hz == pytest.approx(250.0)
     assert arm.config.safe_hold_hz == pytest.approx(250.0)
+    assert arm.config.max_cached_feedback_age_s == pytest.approx(0.05)
 
 
 def test_coupled_enable_never_sends_virtual_gains_to_motors(monkeypatch) -> None:
@@ -303,11 +335,13 @@ def test_coupled_enable_never_sends_virtual_gains_to_motors(monkeypatch) -> None
     )
 
     assert captured["mit_kp"][list(PAIR_INDICES)] == pytest.approx(0.0)
-    assert captured["mit_kd"][list(PAIR_INDICES)] == pytest.approx(0.0)
+    assert captured["mit_kd"][list(PAIR_INDICES)] == pytest.approx(
+        (0.0, 0.0, 0.3, 0.3)
+    )
     assert captured["mit_tau"][list(PAIR_INDICES)] == pytest.approx(0.0)
     assert arm._last_mit_command is not None
     assert np.asarray(arm._last_mit_command.kp)[10:12] == pytest.approx(
-        (60.0, 30.0)
+        (360.0, 360.0)
     )
 
 
@@ -409,7 +443,7 @@ def test_coupled_control_rejects_stale_cached_feedback(monkeypatch) -> None:
             name: SimpleNamespace(
                 has_feedback=True,
                 update_count=10,
-                age_ns=25_000_000,
+                age_ns=75_000_000,
             )
             for name in kwargs["joint_names"]
         },
@@ -433,7 +467,7 @@ def test_coupled_control_rejects_stale_cached_feedback(monkeypatch) -> None:
     assert not sent
     stats = arm.coupled_control_stats
     assert stats.stale_feedback_faults == 1
-    assert stats.maximum_feedback_age_s == pytest.approx(0.025)
+    assert stats.maximum_feedback_age_s == pytest.approx(0.075)
 
     estop_calls = []
     monkeypatch.setattr(arm.robot, "estop", lambda: estop_calls.append(True))

@@ -80,6 +80,11 @@ class CoupledJointTransform:
     def transformed_indices(self) -> frozenset[int]:
         return frozenset(index for pair in self._pairs for index in pair.indices)
 
+    @property
+    def transformed_pairs(self) -> tuple[tuple[int, int], ...]:
+        """Physical motor index pairs that share one virtual transform."""
+        return tuple(pair.indices for pair in self._pairs)
+
     def _features(self, values: np.ndarray) -> np.ndarray:
         first, second = (float(value) for value in values)
         return np.asarray(

@@ -114,6 +114,10 @@ class JointMotorConfig:
     direction: float = 1.0
     torque_range: float | None = None
     effort_limit: float | None = None
+    coupled_effort_limit: float | None = None
+    coupled_motor_kd: float = 0.0
+    coupled_torque_rise_rate: float | None = None
+    coupled_torque_brake_rate: float | None = None
     velocity_range: float | None = None
     lower_limit: float | None = None
     upper_limit: float | None = None
@@ -175,6 +179,10 @@ def _joint_from_yaml(joint: JointCfg) -> JointMotorConfig:
         direction=joint.direction,
         torque_range=joint.torque_range,
         effort_limit=joint.effort_limit,
+        coupled_effort_limit=joint.coupled_effort_limit,
+        coupled_motor_kd=joint.coupled_motor_kd,
+        coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
+        coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
         velocity_range=joint.velocity_range,
         lower_limit=joint.lower_limit,
         upper_limit=joint.upper_limit,
@@ -348,6 +356,10 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             direction=joint.direction,
             torque_range=joint.torque_range,
             effort_limit=joint.effort_limit,
+            coupled_effort_limit=joint.coupled_effort_limit,
+            coupled_motor_kd=joint.coupled_motor_kd,
+            coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
+            coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
             velocity_range=joint.velocity_range,
             lower_limit=joint.lower_limit,
             upper_limit=joint.upper_limit,
@@ -375,6 +387,10 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
                 direction=joint.direction,
                 torque_range=joint.torque_range,
                 effort_limit=joint.effort_limit,
+                coupled_effort_limit=joint.coupled_effort_limit,
+                coupled_motor_kd=joint.coupled_motor_kd,
+                coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
+                coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
                 velocity_range=joint.velocity_range,
                 lower_limit=joint.lower_limit,
                 upper_limit=joint.upper_limit,
@@ -551,6 +567,10 @@ class ArxDCanArm:
             maximum_feedback_age_s=0.0,
         )
         self._coupled_feedback_update_counts: dict[str, int] = {}
+        self._coupled_previous_motor_tau = np.zeros(
+            len(self.config.arm_joints),
+            dtype=np.float64,
+        )
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
         self._gripper_command_lock = threading.RLock()
         self._gripper_force_controller: GripperForceController | None = None
@@ -843,9 +863,16 @@ class ArxDCanArm:
         motor_kp = logical_kp.copy()
         motor_kd = logical_kd.copy()
         motor_kp[transformed_indices] = 0.0
-        motor_kd[transformed_indices] = 0.0
+        motor_kd[transformed_indices] = np.asarray(
+            [
+                self.config.arm_joints[index].coupled_motor_kd
+                for index in transformed_indices
+            ],
+            dtype=np.float64,
+        )
 
         motor_tau = self._limit_coupled_motor_torques(motor_tau)
+        motor_tau = self._slew_coupled_motor_torques(motor_tau)
         return (
             motor_position_target,
             motor_velocity_target,
@@ -859,12 +886,67 @@ class ArxDCanArm:
         transform = self._joint_transform
         if transform is None:
             return applied
-        for index in sorted(transform.transformed_indices):
-            limit = self.config.arm_joints[index].effort_limit
-            if limit is not None:
-                applied[index] = float(np.clip(applied[index], -limit, limit))
+        for pair in transform.transformed_pairs:
+            scale = 1.0
+            for index in pair:
+                joint = self.config.arm_joints[index]
+                limits = [
+                    value
+                    for value in (joint.effort_limit, joint.coupled_effort_limit)
+                    if value is not None
+                ]
+                if limits and abs(float(applied[index])) > 0.0:
+                    scale = min(
+                        scale,
+                        min(limits) / abs(float(applied[index])),
+                    )
+            if scale < 1.0:
+                applied[list(pair)] *= scale
         self._record_coupled_torque_saturation(requested, applied)
         return applied
+
+    def _slew_coupled_motor_torques(self, requested: np.ndarray) -> np.ndarray:
+        desired = np.asarray(requested, dtype=np.float64).copy()
+        transform = self._joint_transform
+        if transform is None:
+            return desired
+        if not self._enabled:
+            self._coupled_previous_motor_tau = desired.copy()
+            return desired
+
+        previous = self._coupled_previous_motor_tau
+        applied = desired.copy()
+        period = 1.0 / self.config.control_hz
+        for index in sorted(transform.transformed_indices):
+            joint = self.config.arm_joints[index]
+            rise_rate = joint.coupled_torque_rise_rate
+            brake_rate = joint.coupled_torque_brake_rate
+            if rise_rate is None or brake_rate is None:
+                continue
+            pushing = (
+                (
+                    desired[index] * previous[index] > 0.0
+                    or previous[index] == 0.0
+                )
+                and abs(desired[index]) > abs(previous[index])
+            )
+            rate = rise_rate if pushing else brake_rate
+            maximum_delta = rate * period
+            applied[index] = previous[index] + float(
+                np.clip(
+                    desired[index] - previous[index],
+                    -maximum_delta,
+                    maximum_delta,
+                )
+            )
+        self._coupled_previous_motor_tau = applied.copy()
+        return applied
+
+    def _reset_coupled_motor_torque_state(self) -> None:
+        self._coupled_previous_motor_tau = np.zeros(
+            len(self.config.arm_joints),
+            dtype=np.float64,
+        )
 
     def _record_coupled_torque_saturation(
         self,
@@ -900,12 +982,12 @@ class ArxDCanArm:
         if status.active and (
             not previous.active or previous.motor_names != status.motor_names
         ):
-            _LOG.warning(
+            _LOG.debug(
                 "coupled motor torque saturated: %s",
                 ", ".join(status.motor_names),
             )
         elif previous.active and not status.active:
-            _LOG.info("coupled motor torque saturation cleared")
+            _LOG.debug("coupled motor torque saturation cleared")
 
     def _read_cached_arm_motor_state(self) -> tuple[np.ndarray, np.ndarray]:
         position, velocity, _ = self.robot.get_state(
@@ -1139,6 +1221,7 @@ class ArxDCanArm:
             raise RuntimeError("ARX-D-CAN arm must be configured before enable")
         if initial_positions is not None and self._mode != "mit":
             raise ValueError("initial position seeding is only supported in MIT mode")
+        self._reset_coupled_motor_torque_state()
         joint_count = len(self.config.arm_joints)
         initial_position_vector = None
         initial_velocity_vector = None
@@ -1208,7 +1291,13 @@ class ArxDCanArm:
                     self._joint_transform.transformed_indices
                 )
                 kp_vector[transformed_indices] = 0.0
-                kd_vector[transformed_indices] = 0.0
+                kd_vector[transformed_indices] = np.asarray(
+                    [
+                        self.config.arm_joints[index].coupled_motor_kd
+                        for index in transformed_indices
+                    ],
+                    dtype=np.float64,
+                )
                 initial_torque_vector = self._limit_coupled_motor_torques(
                     initial_torque_vector
                 )
@@ -1271,6 +1360,7 @@ class ArxDCanArm:
             self._watchdog_deadline = None
             self._last_joint_command = None
             self._last_mit_command = None
+        self._reset_coupled_motor_torque_state()
 
     def clear_fault(self) -> None:
         """Clear the SDK fault latch after healthy feedback is available."""
@@ -1834,6 +1924,25 @@ class ArxDCanArm:
             or self.config.max_cached_feedback_age_s <= 0.0
         ):
             raise ValueError("max_cached_feedback_age_s must be finite and positive")
+        for joint in self.config.arm_joints:
+            if (
+                not math.isfinite(joint.coupled_motor_kd)
+                or joint.coupled_motor_kd < 0.0
+            ):
+                raise ValueError(
+                    f"{joint.name}.coupled_motor_kd must be finite and non-negative"
+                )
+            for name, value in (
+                ("coupled_effort_limit", joint.coupled_effort_limit),
+                ("coupled_torque_rise_rate", joint.coupled_torque_rise_rate),
+                ("coupled_torque_brake_rate", joint.coupled_torque_brake_rate),
+            ):
+                if value is not None and (
+                    not math.isfinite(value) or value <= 0.0
+                ):
+                    raise ValueError(
+                        f"{joint.name}.{name} must be finite and positive"
+                    )
 
     def _require_operational(self) -> None:
         self._require_connected()
