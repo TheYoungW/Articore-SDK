@@ -7,7 +7,7 @@ end_effector_frame: right_leg_link6
 channel: /dev/ttyACM0
 transport: dm-serial
 baud: 1000000
-rate: 500
+rate: 250
 
 safety:
   watchdog_enabled: true
@@ -16,7 +16,7 @@ safety:
   watchdog_poll_s: 0.02
   watchdog_action: safe_hold
   # Keep the coupled virtual-PD loop at the same rate while holding.
-  safe_hold_hz: 500.0
+  safe_hold_hz: 250.0
   feedback_fault_threshold: 3
   # Cached A/B feedback older than this is unsafe for virtual ankle PD.
   max_cached_feedback_age_s: 0.02

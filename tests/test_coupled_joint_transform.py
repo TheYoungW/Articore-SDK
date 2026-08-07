@@ -272,10 +272,10 @@ def test_corina_coupled_motor_torque_is_limited_and_reported() -> None:
     assert max(abs(value) for value in status.applied_torques) <= 7.0
 
 
-def test_corina_uses_500_hz_virtual_control_rate() -> None:
+def test_corina_uses_250_hz_virtual_control_rate() -> None:
     arm = ArxDCanArm(model="corina_v2", control_mode="mit")
-    assert arm.config.control_hz == pytest.approx(500.0)
-    assert arm.config.safe_hold_hz == pytest.approx(500.0)
+    assert arm.config.control_hz == pytest.approx(250.0)
+    assert arm.config.safe_hold_hz == pytest.approx(250.0)
 
 
 def test_coupled_enable_never_sends_virtual_gains_to_motors(monkeypatch) -> None:
