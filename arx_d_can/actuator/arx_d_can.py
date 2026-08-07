@@ -154,7 +154,9 @@ class JointCfg:
     effort_limit: float | None = None
     coupled_effort_limit: float | None = None
     coupled_motor_kd: float = 0.0
+    coupled_velocity_filter_s: float = 0.0
     coupled_torque_rise_rate: float | None = None
+    coupled_hold_torque_rise_rate: float | None = None
     coupled_torque_brake_rate: float | None = None
     velocity_range: float | None = None
     kp: float = 0.0
@@ -405,6 +407,15 @@ def load_cfg(
                 field=f"{name}.COUPLED.torque_brake_rate",
             )
         )
+        raw_coupled_hold_rise_rate = cc.get("hold_torque_rise_rate")
+        coupled_hold_rise_rate = (
+            None
+            if raw_coupled_hold_rise_rate is None
+            else _finite(
+                raw_coupled_hold_rise_rate,
+                field=f"{name}.COUPLED.hold_torque_rise_rate",
+            )
+        )
         raw_velocity_range = j.get("velocity_range")
         velocity_range = (
             None
@@ -427,7 +438,12 @@ def load_cfg(
                 cc.get("motor_kd", 0.0),
                 field=f"{name}.COUPLED.motor_kd",
             ),
+            coupled_velocity_filter_s=_finite(
+                cc.get("velocity_filter_s", 0.0),
+                field=f"{name}.COUPLED.velocity_filter_s",
+            ),
             coupled_torque_rise_rate=coupled_rise_rate,
+            coupled_hold_torque_rise_rate=coupled_hold_rise_rate,
             coupled_torque_brake_rate=coupled_brake_rate,
             velocity_range=velocity_range,
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
@@ -453,11 +469,22 @@ def load_cfg(
             raise ValueError(f"{name}.COUPLED.effort_limit must be positive")
         if joint.coupled_motor_kd < 0.0:
             raise ValueError(f"{name}.COUPLED.motor_kd must not be negative")
+        if joint.coupled_velocity_filter_s < 0.0:
+            raise ValueError(
+                f"{name}.COUPLED.velocity_filter_s must not be negative"
+            )
         if (
             joint.coupled_torque_rise_rate is not None
             and joint.coupled_torque_rise_rate <= 0.0
         ):
             raise ValueError(f"{name}.COUPLED.torque_rise_rate must be positive")
+        if (
+            joint.coupled_hold_torque_rise_rate is not None
+            and joint.coupled_hold_torque_rise_rate <= 0.0
+        ):
+            raise ValueError(
+                f"{name}.COUPLED.hold_torque_rise_rate must be positive"
+            )
         if (
             joint.coupled_torque_brake_rate is not None
             and joint.coupled_torque_brake_rate <= 0.0

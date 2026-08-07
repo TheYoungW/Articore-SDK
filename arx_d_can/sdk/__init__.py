@@ -74,7 +74,27 @@ class CoupledTorqueSaturation:
     active: bool
     motor_names: tuple[str, ...]
     requested_torques: tuple[float, ...]
+    limited_torques: tuple[float, ...]
     applied_torques: tuple[float, ...]
+    saturation_scale: float
+    timestamp: float
+
+
+@dataclass(slots=True, frozen=True)
+class CoupledTorqueTelemetry:
+    """Latest coupled-motor command stages and measured motor state."""
+
+    motor_names: tuple[str, ...]
+    motor_positions: tuple[float, ...]
+    motor_velocities: tuple[float, ...]
+    transformed_torques: tuple[float, ...]
+    motor_kd_gains: tuple[float, ...]
+    damping_torques: tuple[float, ...]
+    requested_torques: tuple[float, ...]
+    limited_torques: tuple[float, ...]
+    applied_torques: tuple[float, ...]
+    estimated_total_torques: tuple[float, ...]
+    saturation_scale: float
     timestamp: float
 
 
@@ -89,6 +109,14 @@ class CoupledControlStats:
     feedback_stall_cycles: int
     stale_feedback_faults: int
     maximum_feedback_age_s: float
+    torque_command_count: int
+    torque_saturation_count: int
+
+    @property
+    def torque_saturation_rate(self) -> float:
+        if self.torque_command_count <= 0:
+            return 0.0
+        return self.torque_saturation_count / self.torque_command_count
 
 
 _LOG = logging.getLogger(__name__)
@@ -116,7 +144,9 @@ class JointMotorConfig:
     effort_limit: float | None = None
     coupled_effort_limit: float | None = None
     coupled_motor_kd: float = 0.0
+    coupled_velocity_filter_s: float = 0.0
     coupled_torque_rise_rate: float | None = None
+    coupled_hold_torque_rise_rate: float | None = None
     coupled_torque_brake_rate: float | None = None
     velocity_range: float | None = None
     lower_limit: float | None = None
@@ -181,7 +211,9 @@ def _joint_from_yaml(joint: JointCfg) -> JointMotorConfig:
         effort_limit=joint.effort_limit,
         coupled_effort_limit=joint.coupled_effort_limit,
         coupled_motor_kd=joint.coupled_motor_kd,
+        coupled_velocity_filter_s=joint.coupled_velocity_filter_s,
         coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
+        coupled_hold_torque_rise_rate=joint.coupled_hold_torque_rise_rate,
         coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
         velocity_range=joint.velocity_range,
         lower_limit=joint.lower_limit,
@@ -358,7 +390,9 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             effort_limit=joint.effort_limit,
             coupled_effort_limit=joint.coupled_effort_limit,
             coupled_motor_kd=joint.coupled_motor_kd,
+            coupled_velocity_filter_s=joint.coupled_velocity_filter_s,
             coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
+            coupled_hold_torque_rise_rate=joint.coupled_hold_torque_rise_rate,
             coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
             velocity_range=joint.velocity_range,
             lower_limit=joint.lower_limit,
@@ -389,7 +423,9 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
                 effort_limit=joint.effort_limit,
                 coupled_effort_limit=joint.coupled_effort_limit,
                 coupled_motor_kd=joint.coupled_motor_kd,
+                coupled_velocity_filter_s=joint.coupled_velocity_filter_s,
                 coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
+                coupled_hold_torque_rise_rate=joint.coupled_hold_torque_rise_rate,
                 coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
                 velocity_range=joint.velocity_range,
                 lower_limit=joint.lower_limit,
@@ -554,7 +590,23 @@ class ArxDCanArm:
             active=False,
             motor_names=(),
             requested_torques=(),
+            limited_torques=(),
             applied_torques=(),
+            saturation_scale=1.0,
+            timestamp=time.monotonic(),
+        )
+        self._coupled_torque_telemetry = CoupledTorqueTelemetry(
+            motor_names=(),
+            motor_positions=(),
+            motor_velocities=(),
+            transformed_torques=(),
+            motor_kd_gains=(),
+            damping_torques=(),
+            requested_torques=(),
+            limited_torques=(),
+            applied_torques=(),
+            estimated_total_torques=(),
+            saturation_scale=1.0,
             timestamp=time.monotonic(),
         )
         self._coupled_control_stats = CoupledControlStats(
@@ -565,12 +617,23 @@ class ArxDCanArm:
             feedback_stall_cycles=0,
             stale_feedback_faults=0,
             maximum_feedback_age_s=0.0,
+            torque_command_count=0,
+            torque_saturation_count=0,
         )
         self._coupled_feedback_update_counts: dict[str, int] = {}
         self._coupled_previous_motor_tau = np.zeros(
             len(self.config.arm_joints),
             dtype=np.float64,
         )
+        self._coupled_filtered_virtual_velocity = np.zeros(
+            len(self.config.arm_joints),
+            dtype=np.float64,
+        )
+        self._coupled_velocity_filter_initialized = np.zeros(
+            len(self.config.arm_joints),
+            dtype=bool,
+        )
+        self._coupled_hold_candidate_since: dict[tuple[int, int], float] = {}
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
         self._gripper_command_lock = threading.RLock()
         self._gripper_force_controller: GripperForceController | None = None
@@ -616,6 +679,12 @@ class ArxDCanArm:
         """Return the most recent coupled-motor torque saturation status."""
         with self._state_lock:
             return self._coupled_torque_saturation
+
+    @property
+    def coupled_torque_telemetry(self) -> CoupledTorqueTelemetry:
+        """Return the latest coupled-motor feedback and torque command stages."""
+        with self._state_lock:
+            return self._coupled_torque_telemetry
 
     @property
     def coupled_control_stats(self) -> CoupledControlStats:
@@ -834,6 +903,9 @@ class ArxDCanArm:
             physical_position,
             physical_velocity,
         )
+        filtered_actual_velocity = self._filter_coupled_virtual_velocities(
+            actual_velocity
+        )
         transformed_indices = sorted(self._joint_transform.transformed_indices)
         virtual_tau = logical_tau.copy()
         virtual_tau[transformed_indices] += (
@@ -845,7 +917,7 @@ class ArxDCanArm:
             + logical_kd[transformed_indices]
             * (
                 logical_velocity[transformed_indices]
-                - actual_velocity[transformed_indices]
+                - filtered_actual_velocity[transformed_indices]
             )
         )
 
@@ -856,26 +928,81 @@ class ArxDCanArm:
             logical_position,
             logical_velocity,
         )
-        motor_tau = self._joint_transform.virtual_torques_to_motor(
+        transformed_motor_tau = self._joint_transform.virtual_torques_to_motor(
             actual_position,
             virtual_tau,
         )
         motor_kp = logical_kp.copy()
         motor_kd = logical_kd.copy()
         motor_kp[transformed_indices] = 0.0
-        motor_kd[transformed_indices] = np.asarray(
-            [
-                self.config.arm_joints[index].coupled_motor_kd
-                for index in transformed_indices
-            ],
-            dtype=np.float64,
+        motor_velocity_command = motor_velocity_target.copy()
+        motor_velocity_command[transformed_indices] = 0.0
+
+        requested_motor_tau = transformed_motor_tau
+        limited_motor_tau = self._limit_coupled_motor_torques(
+            requested_motor_tau
+        )
+        now = time.monotonic()
+        hold_pairs_set: set[tuple[int, int]] = set()
+        for pair in self._joint_transform.transformed_pairs:
+            hold_candidate = (
+                all(
+                    self.config.arm_joints[index].coupled_hold_torque_rise_rate
+                    is not None
+                    for index in pair
+                )
+                and max(abs(float(logical_velocity[index])) for index in pair)
+                <= math.radians(1.0)
+                and max(
+                    abs(float(logical_position[index] - actual_position[index]))
+                    for index in pair
+                )
+                <= math.radians(1.5)
+            )
+            if not hold_candidate:
+                self._coupled_hold_candidate_since.pop(pair, None)
+                continue
+            started = self._coupled_hold_candidate_since.setdefault(pair, now)
+            if now - started >= 0.15:
+                hold_pairs_set.add(pair)
+        hold_pairs = frozenset(hold_pairs_set)
+        motor_tau = self._slew_coupled_motor_torques(
+            limited_motor_tau,
+            hold_pairs=hold_pairs,
         )
 
-        motor_tau = self._limit_coupled_motor_torques(motor_tau)
-        motor_tau = self._slew_coupled_motor_torques(motor_tau)
+        # The physical motor-side gain is deliberately passive: its velocity
+        # target is zero, so it can only oppose measured motion.  Adapt the
+        # gain when necessary so feed-forward plus estimated damping remains
+        # inside the motor's hard effort limit.
+        damping_tau = np.zeros(joint_count, dtype=np.float64)
+        for index in transformed_indices:
+            joint = self.config.arm_joints[index]
+            gain = joint.coupled_motor_kd
+            speed = abs(float(physical_velocity[index]))
+            if joint.effort_limit is not None and speed > 1e-12:
+                remaining = max(
+                    0.0,
+                    joint.effort_limit - abs(float(motor_tau[index])),
+                )
+                gain = min(gain, remaining / speed)
+            motor_kd[index] = gain
+            damping_tau[index] = -gain * physical_velocity[index]
+        estimated_total_tau = motor_tau + damping_tau
+        self._record_coupled_torque_command(
+            motor_positions=physical_position,
+            motor_velocities=physical_velocity,
+            transformed_torques=transformed_motor_tau,
+            motor_kd_gains=motor_kd,
+            damping_torques=damping_tau,
+            requested_torques=requested_motor_tau,
+            limited_torques=limited_motor_tau,
+            applied_torques=motor_tau,
+            estimated_total_torques=estimated_total_tau,
+        )
         return (
             motor_position_target,
-            motor_velocity_target,
+            motor_velocity_command,
             motor_kp,
             motor_kd,
             motor_tau,
@@ -902,10 +1029,14 @@ class ArxDCanArm:
                     )
             if scale < 1.0:
                 applied[list(pair)] *= scale
-        self._record_coupled_torque_saturation(requested, applied)
         return applied
 
-    def _slew_coupled_motor_torques(self, requested: np.ndarray) -> np.ndarray:
+    def _slew_coupled_motor_torques(
+        self,
+        requested: np.ndarray,
+        *,
+        hold_pairs: frozenset[tuple[int, int]] = frozenset(),
+    ) -> np.ndarray:
         desired = np.asarray(requested, dtype=np.float64).copy()
         transform = self._joint_transform
         if transform is None:
@@ -917,28 +1048,61 @@ class ArxDCanArm:
         previous = self._coupled_previous_motor_tau
         applied = desired.copy()
         period = 1.0 / self.config.control_hz
-        for index in sorted(transform.transformed_indices):
-            joint = self.config.arm_joints[index]
-            rise_rate = joint.coupled_torque_rise_rate
-            brake_rate = joint.coupled_torque_brake_rate
-            if rise_rate is None or brake_rate is None:
+        for pair in transform.transformed_pairs:
+            joints = [self.config.arm_joints[index] for index in pair]
+            if any(
+                joint.coupled_torque_rise_rate is None
+                or joint.coupled_torque_brake_rate is None
+                for joint in joints
+            ):
                 continue
-            pushing = (
-                (
-                    desired[index] * previous[index] > 0.0
-                    or previous[index] == 0.0
-                )
-                and abs(desired[index]) > abs(previous[index])
+            rise_rate = min(
+                float(joint.coupled_torque_rise_rate) for joint in joints
             )
-            rate = rise_rate if pushing else brake_rate
+            if pair in hold_pairs:
+                rise_rate = min(
+                    float(joint.coupled_hold_torque_rise_rate)
+                    for joint in joints
+                    if joint.coupled_hold_torque_rise_rate is not None
+                )
+            brake_rate = min(
+                float(joint.coupled_torque_brake_rate) for joint in joints
+            )
+            pair_indices = list(pair)
+            target = desired[pair_indices]
+            prior = previous[pair_indices]
+            target_peak = float(np.max(np.abs(target)))
+            prior_peak = float(np.max(np.abs(prior)))
+            epsilon = 1e-12
+
+            if target_peak <= epsilon:
+                next_peak = max(0.0, prior_peak - brake_rate * period)
+                applied[pair_indices] = (
+                    np.zeros(2)
+                    if prior_peak <= epsilon
+                    else prior * (next_peak / prior_peak)
+                )
+                continue
+            if prior_peak > epsilon and float(np.dot(prior, target)) <= 0.0:
+                # A direction reversal must release the stored force first.
+                # Braking along the old vector avoids mixing opposite A/B
+                # ratios in one cycle; the new vector starts from zero.
+                next_peak = max(0.0, prior_peak - brake_rate * period)
+                applied[pair_indices] = prior * (next_peak / prior_peak)
+                continue
+
+            rate = rise_rate if target_peak > prior_peak else brake_rate
             maximum_delta = rate * period
-            applied[index] = previous[index] + float(
+            next_peak = float(
                 np.clip(
-                    desired[index] - previous[index],
-                    -maximum_delta,
-                    maximum_delta,
+                    target_peak,
+                    max(0.0, prior_peak - maximum_delta),
+                    prior_peak + maximum_delta,
                 )
             )
+            # One scale factor for the pair keeps the requested A/B torque
+            # direction intact throughout ordinary rise and decay.
+            applied[pair_indices] = target * (next_peak / target_peak)
         self._coupled_previous_motor_tau = applied.copy()
         return applied
 
@@ -947,11 +1111,61 @@ class ArxDCanArm:
             len(self.config.arm_joints),
             dtype=np.float64,
         )
+        self._coupled_filtered_virtual_velocity.fill(0.0)
+        self._coupled_velocity_filter_initialized.fill(False)
+        self._coupled_hold_candidate_since.clear()
 
-    def _record_coupled_torque_saturation(
+    def _filter_coupled_virtual_velocities(
         self,
-        requested: np.ndarray,
-        applied: np.ndarray,
+        measured: np.ndarray,
+    ) -> np.ndarray:
+        filtered = np.asarray(measured, dtype=np.float64).copy()
+        transform = self._joint_transform
+        if transform is None:
+            return filtered
+        period = 1.0 / self.config.control_hz
+        for pair in transform.transformed_pairs:
+            pair_indices = list(pair)
+            time_constant = max(
+                self.config.arm_joints[index].coupled_velocity_filter_s
+                for index in pair
+            )
+            if time_constant <= 0.0:
+                self._coupled_filtered_virtual_velocity[pair_indices] = filtered[
+                    pair_indices
+                ]
+                self._coupled_velocity_filter_initialized[pair_indices] = True
+                continue
+            if not np.all(
+                self._coupled_velocity_filter_initialized[pair_indices]
+            ):
+                self._coupled_filtered_virtual_velocity[pair_indices] = filtered[
+                    pair_indices
+                ]
+                self._coupled_velocity_filter_initialized[pair_indices] = True
+            else:
+                alpha = period / (time_constant + period)
+                self._coupled_filtered_virtual_velocity[pair_indices] += alpha * (
+                    filtered[pair_indices]
+                    - self._coupled_filtered_virtual_velocity[pair_indices]
+                )
+            filtered[pair_indices] = self._coupled_filtered_virtual_velocity[
+                pair_indices
+            ]
+        return filtered
+
+    def _record_coupled_torque_command(
+        self,
+        *,
+        motor_positions: np.ndarray,
+        motor_velocities: np.ndarray,
+        transformed_torques: np.ndarray,
+        motor_kd_gains: np.ndarray,
+        damping_torques: np.ndarray,
+        requested_torques: np.ndarray,
+        limited_torques: np.ndarray,
+        applied_torques: np.ndarray,
+        estimated_total_torques: np.ndarray,
     ) -> None:
         transform = self._joint_transform
         if transform is None:
@@ -961,24 +1175,77 @@ class ArxDCanArm:
             index
             for index in indices
             if not math.isclose(
-                float(requested[index]),
-                float(applied[index]),
+                float(requested_torques[index]),
+                float(limited_torques[index]),
                 rel_tol=0.0,
                 abs_tol=1e-12,
             )
         ]
+        scales = [
+            abs(float(limited_torques[index]))
+            / abs(float(requested_torques[index]))
+            for index in indices
+            if abs(float(requested_torques[index])) > 1e-12
+        ]
+        saturation_scale = min(scales, default=1.0)
+        now = time.monotonic()
         status = CoupledTorqueSaturation(
             active=bool(saturated),
             motor_names=tuple(
                 self.config.arm_joints[index].name for index in saturated
             ),
-            requested_torques=tuple(float(requested[index]) for index in indices),
-            applied_torques=tuple(float(applied[index]) for index in indices),
-            timestamp=time.monotonic(),
+            requested_torques=tuple(
+                float(requested_torques[index]) for index in indices
+            ),
+            limited_torques=tuple(
+                float(limited_torques[index]) for index in indices
+            ),
+            applied_torques=tuple(
+                float(applied_torques[index]) for index in indices
+            ),
+            saturation_scale=saturation_scale,
+            timestamp=now,
+        )
+        telemetry = CoupledTorqueTelemetry(
+            motor_names=tuple(
+                self.config.arm_joints[index].name for index in indices
+            ),
+            motor_positions=tuple(float(motor_positions[index]) for index in indices),
+            motor_velocities=tuple(
+                float(motor_velocities[index]) for index in indices
+            ),
+            transformed_torques=tuple(
+                float(transformed_torques[index]) for index in indices
+            ),
+            motor_kd_gains=tuple(
+                float(motor_kd_gains[index]) for index in indices
+            ),
+            damping_torques=tuple(
+                float(damping_torques[index]) for index in indices
+            ),
+            requested_torques=status.requested_torques,
+            limited_torques=status.limited_torques,
+            applied_torques=status.applied_torques,
+            estimated_total_torques=tuple(
+                float(estimated_total_torques[index]) for index in indices
+            ),
+            saturation_scale=saturation_scale,
+            timestamp=now,
         )
         with self._state_lock:
             previous = self._coupled_torque_saturation
             self._coupled_torque_saturation = status
+            self._coupled_torque_telemetry = telemetry
+            self._coupled_control_stats = replace(
+                self._coupled_control_stats,
+                torque_command_count=(
+                    self._coupled_control_stats.torque_command_count + 1
+                ),
+                torque_saturation_count=(
+                    self._coupled_control_stats.torque_saturation_count
+                    + int(status.active)
+                ),
+            )
         if status.active and (
             not previous.active or previous.motor_names != status.motor_names
         ):
@@ -1102,6 +1369,8 @@ class ArxDCanArm:
                 feedback_stall_cycles=0,
                 stale_feedback_faults=0,
                 maximum_feedback_age_s=0.0,
+                torque_command_count=0,
+                torque_saturation_count=0,
             )
         self._coupled_control_thread = threading.Thread(
             target=self._coupled_control_loop,
@@ -1290,6 +1559,7 @@ class ArxDCanArm:
                 transformed_indices = sorted(
                     self._joint_transform.transformed_indices
                 )
+                initial_velocity_vector[transformed_indices] = 0.0
                 kp_vector[transformed_indices] = 0.0
                 kd_vector[transformed_indices] = np.asarray(
                     [
@@ -1932,9 +2202,21 @@ class ArxDCanArm:
                 raise ValueError(
                     f"{joint.name}.coupled_motor_kd must be finite and non-negative"
                 )
+            if (
+                not math.isfinite(joint.coupled_velocity_filter_s)
+                or joint.coupled_velocity_filter_s < 0.0
+            ):
+                raise ValueError(
+                    f"{joint.name}.coupled_velocity_filter_s must be finite "
+                    "and non-negative"
+                )
             for name, value in (
                 ("coupled_effort_limit", joint.coupled_effort_limit),
                 ("coupled_torque_rise_rate", joint.coupled_torque_rise_rate),
+                (
+                    "coupled_hold_torque_rise_rate",
+                    joint.coupled_hold_torque_rise_rate,
+                ),
                 ("coupled_torque_brake_rate", joint.coupled_torque_brake_rate),
             ):
                 if value is not None and (

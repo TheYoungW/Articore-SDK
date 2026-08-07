@@ -122,11 +122,13 @@ joints:
     feedback_id: 0x25
     model: "4310"
     effort_limit: 7.0
-    # Logical Pitch gain; motor Kp stays zero and COUPLED supplies damping.
-    MIT: {kp: 360.0, kd: 0.0}
+    # Logical Pitch gains; physical motor Kp/Kd stay zero. COUPLED.motor_kd is
+    # evaluated from filtered feedback inside the total-torque limit.
+    MIT: {kp: 60.0, kd: 1.5}
     COUPLED:
-      {effort_limit: 0.6, motor_kd: 0.3,
-       torque_rise_rate: 1.0, torque_brake_rate: 40.0}
+      {effort_limit: 1.2, motor_kd: 0.4, velocity_filter_s: 0.02,
+       torque_rise_rate: 24.0, hold_torque_rise_rate: 1.0,
+       torque_brake_rate: 200.0}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
 
   - name: right_leg_joint6
@@ -134,9 +136,11 @@ joints:
     feedback_id: 0x26
     model: "4310"
     effort_limit: 7.0
-    # Logical Roll gain; motor Kp stays zero and COUPLED supplies damping.
-    MIT: {kp: 360.0, kd: 0.0}
+    # Logical Roll gains; physical motor Kp/Kd stay zero. COUPLED.motor_kd is
+    # evaluated from filtered feedback inside the total-torque limit.
+    MIT: {kp: 30.0, kd: 0.8}
     COUPLED:
-      {effort_limit: 0.6, motor_kd: 0.3,
-       torque_rise_rate: 1.0, torque_brake_rate: 40.0}
+      {effort_limit: 1.2, motor_kd: 0.4, velocity_filter_s: 0.02,
+       torque_rise_rate: 24.0, hold_torque_rise_rate: 1.0,
+       torque_brake_rate: 200.0}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}

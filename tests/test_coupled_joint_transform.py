@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import numpy as np
 import pytest
 
 from arx_d_can import ArxDCanArm
+import arx_d_can.sdk as sdk_module
 from arx_d_can.kinematics.coupled_joint_transform import CoupledJointTransform
 
 
@@ -145,8 +147,9 @@ def test_corina_sdk_transparently_converts_joint_commands(monkeypatch) -> None:
     assert captured["kp"] == pytest.approx(expected_kp)
     assert captured["kd"] == pytest.approx(expected_kd)
     assert captured["kp"][list(PAIR_INDICES)] == pytest.approx(0.0)
+    assert captured["vel"][list(PAIR_INDICES)] == pytest.approx(0.0)
     assert captured["kd"][list(PAIR_INDICES)] == pytest.approx(
-        (0.0, 0.0, 0.3, 0.3)
+        (0.0, 0.0, 0.4, 0.4)
     )
     assert arm._last_joint_command == pytest.approx(tuple(virtual_position))
     assert command.positions == pytest.approx(tuple(virtual_position))
@@ -186,11 +189,19 @@ def test_virtual_pd_single_axis_does_not_create_cross_axis_torque(axis: int) -> 
     expected[axis] = kp[indices[axis]] * math.radians(1.0)
     assert recovered[list(indices)] == pytest.approx(expected, abs=0.03)
     assert motor_kp[list(indices)] == pytest.approx(0.0)
-    assert motor_kd[list(indices)] == pytest.approx((0.3, 0.3))
+    assert motor_kd[list(indices)] == pytest.approx((0.4, 0.4))
 
 
 def test_virtual_pd_matches_logical_formula_at_random_states() -> None:
     arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    joints = list(arm.config.arm_joints)
+    for index in (10, 11):
+        joints[index] = replace(
+            joints[index],
+            coupled_motor_kd=0.0,
+            coupled_velocity_filter_s=0.0,
+        )
+    arm.config = replace(arm.config, arm_joints=tuple(joints))
     rng = np.random.default_rng(20260807)
     indices = np.asarray((10, 11))
     for _ in range(40):
@@ -269,22 +280,25 @@ def test_corina_coupled_motor_torque_is_limited_and_reported() -> None:
         motor_velocities=np.zeros(12),
     )
 
-    assert np.max(np.abs(motor_tau[10:12])) <= 0.6
+    assert np.max(np.abs(motor_tau[10:12])) <= 1.2
     status = arm.coupled_torque_saturation
     assert status.active
     assert status.motor_names
-    assert max(abs(value) for value in status.applied_torques) <= 0.6
+    assert max(abs(value) for value in status.limited_torques) <= 1.2
+    assert max(abs(value) for value in status.applied_torques) <= 1.2
+    assert status.saturation_scale < 1.0
+    assert arm.coupled_control_stats.torque_saturation_rate == pytest.approx(1.0)
 
 
 def test_corina_coupled_limit_preserves_each_pair_torque_direction() -> None:
     arm = ArxDCanArm(model="corina_v2", control_mode="mit")
     requested = np.zeros(12)
-    requested[10:12] = (1.0, -2.0)
+    requested[10:12] = (1.0, -4.0)
 
     applied = arm._limit_coupled_motor_torques(requested)
 
-    assert applied[10:12] == pytest.approx((0.3, -0.6))
-    assert applied[10] / applied[11] == pytest.approx(-0.5)
+    assert applied[10:12] == pytest.approx((0.3, -1.2))
+    assert applied[10] / applied[11] == pytest.approx(-0.25)
 
 
 def test_corina_coupled_torque_uses_slow_push_and_fast_brake_rates() -> None:
@@ -295,12 +309,134 @@ def test_corina_coupled_torque_uses_slow_push_and_fast_brake_rates() -> None:
 
     first = arm._slew_coupled_motor_torques(requested)
     second = arm._slew_coupled_motor_torques(requested)
-    assert first[10:12] == pytest.approx((0.004, -0.004))
-    assert second[10:12] == pytest.approx((0.008, -0.008))
+    assert first[10:12] == pytest.approx((0.096, -0.048))
+    assert second[10:12] == pytest.approx((0.192, -0.096))
+    assert first[10] / first[11] == pytest.approx(-2.0)
+    assert second[10] / second[11] == pytest.approx(-2.0)
 
     arm._coupled_previous_motor_tau[10:12] = (0.5, -0.25)
     braking = arm._slew_coupled_motor_torques(np.zeros(12))
-    assert braking[10:12] == pytest.approx((0.34, -0.09))
+    assert braking[10:12] == pytest.approx((0.0, 0.0))
+
+
+def test_corina_coupled_torque_reversal_brakes_before_rebuilding() -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    arm._enabled = True
+    arm._coupled_previous_motor_tau[10:12] = (0.5, -0.25)
+    requested = np.zeros(12)
+    requested[10:12] = (-0.5, 0.25)
+
+    braking = [arm._slew_coupled_motor_torques(requested)[10:12] for _ in range(4)]
+    rebuilt = arm._slew_coupled_motor_torques(requested)[10:12]
+
+    assert braking[0] == pytest.approx((0.0, 0.0), abs=1e-12)
+    assert braking[-1] == pytest.approx((-0.288, 0.144))
+    assert rebuilt == pytest.approx((-0.384, 0.192))
+
+
+def test_corina_coupled_hold_uses_low_torque_rise_rate() -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    arm._enabled = True
+    requested = np.zeros(12)
+    requested[10:12] = (0.5, -0.25)
+
+    applied = arm._slew_coupled_motor_torques(
+        requested,
+        hold_pairs=frozenset({(10, 11)}),
+    )
+
+    assert applied[10:12] == pytest.approx((0.004, -0.002))
+
+
+def test_corina_coupled_hold_requires_stationary_dwell(monkeypatch) -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    actual = np.zeros(12)
+    motor_position = arm._joint_transform.virtual_positions_to_motor(actual)
+    desired = actual.copy()
+    desired[11] = math.radians(1.0)
+    kp = np.zeros(12)
+    kp[11] = 30.0
+    command = arm._make_mit_command(
+        desired,
+        np.zeros(12),
+        kp,
+        np.zeros(12),
+        np.zeros(12),
+    )
+    clock = [0.0]
+    monkeypatch.setattr(sdk_module.time, "monotonic", lambda: clock[0])
+    arm._enabled = True
+
+    arm._reset_coupled_motor_torque_state()
+    *_, initial = arm._compose_mit_motor_command(
+        command,
+        motor_positions=motor_position,
+        motor_velocities=np.zeros(12),
+    )
+    clock[0] = 0.10
+    arm._coupled_previous_motor_tau.fill(0.0)
+    *_, before_dwell = arm._compose_mit_motor_command(
+        command,
+        motor_positions=motor_position,
+        motor_velocities=np.zeros(12),
+    )
+    clock[0] = 0.16
+    arm._coupled_previous_motor_tau.fill(0.0)
+    *_, after_dwell = arm._compose_mit_motor_command(
+        command,
+        motor_positions=motor_position,
+        motor_velocities=np.zeros(12),
+    )
+
+    assert np.max(np.abs(initial[10:12])) == pytest.approx(0.096)
+    assert np.max(np.abs(before_dwell[10:12])) == pytest.approx(0.096)
+    assert np.max(np.abs(after_dwell[10:12])) == pytest.approx(0.004)
+
+
+def test_corina_host_motor_damping_is_included_before_total_torque_limit() -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    joints = list(arm.config.arm_joints)
+    for index in (10, 11):
+        joints[index] = replace(joints[index], coupled_motor_kd=0.3)
+    arm.config = replace(arm.config, arm_joints=tuple(joints))
+    actual = np.zeros(12)
+    motor_position = arm._joint_transform.virtual_positions_to_motor(actual)
+    motor_velocity = np.zeros(12)
+    motor_velocity[10:12] = (30.0, -30.0)
+    command = arm._make_mit_command(
+        actual,
+        np.zeros(12),
+        np.zeros(12),
+        np.zeros(12),
+        np.zeros(12),
+    )
+
+    *_, motor_kd, motor_tau = arm._compose_mit_motor_command(
+        command,
+        motor_positions=motor_position,
+        motor_velocities=motor_velocity,
+    )
+
+    telemetry = arm.coupled_torque_telemetry
+    right = slice(2, 4)
+    assert motor_kd[10:12] == pytest.approx((7.0 / 30.0, 7.0 / 30.0))
+    assert telemetry.damping_torques[right] == pytest.approx((-7.0, 7.0))
+    assert max(abs(value) for value in telemetry.limited_torques[right]) <= 1.2
+    assert motor_tau[10:12] == pytest.approx(telemetry.applied_torques[right])
+    assert max(abs(value) for value in telemetry.estimated_total_torques[right]) <= 7.0
+
+
+def test_corina_coupled_velocity_filter_rejects_one_cycle_spike() -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    first = np.zeros(12)
+    spike = np.zeros(12)
+    spike[10:12] = (12.0, -6.0)
+
+    assert arm._filter_coupled_virtual_velocities(first) == pytest.approx(first)
+    filtered = arm._filter_coupled_virtual_velocities(spike)
+
+    # 250 Hz with a 20 ms time constant gives alpha = 1/6.
+    assert filtered[10:12] == pytest.approx((2.0, -1.0))
 
 
 def test_corina_uses_250_hz_virtual_control_rate() -> None:
@@ -336,12 +472,12 @@ def test_coupled_enable_never_sends_virtual_gains_to_motors(monkeypatch) -> None
 
     assert captured["mit_kp"][list(PAIR_INDICES)] == pytest.approx(0.0)
     assert captured["mit_kd"][list(PAIR_INDICES)] == pytest.approx(
-        (0.0, 0.0, 0.3, 0.3)
+        (0.0, 0.0, 0.4, 0.4)
     )
     assert captured["mit_tau"][list(PAIR_INDICES)] == pytest.approx(0.0)
     assert arm._last_mit_command is not None
     assert np.asarray(arm._last_mit_command.kp)[10:12] == pytest.approx(
-        (360.0, 360.0)
+        (60.0, 30.0)
     )
 
 
