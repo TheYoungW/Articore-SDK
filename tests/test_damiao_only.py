@@ -657,6 +657,31 @@ def test_custom_torque_range_rescales_mit_command_and_feedback() -> None:
     assert global_torque.tolist() == [4.0]
 
 
+def test_effort_limit_does_not_change_native_protocol_torque_mapping() -> None:
+    motor = FakeDirectionalMotor()
+    joint = JointCfg(
+        name="joint1",
+        motor_id=1,
+        feedback_id=0x11,
+        model="4310",
+        effort_limit=7.0,
+    )
+    arm = make_uninitialized_arm(joint)
+    arm._motor_map = {"joint1": motor}
+    arm._ctrl_map = {"main": FakePollController()}
+    group = JointGroup(
+        "arm",
+        ["joint1"],
+        arm._all_joints,
+        arm._motor_map,
+        arm._ctrl_map,
+    )
+
+    group.send_mit([0.0], tau=[9.0])
+
+    assert motor.mit_commands == [(0.0, 0.0, 0.0, 0.0, 7.0)]
+
+
 def test_custom_velocity_range_rescales_mit_command_and_feedback() -> None:
     motor = FakeDirectionalMotor()
     motor.velocity = 6.0

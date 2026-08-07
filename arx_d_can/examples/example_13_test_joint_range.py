@@ -54,9 +54,23 @@ def select_joint_config(
     missing = [name for name in joint_names if name not in by_name]
     if missing:
         raise ValueError("unknown arm joints: " + ", ".join(missing))
+    selected_names = set(joint_names)
+    transform_path = config.joint_transform_path
+    if transform_path is not None:
+        # Corina J1-J4 are independent motors. A reduced range-test profile
+        # containing none of the model-defined ankle axes must not try to load
+        # a J5/J6 transform that cannot match the reduced joint list.
+        coupled_candidates = {
+            name
+            for name in by_name
+            if name.endswith("joint5") or name.endswith("joint6")
+        }
+        if selected_names.isdisjoint(coupled_candidates):
+            transform_path = None
     return replace(
         config,
         arm_joints=tuple(by_name[name] for name in joint_names),
+        joint_transform_path=transform_path,
         gripper=None,
         gripper_force_control_enabled=False,
     )

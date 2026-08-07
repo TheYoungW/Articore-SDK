@@ -28,7 +28,11 @@ def test_select_joint_config_preserves_requested_order_and_directions() -> None:
 
     assert selected.joint_names == ("right_leg_joint4", "right_leg_joint1")
     assert [joint.direction for joint in selected.arm_joints] == [-1.0, -1.0]
+    assert selected.joint_transform_path is None
     assert selected.gripper is None
+
+    arm = example.ArxDCanArm(config=selected)
+    assert arm.joint_names == ("right_leg_joint4", "right_leg_joint1")
 
 
 def test_sweep_targets_reach_95_percent_of_each_urdf_limit() -> None:

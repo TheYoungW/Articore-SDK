@@ -243,8 +243,10 @@ arm = ArxDCanArm(config_path="/path/to/my_arm.yaml")
 `--config-path` 互斥；没有指定时使用 `models.yaml` 的 `default_model`。
 若某个电机的正方向与机械臂坐标相反，在该关节配置中设置 `direction: -1`；
 SDK 会同时反转位置、速度和力矩的指令及反馈，其他关节省略该字段即可。
-若实际电机的 MIT 力矩映射范围与底层型号默认值不同，设置
-`torque_range`；SDK 会同时换算 MIT 前馈力矩和反馈力矩。
+若实际电机的 MIT 协议映射范围与底层型号默认值不同，设置
+`torque_range`；SDK 会同时换算 MIT 前馈力矩和反馈力矩。该字段不是安全限幅。
+关节安全力矩使用 `effort_limit`，未显式配置时从 URDF `<limit effort>` 读取。
+命令先按 `effort_limit` 裁剪，再按照 `torque_range` 或电机型号原生范围编码。
 
 ### Corina V2 双腿
 
@@ -272,8 +274,15 @@ Corina 的关节5/6按 URDF 定义分别作为脚端 Pitch/Roll 使用。读取�
 MIT 模式下，SDK 以 500 Hz 使用缓存的 A/B 电机反馈反算实际 Pitch/Roll，在逻辑
 J5/J6 空间计算 PD 与前馈力矩，再通过耦合模型转换为 A/B 电机力矩。两个物理电机
 的 MIT Kp/Kd 始终为零，不会把逻辑关节增益直接交给耦合电机。默认逻辑增益为
-J5 `Kp=60, Kd=1.5`，J6 `Kp=30, Kd=0.8`。A/B 电机力矩分别限制在
-`±7 Nm`；可通过 `robot.coupled_torque_saturation` 读取最近一次限幅状态。
+J5 `Kp=60, Kd=1.5`，J6 `Kp=30, Kd=0.8`。4310 协议仍使用原生
+`±10 Nm` 映射，A/B 命令则按 URDF effort 独立限制在 `±7 Nm`，不会把 7 Nm
+重新缩放成协议数值 10。可通过 `robot.coupled_torque_saturation` 读取最近一次
+限幅状态。
+
+每个内环周期都会读取 motor-drive-layer 的反馈 `update_count` 和 `age_ns`。
+A/B 缓存反馈超过 20 ms 时立即停止虚拟 PD 并急停，不继续使用旧角度。
+`robot.coupled_control_stats` 提供实际循环频率、周期超时次数、反馈停滞周期数和
+最大反馈年龄，可用于真机确认单总线 12 电机的实际带宽。
 
 策略循环可以按 200 Hz 更新完整逻辑 MIT 目标。命令看门狗会保留最后一帧的
 位置、速度、Kp、Kd 和前馈力矩；进入安全保持后仍走上述虚拟关节控制链路，

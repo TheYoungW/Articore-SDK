@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -105,6 +106,14 @@ def test_corina_sdk_transparently_converts_joint_commands(monkeypatch) -> None:
         arm.robot,
         "get_status_codes",
         lambda **_kwargs: {name: 1 for name in arm.joint_names},
+    )
+    monkeypatch.setattr(
+        arm.robot,
+        "get_feedback_stats",
+        lambda **kwargs: {
+            name: SimpleNamespace(has_feedback=True, update_count=1, age_ns=0)
+            for name in kwargs["joint_names"]
+        },
     )
     virtual_position = np.zeros(12)
     virtual_position[10:12] = np.radians((1.0, 0.5))
@@ -324,6 +333,25 @@ def test_coupled_control_loop_uses_cached_feedback_without_active_requests(
         "get_status_codes",
         lambda **_kwargs: {name: 1 for name in arm.joint_names},
     )
+    feedback_update_count = 0
+
+    def fresh_feedback_stats(**kwargs):
+        nonlocal feedback_update_count
+        feedback_update_count += 1
+        return {
+            name: SimpleNamespace(
+                has_feedback=True,
+                update_count=feedback_update_count,
+                age_ns=1_000_000,
+            )
+            for name in kwargs["joint_names"]
+        }
+
+    monkeypatch.setattr(
+        arm.robot,
+        "get_feedback_stats",
+        fresh_feedback_stats,
+    )
     monkeypatch.setattr(arm.robot.arm, "send_mit", capture)
     arm._connected = True
     arm._configured = True
@@ -352,6 +380,81 @@ def test_coupled_control_loop_uses_cached_feedback_without_active_requests(
     assert feedback_calls
     assert all(call["request_feedback"] is False for call in feedback_calls)
     assert all(call["require_complete"] is True for call in feedback_calls)
+    stats = arm.coupled_control_stats
+    assert stats.cycle_count >= 3
+    assert stats.achieved_hz > 0.0
+    assert stats.stale_feedback_faults == 0
+    assert stats.maximum_feedback_age_s == pytest.approx(0.001)
+
+
+def test_coupled_control_rejects_stale_cached_feedback(monkeypatch) -> None:
+    arm = ArxDCanArm(model="corina_v2", control_mode="mit")
+    actual = np.zeros(12)
+    motor_position = arm._joint_transform.virtual_positions_to_motor(actual)
+    sent = []
+    monkeypatch.setattr(
+        arm.robot,
+        "get_state",
+        lambda **_kwargs: (motor_position, np.zeros(12), np.zeros(12)),
+    )
+    monkeypatch.setattr(
+        arm.robot,
+        "get_status_codes",
+        lambda **_kwargs: {name: 1 for name in arm.joint_names},
+    )
+    monkeypatch.setattr(
+        arm.robot,
+        "get_feedback_stats",
+        lambda **kwargs: {
+            name: SimpleNamespace(
+                has_feedback=True,
+                update_count=10,
+                age_ns=25_000_000,
+            )
+            for name in kwargs["joint_names"]
+        },
+    )
+    monkeypatch.setattr(
+        arm.robot.arm,
+        "send_mit",
+        lambda *_args, **_kwargs: sent.append(True),
+    )
+    command = arm._make_mit_command(
+        actual,
+        np.zeros(12),
+        np.zeros(12),
+        np.zeros(12),
+        np.zeros(12),
+    )
+
+    with pytest.raises(RuntimeError, match="feedback is stale"):
+        arm._send_mit_command(command, strict=True)
+
+    assert not sent
+    stats = arm.coupled_control_stats
+    assert stats.stale_feedback_faults == 1
+    assert stats.maximum_feedback_age_s == pytest.approx(0.025)
+
+    estop_calls = []
+    monkeypatch.setattr(arm.robot, "estop", lambda: estop_calls.append(True))
+    arm._connected = True
+    arm._configured = True
+    arm._enabled = True
+    arm._last_mit_command = command
+    arm._last_joint_command = command.positions
+    try:
+        arm._start_coupled_control()
+        deadline = time.monotonic() + 0.1
+        while not arm.faulted and time.monotonic() < deadline:
+            time.sleep(0.001)
+    finally:
+        arm._stop_coupled_control()
+
+    assert arm.faulted
+    assert not arm.enabled
+    assert not arm.safe_holding
+    assert estop_calls == [True]
+    assert "feedback is stale" in (arm.fault_reason or "")
 
 
 def test_corina_sdk_returns_virtual_joint_feedback(monkeypatch) -> None:
@@ -401,6 +504,8 @@ def test_corina_physical_pair_does_not_reuse_virtual_urdf_limits() -> None:
                 0.0,
                 0.0,
             )
+            assert physical_by_name[name].torque_range is None
+            assert physical_by_name[name].effort_limit == pytest.approx(7.0)
 
 
 def test_corina_coupled_model_reference_cannot_be_motor_zeroed() -> None:

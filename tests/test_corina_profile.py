@@ -81,7 +81,9 @@ def test_corina_v2_uses_joint_space_ankle_gain_defaults() -> None:
                 joint.vlim,
             ) == (0.0125, 0.004, 150.0, 0.5, 5.0)
         elif joint.name.endswith("joint5"):
-            assert (joint.kp, joint.kd, joint.torque_range) == (60.0, 1.5, 7.0)
+            assert (joint.kp, joint.kd) == (60.0, 1.5)
+            assert joint.torque_range is None
+            assert joint.effort_limit == 7.0
             assert (
                 joint.vel_kp,
                 joint.vel_ki,
@@ -90,7 +92,9 @@ def test_corina_v2_uses_joint_space_ankle_gain_defaults() -> None:
                 joint.vlim,
             ) == (0.005, 0.002, 50.0, 1.0, 3.0)
         elif joint.name.endswith("joint6"):
-            assert (joint.kp, joint.kd, joint.torque_range) == (30.0, 0.8, 7.0)
+            assert (joint.kp, joint.kd) == (30.0, 0.8)
+            assert joint.torque_range is None
+            assert joint.effort_limit == 7.0
             assert (
                 joint.vel_kp,
                 joint.vel_ki,

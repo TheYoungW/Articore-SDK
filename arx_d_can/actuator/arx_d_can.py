@@ -151,6 +151,7 @@ class JointCfg:
     model: str
     direction: float = 1.0
     torque_range: float | None = None
+    effort_limit: float | None = None
     velocity_range: float | None = None
     kp: float = 0.0
     kd: float = 0.0
@@ -220,7 +221,7 @@ def _apply_urdf_joint_limits(
     urdf_path: Path | None,
     joints: list[JointCfg],
 ) -> None:
-    """Attach URDF position limits to configured joints in logical coordinates."""
+    """Attach URDF position/effort limits in logical joint coordinates."""
     if urdf_path is None:
         return
     root = ET.parse(urdf_path).getroot()
@@ -237,16 +238,30 @@ def _apply_urdf_joint_limits(
             continue
         lower_text = limit.attrib.get("lower")
         upper_text = limit.attrib.get("upper")
-        if lower_text is None or upper_text is None:
-            continue
-        lower = _finite(lower_text, field=f"{joint.name}.limit.lower")
-        upper = _finite(upper_text, field=f"{joint.name}.limit.upper")
-        if lower > upper:
-            raise ValueError(
-                f"{joint.name} URDF lower limit must not exceed upper limit"
+        if lower_text is not None and upper_text is not None:
+            lower = _finite(lower_text, field=f"{joint.name}.limit.lower")
+            upper = _finite(upper_text, field=f"{joint.name}.limit.upper")
+            if lower > upper:
+                raise ValueError(
+                    f"{joint.name} URDF lower limit must not exceed upper limit"
+                )
+            joint.lower_limit = lower
+            joint.upper_limit = upper
+        effort_text = limit.attrib.get("effort")
+        if effort_text is not None:
+            urdf_effort = _finite(
+                effort_text,
+                field=f"{joint.name}.limit.effort",
             )
-        joint.lower_limit = lower
-        joint.upper_limit = upper
+            if urdf_effort <= 0.0:
+                raise ValueError(f"{joint.name} URDF effort limit must be positive")
+            if joint.effort_limit is None:
+                joint.effort_limit = urdf_effort
+            elif joint.effort_limit > urdf_effort:
+                raise ValueError(
+                    f"{joint.name}.effort_limit cannot exceed URDF effort "
+                    f"{urdf_effort}"
+                )
 
 
 def _optional_mapping(data: dict[str, Any], field: str) -> dict[str, Any]:
@@ -346,6 +361,12 @@ def load_cfg(
             if raw_torque_range is None
             else _finite(raw_torque_range, field=f"{name}.torque_range")
         )
+        raw_effort_limit = j.get("effort_limit")
+        effort_limit = (
+            None
+            if raw_effort_limit is None
+            else _finite(raw_effort_limit, field=f"{name}.effort_limit")
+        )
         raw_velocity_range = j.get("velocity_range")
         velocity_range = (
             None
@@ -362,6 +383,7 @@ def load_cfg(
                 field=f"{name}.direction",
             ),
             torque_range=torque_range,
+            effort_limit=effort_limit,
             velocity_range=velocity_range,
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
             kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
@@ -377,6 +399,8 @@ def load_cfg(
             if joint.torque_range <= 0.0:
                 raise ValueError(f"{name}.torque_range must be positive")
             _torque_range_scales(joint)
+        if joint.effort_limit is not None and joint.effort_limit <= 0.0:
+            raise ValueError(f"{name}.effort_limit must be positive")
         if joint.velocity_range is not None:
             if joint.velocity_range <= 0.0:
                 raise ValueError(f"{name}.velocity_range must be positive")
@@ -616,12 +640,13 @@ class JointGroup:
                     velocity_command_scale, _ = _velocity_range_scales(jc)
                     torque_command_scale, _ = _torque_range_scales(jc)
                     limited_position = self._clamp_position(jc, float(position[index]))
+                    limited_torque = self._clamp_effort(jc, float(tau[index]))
                     motor.send_mit(
                         jc.direction * limited_position,
                         jc.direction * float(velocity[index]) * velocity_command_scale,
                         float(kp[index]),
                         float(kd[index]),
-                        jc.direction * float(tau[index]) * torque_command_scale,
+                        jc.direction * limited_torque * torque_command_scale,
                     )
             except Exception as exc:
                 errors.append(f"{jc.name}: {exc}")
@@ -813,6 +838,12 @@ class JointGroup:
             position = min(position, joint.upper_limit)
         return position
 
+    @staticmethod
+    def _clamp_effort(joint: JointCfg, torque: float) -> float:
+        if joint.effort_limit is None:
+            return torque
+        return float(np.clip(torque, -joint.effort_limit, joint.effort_limit))
+
     # ── MIT 发送 ────────────────────────────────────────────────────────
 
     def send_mit(
@@ -841,12 +872,13 @@ class JointGroup:
                 velocity_command_scale, _ = _velocity_range_scales(jc)
                 torque_command_scale, _ = _torque_range_scales(jc)
                 limited_position = self._clamp_position(jc, float(pos[i]))
+                limited_torque = self._clamp_effort(jc, float(tau[i]))
                 self._mm[jc.name].send_mit(
                     jc.direction * limited_position,
                     jc.direction * float(vel[i]) * velocity_command_scale,
                     float(kp[i]),
                     float(kd[i]),
-                    jc.direction * float(tau[i]) * torque_command_scale,
+                    jc.direction * limited_torque * torque_command_scale,
                 )
             except CallError:
                 if strict:
@@ -1467,6 +1499,24 @@ class ArxDCan:
                 raise RuntimeError(f"{joint.name}: no motor feedback")
             statuses[joint.name] = int(state.status_code)
         return statuses
+
+    def get_feedback_stats(
+        self,
+        joint_names: Optional[List[str]] = None,
+    ) -> dict[str, Any]:
+        """Return cached feedback counters and ages without transmitting frames."""
+        joints_by_name = {joint.name: joint for joint in self._all_joints}
+        if joint_names is None:
+            selected_joints = self._all_joints
+        else:
+            unknown = set(joint_names).difference(joints_by_name)
+            if unknown:
+                raise ValueError(f"unknown joints: {', '.join(sorted(unknown))}")
+            selected_joints = [joints_by_name[name] for name in joint_names]
+        return {
+            joint.name: self._motor_map[joint.name].get_feedback_stats()
+            for joint in selected_joints
+        }
 
     # ── 生命周期 ────────────────────────────────────────────────────────
 

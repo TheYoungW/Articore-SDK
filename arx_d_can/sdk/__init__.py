@@ -78,7 +78,24 @@ class CoupledTorqueSaturation:
     timestamp: float
 
 
+@dataclass(slots=True, frozen=True)
+class CoupledControlStats:
+    """Observed timing and feedback health for the coupled MIT inner loop."""
+
+    target_hz: float
+    achieved_hz: float
+    cycle_count: int
+    overrun_count: int
+    feedback_stall_cycles: int
+    stale_feedback_faults: int
+    maximum_feedback_age_s: float
+
+
 _LOG = logging.getLogger(__name__)
+
+
+class _StaleCoupledFeedbackError(RuntimeError):
+    """Cached A/B feedback is too old for safe virtual-PD control."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -96,6 +113,7 @@ class JointMotorConfig:
     pv_vlim: float
     direction: float = 1.0
     torque_range: float | None = None
+    effort_limit: float | None = None
     velocity_range: float | None = None
     lower_limit: float | None = None
     upper_limit: float | None = None
@@ -123,6 +141,7 @@ class ArxDCanConfig:
     watchdog_action: str = "safe_hold"
     safe_hold_hz: float = 100.0
     feedback_fault_threshold: int = 3
+    max_cached_feedback_age_s: float = 0.02
     name: str = "ARX-D-CAN"
     model: str = "custom"
     hardware_config_path: str | None = None
@@ -155,6 +174,7 @@ def _joint_from_yaml(joint: JointCfg) -> JointMotorConfig:
         pv_vlim=joint.vlim,
         direction=joint.direction,
         torque_range=joint.torque_range,
+        effort_limit=joint.effort_limit,
         velocity_range=joint.velocity_range,
         lower_limit=joint.lower_limit,
         upper_limit=joint.upper_limit,
@@ -281,6 +301,9 @@ def _config_from_loaded(
         watchdog_action=str(safety.get("watchdog_action", "safe_hold")),
         safe_hold_hz=float(safety.get("safe_hold_hz", 100.0)),
         feedback_fault_threshold=int(safety.get("feedback_fault_threshold", 3)),
+        max_cached_feedback_age_s=float(
+            safety.get("max_cached_feedback_age_s", 0.02)
+        ),
     )
 
 
@@ -324,6 +347,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             vlim=joint.pv_vlim,
             direction=joint.direction,
             torque_range=joint.torque_range,
+            effort_limit=joint.effort_limit,
             velocity_range=joint.velocity_range,
             lower_limit=joint.lower_limit,
             upper_limit=joint.upper_limit,
@@ -350,6 +374,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
                 vlim=joint.pv_vlim,
                 direction=joint.direction,
                 torque_range=joint.torque_range,
+                effort_limit=joint.effort_limit,
                 velocity_range=joint.velocity_range,
                 lower_limit=joint.lower_limit,
                 upper_limit=joint.upper_limit,
@@ -388,6 +413,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             "watchdog_action": config.watchdog_action,
             "safe_hold_hz": config.safe_hold_hz,
             "feedback_fault_threshold": config.feedback_fault_threshold,
+            "max_cached_feedback_age_s": config.max_cached_feedback_age_s,
         },
     }
 
@@ -515,6 +541,16 @@ class ArxDCanArm:
             applied_torques=(),
             timestamp=time.monotonic(),
         )
+        self._coupled_control_stats = CoupledControlStats(
+            target_hz=self.config.control_hz,
+            achieved_hz=0.0,
+            cycle_count=0,
+            overrun_count=0,
+            feedback_stall_cycles=0,
+            stale_feedback_faults=0,
+            maximum_feedback_age_s=0.0,
+        )
+        self._coupled_feedback_update_counts: dict[str, int] = {}
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
         self._gripper_command_lock = threading.RLock()
         self._gripper_force_controller: GripperForceController | None = None
@@ -560,6 +596,12 @@ class ArxDCanArm:
         """Return the most recent coupled-motor torque saturation status."""
         with self._state_lock:
             return self._coupled_torque_saturation
+
+    @property
+    def coupled_control_stats(self) -> CoupledControlStats:
+        """Return measured coupled-loop timing and cached-feedback health."""
+        with self._state_lock:
+            return self._coupled_control_stats
 
     @property
     def gripper_control_state(self) -> GripperControlState:
@@ -818,7 +860,7 @@ class ArxDCanArm:
         if transform is None:
             return applied
         for index in sorted(transform.transformed_indices):
-            limit = self.config.arm_joints[index].torque_range
+            limit = self.config.arm_joints[index].effort_limit
             if limit is not None:
                 applied[index] = float(np.clip(applied[index], -limit, limit))
         self._record_coupled_torque_saturation(requested, applied)
@@ -879,6 +921,62 @@ class ArxDCanArm:
             raise RuntimeError(
                 "coupled MIT motor unexpectedly disabled: " + ", ".join(disabled)
             )
+        transform = self._joint_transform
+        assert transform is not None
+        coupled_names = [
+            self.config.arm_joints[index].name
+            for index in sorted(transform.transformed_indices)
+        ]
+        feedback_stats = self.robot.get_feedback_stats(
+            joint_names=coupled_names,
+        )
+        ages_s = {
+            name: float(stats.age_ns) * 1e-9
+            for name, stats in feedback_stats.items()
+        }
+        stale = [
+            name
+            for name, stats in feedback_stats.items()
+            if (
+                not stats.has_feedback
+                or ages_s[name] > self.config.max_cached_feedback_age_s
+            )
+        ]
+        counts = {
+            name: int(stats.update_count)
+            for name, stats in feedback_stats.items()
+        }
+        with self._state_lock:
+            previous_counts = self._coupled_feedback_update_counts
+            stalled = bool(previous_counts) and any(
+                counts.get(name, -1) <= previous_counts.get(name, -1)
+                for name in coupled_names
+            )
+            self._coupled_feedback_update_counts = counts
+            self._coupled_control_stats = replace(
+                self._coupled_control_stats,
+                feedback_stall_cycles=(
+                    self._coupled_control_stats.feedback_stall_cycles
+                    + int(stalled)
+                ),
+                stale_feedback_faults=(
+                    self._coupled_control_stats.stale_feedback_faults
+                    + int(bool(stale))
+                ),
+                maximum_feedback_age_s=max(
+                    self._coupled_control_stats.maximum_feedback_age_s,
+                    max(ages_s.values(), default=0.0),
+                ),
+            )
+        if stale:
+            details = ", ".join(
+                f"{name}={ages_s[name] * 1000.0:.1f}ms"
+                for name in stale
+            )
+            raise _StaleCoupledFeedbackError(
+                "coupled MIT feedback is stale: "
+                f"{details}; limit={self.config.max_cached_feedback_age_s * 1000.0:.1f}ms"
+            )
         return np.asarray(position, dtype=np.float64), np.asarray(
             velocity, dtype=np.float64
         )
@@ -912,6 +1010,17 @@ class ArxDCanArm:
             return
         self._coupled_control_stop.clear()
         self._coupled_control_wakeup.clear()
+        with self._state_lock:
+            self._coupled_feedback_update_counts = {}
+            self._coupled_control_stats = CoupledControlStats(
+                target_hz=self.config.control_hz,
+                achieved_hz=0.0,
+                cycle_count=0,
+                overrun_count=0,
+                feedback_stall_cycles=0,
+                stale_feedback_faults=0,
+                maximum_feedback_age_s=0.0,
+            )
         self._coupled_control_thread = threading.Thread(
             target=self._coupled_control_loop,
             name="arx-d-can-coupled-mit-control",
@@ -935,12 +1044,14 @@ class ArxDCanArm:
     def _coupled_control_loop(self) -> None:
         period = 1.0 / self.config.control_hz
         next_tick = time.perf_counter()
+        first_cycle_started: float | None = None
         while not self._coupled_control_stop.is_set():
             with self._state_lock:
                 command = self._last_mit_command
                 enabled = self._enabled
+                faulted = self._faulted
                 safe_holding = self._safe_holding
-            if not enabled:
+            if not enabled or (faulted and not safe_holding):
                 return
             if command is None or safe_holding:
                 self._coupled_control_wakeup.wait(period)
@@ -948,9 +1059,32 @@ class ArxDCanArm:
                 next_tick = time.perf_counter()
                 continue
             try:
+                cycle_started = time.perf_counter()
+                if first_cycle_started is None:
+                    first_cycle_started = cycle_started
                 self._send_mit_command(command, strict=True)
+            except _StaleCoupledFeedbackError as exc:
+                self._trip_fault(str(exc))
             except Exception as exc:
                 self._begin_safe_hold(f"coupled MIT control failed: {exc}")
+            cycle_finished = time.perf_counter()
+            with self._state_lock:
+                cycles = self._coupled_control_stats.cycle_count + 1
+                elapsed = max(
+                    cycle_finished
+                    - (first_cycle_started or cycle_started)
+                    + period,
+                    period,
+                )
+                self._coupled_control_stats = replace(
+                    self._coupled_control_stats,
+                    achieved_hz=cycles / elapsed,
+                    cycle_count=cycles,
+                    overrun_count=(
+                        self._coupled_control_stats.overrun_count
+                        + int(cycle_finished - cycle_started > period)
+                    ),
+                )
             next_tick += period
             delay = next_tick - time.perf_counter()
             if delay <= 0.0:
@@ -1512,6 +1646,9 @@ class ArxDCanArm:
                 self._coupled_control_wakeup.set()
                 return
         except Exception as exc:
+            if isinstance(exc, _StaleCoupledFeedbackError):
+                self._trip_fault(str(exc))
+                raise
             holding = self._begin_safe_hold(f"joint command failed: {exc}")
             with self._state_lock:
                 has_hold_target = self._last_joint_command is not None
@@ -1692,6 +1829,11 @@ class ArxDCanArm:
             raise ValueError("safe_hold_hz must be positive")
         if self.config.feedback_fault_threshold < 1:
             raise ValueError("feedback_fault_threshold must be at least 1")
+        if (
+            not math.isfinite(self.config.max_cached_feedback_age_s)
+            or self.config.max_cached_feedback_age_s <= 0.0
+        ):
+            raise ValueError("max_cached_feedback_age_s must be finite and positive")
 
     def _require_operational(self) -> None:
         self._require_connected()
@@ -1833,6 +1975,9 @@ class ArxDCanArm:
                             strict=False,
                         )
             except Exception as exc:
+                if isinstance(exc, _StaleCoupledFeedbackError):
+                    self._trip_fault(str(exc))
+                    return
                 with self._state_lock:
                     if self._safe_holding:
                         marker = "; hold retry failed:"
