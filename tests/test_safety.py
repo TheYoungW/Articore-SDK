@@ -4,7 +4,15 @@ import time
 import numpy as np
 import pytest
 
-from arx_d_can import ArxDCanArm, ArxDCanConfig, JointMotorConfig
+from arx_d_can import (
+    ArxDCanArm,
+    ArxDCanConfig,
+    CommunicationError,
+    FeedbackTimeoutError,
+    JointMotorConfig,
+    MotorFaultError,
+    TransportError,
+)
 
 
 JOINT = JointMotorConfig(
@@ -302,12 +310,42 @@ def test_send_failure_holds_last_command_until_feedback_recovers() -> None:
         arm.close()
 
 
+def test_send_transport_error_is_exposed_through_communication_health() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    try:
+        arm.send_joint_positions([0.2])
+        error = TransportError(
+            "serial write failed",
+            operation="send_pos_vel",
+            transport="dm-serial",
+            channel="/dev/ttyACM0",
+            motor_names=("joint1",),
+            retryable=True,
+        )
+        robot.arm.send_error = error
+
+        arm.send_joint_positions([0.4])
+
+        assert arm.safe_holding
+        health = arm.communication_health
+        assert health.last_error is error
+        assert not health.using_fallback_state
+        assert not health.healthy
+    finally:
+        arm.close()
+
+
 def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover() -> None:
     arm, robot = make_arm(timeout=1.0, grace=1.0)
     try:
         arm.send_joint_positions([0.3])
         last_state = arm.read_state()
-        robot.state_error = RuntimeError("missing motor IDs: 1")
+        robot.state_error = FeedbackTimeoutError(
+            "missing motor IDs: 1",
+            operation="request_feedback",
+            motor_names=("joint1",),
+            retryable=True,
+        )
         for _ in range(3):
             assert arm.read_state() is last_state
 
@@ -321,6 +359,82 @@ def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover()
         assert not arm.faulted
         assert not arm.safe_holding
         assert arm.enabled
+    finally:
+        arm.close()
+
+
+def test_feedback_fallback_is_visible_in_communication_health() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    try:
+        arm.send_joint_positions([0.3])
+        last_state = arm.read_state()
+        assert arm.communication_health.healthy
+
+        error = FeedbackTimeoutError(
+            "missing motor IDs: 1",
+            operation="request_feedback",
+            motor_names=("joint1",),
+            retryable=True,
+        )
+        robot.state_error = error
+
+        assert arm.read_state() is last_state
+        health = arm.communication_health
+        assert health.consecutive_feedback_failures == 1
+        assert health.has_fresh_feedback
+        assert health.using_fallback_state
+        assert health.last_error is error
+        assert health.last_fresh_feedback_age_s is not None
+        assert not health.healthy
+
+        robot.state_error = None
+        arm.read_state()
+        recovered = arm.communication_health
+        assert recovered.healthy
+        assert recovered.last_error is None
+        assert recovered.consecutive_feedback_failures == 0
+    finally:
+        arm.close()
+
+
+def test_strict_feedback_raises_instead_of_returning_fallback() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    try:
+        arm.send_joint_positions([0.3])
+        arm.read_state()
+        robot.state_error = FeedbackTimeoutError(
+            "feedback timed out",
+            operation="request_feedback",
+            motor_names=("joint1",),
+            retryable=True,
+        )
+
+        with pytest.raises(CommunicationError, match="feedback timed out"):
+            arm.read_state(strict_feedback=True)
+
+        assert arm.communication_health.consecutive_feedback_failures == 1
+        assert arm.communication_health.using_fallback_state
+        assert not arm.safe_holding
+    finally:
+        arm.close()
+
+
+def test_explicit_motor_fault_is_not_classified_as_communication_error() -> None:
+    arm, robot = make_arm(timeout=1.0, grace=1.0)
+    try:
+        robot.state_error = MotorFaultError(
+            "joint1 over-temperature",
+            status_codes={"joint1": 8},
+        )
+
+        with pytest.raises(MotorFaultError):
+            arm.read_state()
+
+        assert arm.faulted
+        assert not arm.safe_holding
+        assert not arm.enabled
+        assert robot.estop_calls == 1
+        assert arm.communication_health.last_error is None
     finally:
         arm.close()
 
@@ -366,7 +480,12 @@ def test_cached_reads_do_not_clear_background_feedback_failure_count() -> None:
 
     def fail_only_fresh_feedback(**kwargs):
         if kwargs.get("request_feedback", True):
-            raise RuntimeError("missing motor IDs: 15")
+            raise FeedbackTimeoutError(
+                "missing motor IDs: 15",
+                operation="request_feedback",
+                motor_names=("joint1",),
+                retryable=True,
+            )
         return original_get_state(**kwargs)
 
     robot.get_state = fail_only_fresh_feedback
@@ -391,7 +510,12 @@ def test_feedback_recovery_stays_in_hold_until_every_motor_is_enabled() -> None:
     try:
         arm.send_joint_positions([0.3])
         arm.read_state()
-        robot.state_error = RuntimeError("missing motor IDs: 1")
+        robot.state_error = FeedbackTimeoutError(
+            "missing motor IDs: 1",
+            operation="request_feedback",
+            motor_names=("joint1",),
+            retryable=True,
+        )
         for _ in range(3):
             arm.read_state()
         assert arm.safe_holding

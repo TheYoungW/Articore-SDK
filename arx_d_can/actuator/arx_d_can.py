@@ -47,6 +47,12 @@ from ..driver import (
     create_controller,
     resolve_transport,
 )
+from ..errors import (
+    FeedbackTimeoutError,
+    IncompleteFeedbackError,
+    MotorFaultError,
+    TransportError,
+)
 
 _CFG_DIR = Path(__file__).resolve().parents[1] / "config"
 _MODEL_REGISTRY = _CFG_DIR / "models.yaml"
@@ -80,6 +86,40 @@ _NATIVE_VELOCITY_RANGES = {
     "JH11": 10.0,
     "6248P": 20.0,
 }
+
+
+def _transport_error(
+    exc: CallError,
+    *,
+    operation: str,
+    motor_names: tuple[str, ...] = (),
+) -> TransportError:
+    return TransportError(
+        f"{operation} failed: {exc}",
+        operation=operation,
+        motor_names=motor_names,
+        retryable=True,
+    )
+
+
+def _complete_feedback_error(
+    errors: list[Exception],
+    *,
+    attempts: int,
+    motor_names: tuple[str, ...],
+) -> FeedbackTimeoutError | IncompleteFeedbackError:
+    detail = "; ".join(str(error) for error in errors)
+    error_type = (
+        IncompleteFeedbackError
+        if any("missing motor" in str(error).lower() for error in errors)
+        else FeedbackTimeoutError
+    )
+    return error_type(
+        f"fresh feedback failed after {attempts} attempts: {detail}",
+        operation="request_feedback",
+        motor_names=motor_names,
+        retryable=True,
+    )
 
 
 def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
@@ -969,9 +1009,13 @@ class JointGroup:
                     float(kd[i]),
                     jc.direction * limited_torque * torque_command_scale,
                 )
-            except CallError:
+            except CallError as exc:
                 if strict:
-                    raise
+                    raise _transport_error(
+                        exc,
+                        operation="send_mit",
+                        motor_names=(jc.name,),
+                    ) from exc
 
     # ── POS_VEL 发送 ───────────────────────────────────────────────────
 
@@ -994,9 +1038,13 @@ class JointGroup:
                     jc.direction * limited_position,
                     float(vlim[i]),
                 )
-            except CallError:
+            except CallError as exc:
                 if strict:
-                    raise
+                    raise _transport_error(
+                        exc,
+                        operation="send_pos_vel",
+                        motor_names=(jc.name,),
+                    ) from exc
 
     # ── VEL 发送 ───────────────────────────────────────────────────────
 
@@ -1006,14 +1054,26 @@ class JointGroup:
             try:
                 jc = self._jcfgs[i]
                 self._mm[jc.name].send_vel(jc.direction * float(vel[i]))
-            except CallError:
+            except CallError as exc:
                 if strict:
-                    raise
+                    raise _transport_error(
+                        exc,
+                        operation="send_vel",
+                        motor_names=(jc.name,),
+                    ) from exc
 
     # ── 状态读取 ───────────────────────────────────────────────────────
 
     def _request_feedback(self) -> None:
-        self._cm["main"].request_feedback_all(timeout_ms=50)
+        try:
+            self._cm["main"].request_feedback_all(timeout_ms=50)
+        except CallError as exc:
+            raise FeedbackTimeoutError(
+                f"fresh feedback request failed: {exc}",
+                operation="request_feedback",
+                motor_names=tuple(joint.name for joint in self._jcfgs),
+                retryable=True,
+            ) from exc
 
     def read_state(
         self,
@@ -1021,16 +1081,38 @@ class JointGroup:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Read this group's state and fail if fresh, healthy feedback is unavailable."""
         if request_feedback:
-            self._cm["main"].request_feedback_all(timeout_ms=50)
+            try:
+                self._cm["main"].request_feedback_all(timeout_ms=50)
+            except CallError as exc:
+                raise FeedbackTimeoutError(
+                    f"fresh feedback request failed: {exc}",
+                    operation="request_feedback",
+                    motor_names=tuple(joint.name for joint in self._jcfgs),
+                    retryable=True,
+                ) from exc
 
         positions, velocities, torques = [], [], []
         for jc in self._jcfgs:
-            state = self._mm[jc.name].get_state()
+            try:
+                state = self._mm[jc.name].get_state()
+            except CallError as exc:
+                raise FeedbackTimeoutError(
+                    f"{self.name}/{jc.name}: cached feedback read failed: {exc}",
+                    operation="read_feedback",
+                    motor_names=(jc.name,),
+                    retryable=True,
+                ) from exc
             if state is None:
-                raise RuntimeError(f"{self.name}/{jc.name}: no fresh feedback")
+                raise IncompleteFeedbackError(
+                    f"{self.name}/{jc.name}: no fresh feedback",
+                    operation="read_feedback",
+                    motor_names=(jc.name,),
+                    retryable=True,
+                )
             if getattr(state, "status_code", 0) not in _HEALTHY_DAMIAO_STATUS_CODES:
-                raise RuntimeError(
-                    f"{self.name}/{jc.name}: motor fault status={state.status_code}"
+                raise MotorFaultError(
+                    f"{self.name}/{jc.name}: motor fault status={state.status_code}",
+                    status_codes={jc.name: state.status_code},
                 )
             _, velocity_feedback_scale = _velocity_range_scales(jc)
             _, torque_feedback_scale = _torque_range_scales(jc)
@@ -1524,22 +1606,33 @@ class ArxDCan:
                 for ctrl in self._ctrl_map.values():
                     try:
                         ctrl.request_feedback_all(timeout_ms=50)
-                    except Exception as exc:
-                        feedback_errors.append(str(exc))
+                    except CallError as exc:
+                        feedback_errors.append(exc)
                 if not feedback_errors:
                     break
             if require_complete and feedback_errors:
-                raise RuntimeError(
-                    f"fresh feedback failed after {attempts} attempts: "
-                    + "; ".join(feedback_errors)
+                error = _complete_feedback_error(
+                    feedback_errors,
+                    attempts=attempts,
+                    motor_names=tuple(joint.name for joint in selected_joints),
                 )
+                raise error from feedback_errors[-1]
         pos, vel, torq = [], [], []
         for jc in selected_joints:
-            st = self._motor_map[jc.name].get_state()
+            try:
+                st = self._motor_map[jc.name].get_state()
+            except CallError as exc:
+                raise FeedbackTimeoutError(
+                    f"{jc.name}: cached feedback read failed: {exc}",
+                    operation="read_feedback",
+                    motor_names=(jc.name,),
+                    retryable=True,
+                ) from exc
             if st is not None:
                 if st.status_code not in _HEALTHY_DAMIAO_STATUS_CODES:
-                    raise RuntimeError(
-                        f"{jc.name}: motor fault status={st.status_code}"
+                    raise MotorFaultError(
+                        f"{jc.name}: motor fault status={st.status_code}",
+                        status_codes={jc.name: st.status_code},
                     )
                 _, velocity_feedback_scale = _velocity_range_scales(jc)
                 _, torque_feedback_scale = _torque_range_scales(jc)
@@ -1548,7 +1641,12 @@ class ArxDCan:
                 torq.append(jc.direction * st.torq * torque_feedback_scale)
             else:
                 if require_complete:
-                    raise RuntimeError(f"{jc.name}: no motor feedback")
+                    raise IncompleteFeedbackError(
+                        f"{jc.name}: no motor feedback",
+                        operation="read_feedback",
+                        motor_names=(jc.name,),
+                        retryable=True,
+                    )
                 pos.append(0.0)
                 vel.append(0.0)
                 torq.append(0.0)
@@ -1583,9 +1681,22 @@ class ArxDCan:
 
         statuses: dict[str, int] = {}
         for joint in selected_joints:
-            state = self._motor_map[joint.name].get_state()
+            try:
+                state = self._motor_map[joint.name].get_state()
+            except CallError as exc:
+                raise FeedbackTimeoutError(
+                    f"{joint.name}: cached status read failed: {exc}",
+                    operation="read_feedback_status",
+                    motor_names=(joint.name,),
+                    retryable=True,
+                ) from exc
             if state is None:
-                raise RuntimeError(f"{joint.name}: no motor feedback")
+                raise IncompleteFeedbackError(
+                    f"{joint.name}: no motor feedback",
+                    operation="read_feedback_status",
+                    motor_names=(joint.name,),
+                    retryable=True,
+                )
             statuses[joint.name] = int(state.status_code)
         return statuses
 
@@ -1602,10 +1713,18 @@ class ArxDCan:
             if unknown:
                 raise ValueError(f"unknown joints: {', '.join(sorted(unknown))}")
             selected_joints = [joints_by_name[name] for name in joint_names]
-        return {
-            joint.name: self._motor_map[joint.name].get_feedback_stats()
-            for joint in selected_joints
-        }
+        result: dict[str, Any] = {}
+        for joint in selected_joints:
+            try:
+                result[joint.name] = self._motor_map[joint.name].get_feedback_stats()
+            except CallError as exc:
+                raise FeedbackTimeoutError(
+                    f"{joint.name}: feedback statistics unavailable: {exc}",
+                    operation="read_feedback_stats",
+                    motor_names=(joint.name,),
+                    retryable=True,
+                ) from exc
+        return result
 
     # ── 生命周期 ────────────────────────────────────────────────────────
 

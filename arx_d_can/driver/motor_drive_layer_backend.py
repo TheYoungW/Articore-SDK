@@ -6,6 +6,8 @@ from math import isfinite
 
 from motor_drive_layer import CallError, Controller, Mode
 
+from ..errors import TransportError
+
 
 SUPPORTED_TRANSPORTS = ("auto", "dm-serial", "socketcan", "socketcanfd")
 
@@ -50,12 +52,21 @@ def create_controller(
 ) -> Controller:
     """Open a motor-drive-layer controller for one supported transport."""
     resolved = resolve_transport(transport, channel)
-    if resolved == "dm-serial":
-        return Controller.from_dm_serial(channel, baud)
-    if resolved == "socketcan":
-        return Controller(channel)
-    if resolved == "socketcanfd":
-        return Controller.from_socketcanfd(channel)
+    try:
+        if resolved == "dm-serial":
+            return Controller.from_dm_serial(channel, baud)
+        if resolved == "socketcan":
+            return Controller(channel)
+        if resolved == "socketcanfd":
+            return Controller.from_socketcanfd(channel)
+    except CallError as exc:
+        raise TransportError(
+            f"failed to open {resolved} transport on {channel}: {exc}",
+            operation="open",
+            transport=resolved,
+            channel=channel,
+            retryable=True,
+        ) from exc
     raise AssertionError(f"unhandled transport: {resolved}")
 
 

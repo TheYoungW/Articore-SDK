@@ -15,6 +15,13 @@ import numpy as np
 
 from ..actuator import ArxDCan, JointCfg, load_cfg
 from ..driver import build_scan_command, parse_scan_ids
+from ..errors import (
+    CommandTimeoutError,
+    CommunicationError,
+    MotorFaultError,
+    StaleFeedbackError,
+    UnexpectedMotorStateError,
+)
 from ..kinematics.coupled_joint_transform import CoupledJointTransform
 from .gripper_force_control import (
     GripperControlState,
@@ -53,6 +60,26 @@ class ArxDCanState:
     @property
     def positions(self) -> tuple[float, ...]:
         return self.arm.positions
+
+
+@dataclass(slots=True, frozen=True)
+class CommunicationHealth:
+    """Snapshot of the high-level SDK communication state."""
+
+    consecutive_feedback_failures: int
+    has_fresh_feedback: bool
+    using_fallback_state: bool
+    last_error: CommunicationError | None
+    last_fresh_feedback_age_s: float | None
+
+    @property
+    def healthy(self) -> bool:
+        return (
+            self.consecutive_feedback_failures == 0
+            and self.has_fresh_feedback
+            and not self.using_fallback_state
+            and self.last_error is None
+        )
 
 
 @dataclass(slots=True, frozen=True)
@@ -120,10 +147,6 @@ class CoupledControlStats:
 
 
 _LOG = logging.getLogger(__name__)
-
-
-class _StaleCoupledFeedbackError(RuntimeError):
-    """Cached A/B feedback is too old for safe virtual-PD control."""
 
 
 @dataclass(slots=True, frozen=True)
@@ -579,6 +602,9 @@ class ArxDCanArm:
         self._watchdog_thread: threading.Thread | None = None
         self._watchdog_deadline: float | None = None
         self._feedback_error_count = 0
+        self._last_communication_error: CommunicationError | None = None
+        self._using_fallback_state = False
+        self._last_fresh_feedback_at: float | None = None
         self._last_joint_command: tuple[float, ...] | None = None
         self._last_mit_command: MitCommand | None = None
         self._last_gripper_command: float | None = None
@@ -698,6 +724,23 @@ class ArxDCanArm:
             return GripperControlState.IDLE
         return self._gripper_force_controller.state
 
+    @property
+    def communication_health(self) -> CommunicationHealth:
+        """Return feedback fallback and last communication-error details."""
+        with self._state_lock:
+            last_fresh_feedback_at = self._last_fresh_feedback_at
+            return CommunicationHealth(
+                consecutive_feedback_failures=self._feedback_error_count,
+                has_fresh_feedback=last_fresh_feedback_at is not None,
+                using_fallback_state=self._using_fallback_state,
+                last_error=self._last_communication_error,
+                last_fresh_feedback_age_s=(
+                    None
+                    if last_fresh_feedback_at is None
+                    else max(0.0, time.monotonic() - last_fresh_feedback_at)
+                ),
+            )
+
     def connect(self) -> None:
         if self._connected:
             return
@@ -710,6 +753,9 @@ class ArxDCanArm:
             self._fault_reason = None
             self._safe_holding = False
             self._feedback_error_count = 0
+            self._last_communication_error = None
+            self._using_fallback_state = False
+            self._last_fresh_feedback_at = None
             self._last_joint_command = None
             self._last_mit_command = None
             self._last_gripper_command = None
@@ -1322,9 +1368,14 @@ class ArxDCanArm:
                 f"{name}={ages_s[name] * 1000.0:.1f}ms"
                 for name in stale
             )
-            raise _StaleCoupledFeedbackError(
+            raise StaleFeedbackError(
                 "coupled MIT feedback is stale: "
-                f"{details}; limit={self.config.max_cached_feedback_age_s * 1000.0:.1f}ms"
+                f"{details}; limit={self.config.max_cached_feedback_age_s * 1000.0:.1f}ms",
+                operation="read_cached_feedback",
+                motor_names=tuple(stale),
+                retryable=False,
+                feedback_ages_s={name: ages_s[name] for name in stale},
+                age_limit_s=self.config.max_cached_feedback_age_s,
             )
         return np.asarray(position, dtype=np.float64), np.asarray(
             velocity, dtype=np.float64
@@ -1414,9 +1465,12 @@ class ArxDCanArm:
                 if first_cycle_started is None:
                     first_cycle_started = cycle_started
                 self._send_mit_command(command, strict=True)
-            except _StaleCoupledFeedbackError as exc:
+            except StaleFeedbackError as exc:
+                self._record_communication_error(exc, using_fallback=False)
                 self._trip_fault(str(exc))
             except Exception as exc:
+                if isinstance(exc, CommunicationError):
+                    self._record_communication_error(exc, using_fallback=None)
                 self._begin_safe_hold(f"coupled MIT control failed: {exc}")
             cycle_finished = time.perf_counter()
             with self._state_lock:
@@ -1654,6 +1708,8 @@ class ArxDCanArm:
             self._enabled = was_safe_holding
             self._configured = False
             self._feedback_error_count = 0
+            self._last_communication_error = None
+            self._using_fallback_state = False
             self._watchdog_deadline = None
 
     def clear_motor_faults(self) -> tuple[str, ...]:
@@ -1672,6 +1728,8 @@ class ArxDCanArm:
                 self._fault_reason = f"motor fault clear failed: {exc}"
                 self._safe_holding = False
                 self._feedback_error_count = 0
+                self._last_communication_error = None
+                self._using_fallback_state = False
                 self._watchdog_deadline = None
             raise
 
@@ -1682,6 +1740,8 @@ class ArxDCanArm:
             self._fault_reason = None
             self._safe_holding = False
             self._feedback_error_count = 0
+            self._last_communication_error = None
+            self._using_fallback_state = False
             self._watchdog_deadline = None
         return completed
 
@@ -1714,14 +1774,24 @@ class ArxDCanArm:
             return
         raise ValueError("mode must be 'posvel' or 'mit'")
 
-    def read_state(self, *, request_feedback: bool = True) -> ArxDCanState:
-        """Read state while serializing access with normal command traffic."""
+    def read_state(
+        self,
+        *,
+        request_feedback: bool = True,
+        strict_feedback: bool = False,
+    ) -> ArxDCanState:
+        """Read state, optionally raising instead of returning fallback state."""
         return self._read_state(
             request_feedback=request_feedback,
             serialize_io=True,
+            strict_feedback=strict_feedback,
         )
 
-    def refresh_feedback_background(self) -> ArxDCanState:
+    def refresh_feedback_background(
+        self,
+        *,
+        strict_feedback: bool = False,
+    ) -> ArxDCanState:
         """Request complete feedback without holding the SDK command lock.
 
         This method is intended for a dedicated low-rate monitor thread.  The
@@ -1732,6 +1802,7 @@ class ArxDCanArm:
         return self._read_state(
             request_feedback=True,
             serialize_io=False,
+            strict_feedback=strict_feedback,
         )
 
     def _read_state(
@@ -1739,6 +1810,7 @@ class ArxDCanArm:
         *,
         request_feedback: bool,
         serialize_io: bool,
+        strict_feedback: bool,
     ) -> ArxDCanState:
         self._require_connected()
         active_joint_names = self._active_joint_names()
@@ -1760,7 +1832,8 @@ class ArxDCanArm:
                     pos, vel, tau, status_codes = read_raw_state()
             else:
                 pos, vel, tau, status_codes = read_raw_state()
-        except Exception as exc:
+        except CommunicationError as exc:
+            self._record_communication_error(exc, using_fallback=True)
             if request_feedback:
                 with self._state_lock:
                     self._feedback_error_count += 1
@@ -1778,26 +1851,40 @@ class ArxDCanArm:
                 )
             with self._state_lock:
                 last_state = self._last_state
-            if self._enabled and last_state is not None:
+            if not strict_feedback and self._enabled and last_state is not None:
                 return last_state
+            raise
+        except MotorFaultError as exc:
+            self._trip_fault(str(exc))
+            raise
+        except Exception as exc:
+            if self._enabled:
+                self._trip_fault(f"unexpected state-read failure: {exc}")
             raise
         if request_feedback:
             with self._state_lock:
                 self._feedback_error_count = 0
+                self._last_communication_error = None
+                self._using_fallback_state = False
+                self._last_fresh_feedback_at = time.monotonic()
+        else:
+            with self._state_lock:
+                self._using_fallback_state = False
         disabled_motors = [
             name for name, status in status_codes.items() if status == 0
         ]
         if self._enabled and disabled_motors:
-            reason = (
+            error = UnexpectedMotorStateError(
                 "motors unexpectedly disabled after feedback recovery: "
-                + ", ".join(disabled_motors)
+                + ", ".join(disabled_motors),
+                status_codes={name: status_codes[name] for name in disabled_motors},
             )
             if not self._safe_holding:
-                self._begin_safe_hold(reason)
+                self._begin_safe_hold(str(error))
             else:
                 with self._state_lock:
                     self._fault_reason = (
-                        f"{reason}; holding last successful command"
+                        f"{error}; holding last successful command"
                     )
         elif self._safe_holding and request_feedback:
             self._resume_from_safe_hold()
@@ -2006,7 +2093,12 @@ class ArxDCanArm:
                 self._coupled_control_wakeup.set()
                 return
         except Exception as exc:
-            if isinstance(exc, _StaleCoupledFeedbackError):
+            if isinstance(exc, CommunicationError):
+                self._record_communication_error(
+                    exc,
+                    using_fallback=False if isinstance(exc, StaleFeedbackError) else None,
+                )
+            if isinstance(exc, StaleFeedbackError):
                 self._trip_fault(str(exc))
                 raise
             holding = self._begin_safe_hold(f"joint command failed: {exc}")
@@ -2133,9 +2225,11 @@ class ArxDCanArm:
                             kd=np.array([command.kd]),
                             strict=True,
                         )
-                except Exception:
+                except Exception as exc:
+                    if isinstance(exc, CommunicationError):
+                        self._record_communication_error(exc, using_fallback=None)
                     self._gripper_force_controller.reset()
-                    holding = self._begin_safe_hold("gripper command failed")
+                    holding = self._begin_safe_hold(f"gripper command failed: {exc}")
                     with self._state_lock:
                         has_hold_target = self._last_gripper_command is not None
                     if holding and has_hold_target:
@@ -2152,6 +2246,8 @@ class ArxDCanArm:
                         strict=True,
                     )
             except Exception as exc:
+                if isinstance(exc, CommunicationError):
+                    self._record_communication_error(exc, using_fallback=None)
                 holding = self._begin_safe_hold(f"gripper command failed: {exc}")
                 with self._state_lock:
                     has_hold_target = self._last_gripper_command is not None
@@ -2163,6 +2259,17 @@ class ArxDCanArm:
     def _require_connected(self) -> None:
         if not self._connected:
             raise RuntimeError("ARX-D-CAN arm is not connected")
+
+    def _record_communication_error(
+        self,
+        error: CommunicationError,
+        *,
+        using_fallback: bool | None,
+    ) -> None:
+        with self._state_lock:
+            self._last_communication_error = error
+            if using_fallback is not None:
+                self._using_fallback_state = using_fallback
 
     def _active_joint_names(self) -> list[str]:
         names = list(self.config.joint_names)
@@ -2293,18 +2400,18 @@ class ArxDCanArm:
                 deadline = self._watchdog_deadline
                 enabled = self._enabled
             if enabled and deadline is not None and time.monotonic() > deadline:
-                reason = (
+                error = CommandTimeoutError(
                     f"command watchdog timed out after "
                     f"{self.config.command_timeout_s:.3f}s"
                 )
                 if self.config.watchdog_action.strip().lower() == "safe_hold":
                     if self._begin_safe_hold(
-                        reason,
+                        str(error),
                         expected_deadline=deadline,
                     ):
                         self._safe_hold_loop()
                 else:
-                    self._trip_fault(reason)
+                    self._trip_fault(str(error))
                 return
 
     def _begin_safe_hold(
@@ -2366,7 +2473,14 @@ class ArxDCanArm:
                             strict=False,
                         )
             except Exception as exc:
-                if isinstance(exc, _StaleCoupledFeedbackError):
+                if isinstance(exc, CommunicationError):
+                    self._record_communication_error(
+                        exc,
+                        using_fallback=(
+                            False if isinstance(exc, StaleFeedbackError) else None
+                        ),
+                    )
+                if isinstance(exc, StaleFeedbackError):
                     self._trip_fault(str(exc))
                     return
                 with self._state_lock:
@@ -2387,6 +2501,8 @@ class ArxDCanArm:
             self._safe_holding = False
             self._fault_reason = None
             self._feedback_error_count = 0
+            self._last_communication_error = None
+            self._using_fallback_state = False
             self._watchdog_deadline = (
                 time.monotonic() + self.config.command_timeout_s
                 if self._enabled

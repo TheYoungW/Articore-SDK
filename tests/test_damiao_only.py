@@ -4,6 +4,8 @@ import pytest
 
 from arx_d_can.actuator import arx_d_can as actuator_module
 from arx_d_can.actuator.arx_d_can import ArxDCan, JointCfg, JointGroup
+from arx_d_can.driver import CallError
+from arx_d_can.errors import IncompleteFeedbackError
 from arx_d_can.sdk import ArxDCanArm
 from arx_d_can.service_tools import zero_current_position as zero_tool
 
@@ -155,7 +157,7 @@ class FakeFlakyFeedbackController:
         del timeout_ms
         self.calls += 1
         if self.calls <= self.failures:
-            raise RuntimeError("missing motor IDs: 15")
+            raise CallError("missing motor IDs: 15")
 
 
 class FakeDirectionalMotor(FakeZeroMotor):
@@ -498,7 +500,7 @@ def test_complete_feedback_raises_after_two_failed_attempts():
     arm._ctrl_map = {"main": controller}
 
     with pytest.raises(
-        RuntimeError,
+        IncompleteFeedbackError,
         match=r"fresh feedback failed after 2 attempts: missing motor IDs: 15",
     ):
         arm.get_state(request_feedback=True, require_complete=True)

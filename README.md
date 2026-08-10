@@ -100,7 +100,8 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
   整臂失能。
 - 使能后有 2 秒启动宽限；第一帧成功命令之后，超过 0.25 秒没有新命令，软件
   看门狗读取实际关节位置并以 100 Hz 进入 `SAFE_HOLD`，保持手臂和夹爪当前位置。
-- `SAFE_HOLD` 期间如果保持指令发送失败，会升级为硬故障并尝试整臂失能。
+- `SAFE_HOLD` 期间一般发送失败会记录原因并按保持频率继续重试；耦合关节反馈过期
+  属于不可继续使用旧状态的硬故障，会尝试整臂失能。
 - 故障不会自动恢复。确认硬件和空间安全后调用 `recover()`；低层 API 也可以依次
   调用 `clear_fault()`、`configure()`、`enable()`。
 - `close()` 总是停止看门狗、尝试失能所有电机并关闭总线。
@@ -110,6 +111,45 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
 能处理控制线程卡住或上游停止发命令；它不能覆盖整机掉电、Python 进程被强制
 杀死或 USB2CAN 硬件失效。`SAFE_HOLD` 也不是安全认证功能，生产设备仍需要物理
 急停、电机侧通信超时，以及垂直负载场景需要的机械制动或防坠机构。
+
+### 通讯异常和健康状态
+
+SDK 对外提供稳定的异常层级，不要求应用依赖底层 `motor-drive-layer.CallError`：
+
+- `CommunicationError`：所有传输和反馈通讯异常的基类；
+- `TransportError`：串口或 CAN 打开、读取、写入失败；
+- `FeedbackTimeoutError`：完整新反馈超时；
+- `IncompleteFeedbackError`：缺少一个或多个必需电机的反馈；
+- `StaleFeedbackError`：缓存反馈年龄超过安全阈值；
+- `MotorFaultError`：电机明确返回故障状态码，不属于通讯故障；
+- `CommandTimeoutError`：上层停止更新命令，不属于总线通讯故障。
+
+这些运行期异常都继承 `RuntimeError`，已有的 `except RuntimeError` 仍然有效。默认
+`read_state()` 在机械臂已使能且存在历史状态时会容忍瞬时通讯故障并返回最后状态；
+需要在第一次失败时直接收到异常，可启用严格模式：
+
+```python
+from arx_d_can import CommunicationError
+
+try:
+    state = arm.read_state(strict_feedback=True)
+except CommunicationError as exc:
+    print(exc.operation, exc.motor_names, exc.retryable)
+```
+
+无论是否启用严格模式，都可以读取当前通讯健康快照：
+
+```python
+health = arm.communication_health
+print(health.healthy)
+print(health.consecutive_feedback_failures)
+print(health.using_fallback_state)
+print(health.last_fresh_feedback_age_s)
+print(health.last_error)
+```
+
+一次成功的主动完整反馈会清除连续失败计数和当前通讯错误；只读取缓存
+`read_state(request_feedback=False)` 不会把通讯失败计数清零。
 
 ## Python API
 
@@ -280,7 +320,7 @@ J5 `Kp=60, Kd=1.5`，J6 `Kp=30, Kd=0.8`。4310 协议仍使用原生
 限幅状态。
 
 每个内环周期都会读取 motor-drive-layer 的反馈 `update_count` 和 `age_ns`。
-A/B 缓存反馈超过 20 ms 时立即停止虚拟 PD 并急停，不继续使用旧角度。
+A/B 缓存反馈超过 Corina 当前配置的 50 ms 时立即停止虚拟 PD 并急停，不继续使用旧角度。
 `robot.coupled_control_stats` 提供实际循环频率、周期超时次数、反馈停滞周期数和
 最大反馈年龄，可用于真机确认单总线 12 电机的实际带宽。
 

@@ -10,6 +10,18 @@ import importlib
 from typing import Any
 
 from .actuator import ArxDCan, JointCfg, JointGroup, available_models, load_cfg
+from .errors import (
+    ArxDCanError,
+    CommandTimeoutError,
+    CommunicationError,
+    FeedbackError,
+    FeedbackTimeoutError,
+    IncompleteFeedbackError,
+    MotorFaultError,
+    StaleFeedbackError,
+    TransportError,
+    UnexpectedMotorStateError,
+)
 from .sdk import (
     ArxDCanArm,
     ArxDCanConfig,
@@ -17,6 +29,7 @@ from .sdk import (
     CoupledControlStats,
     CoupledTorqueTelemetry,
     CoupledTorqueSaturation,
+    CommunicationHealth,
     JointMotorConfig,
     JointState,
     MitCommand,
@@ -47,6 +60,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "ArxDCan",
+    "ArxDCanError",
     "ArxDCanArm",
     "ArxDCanConfig",
     "ArxDCanEndPose",
@@ -54,14 +68,24 @@ __all__ = [
     "CoupledControlStats",
     "CoupledTorqueTelemetry",
     "CoupledTorqueSaturation",
+    "CommandTimeoutError",
+    "CommunicationError",
+    "CommunicationHealth",
+    "FeedbackError",
+    "FeedbackTimeoutError",
     "GravityCompensationMode",
     "GravityCompensationSample",
     "JointCfg",
     "JointGroup",
     "JointMotorConfig",
     "JointState",
+    "IncompleteFeedbackError",
     "MitCommand",
     "MotorState",
+    "MotorFaultError",
+    "StaleFeedbackError",
+    "TransportError",
+    "UnexpectedMotorStateError",
     "actuator",
     "available_models",
     "controllers",

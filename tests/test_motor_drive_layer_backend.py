@@ -1,6 +1,8 @@
 import pytest
 
+from arx_d_can import TransportError
 from arx_d_can.driver import (
+    CallError,
     build_scan_command,
     create_controller,
     parse_scan_ids,
@@ -82,6 +84,23 @@ def test_create_controller_selects_matching_motor_drive_layer_constructor(monkey
         ("socketcan", "can0"),
         ("socketcanfd", "can1"),
     ]
+
+
+def test_create_controller_wraps_vendor_call_error(monkeypatch):
+    class FailingController:
+        def __init__(self, channel):
+            raise CallError(f"cannot open {channel}")
+
+    monkeypatch.setattr(backend, "Controller", FailingController)
+
+    with pytest.raises(TransportError) as caught:
+        create_controller(transport="socketcan", channel="can9")
+
+    assert caught.value.operation == "open"
+    assert caught.value.transport == "socketcan"
+    assert caught.value.channel == "can9"
+    assert caught.value.retryable
+    assert isinstance(caught.value.__cause__, CallError)
 
 
 def state(
