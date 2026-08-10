@@ -22,7 +22,7 @@ from .inverse_kinematics import (
 )
 
 __all__ = [
-    # robot_model
+    # 机器人模型
     "load_robot_model",
     "get_end_effector_frame",
     "get_joint_count",

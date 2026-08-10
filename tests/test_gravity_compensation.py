@@ -15,6 +15,7 @@ from arx_d_can.sdk import (
     MotorState,
 )
 from arx_d_can.examples import example_12_gravity_compensation as example
+from arx_d_can.service_tools import gravity_compensation_cli
 
 
 def joint(name: str, *, torque_range: float) -> JointMotorConfig:
@@ -80,8 +81,7 @@ class FakeArm:
         self.enabled = False
         self.calls.append(("close", None))
 
-    def read_state(self, *, request_feedback: bool = True) -> ArxDCanState:
-        self.feedback_requests.append(request_feedback)
+    def _state(self) -> ArxDCanState:
         return ArxDCanState(
             arm=JointState(
                 names=self.joint_names,
@@ -91,9 +91,17 @@ class FakeArm:
             )
         )
 
+    def read_state(self) -> ArxDCanState:
+        self.feedback_requests.append(True)
+        return self._state()
+
+    def read_cached_state(self) -> ArxDCanState:
+        self.feedback_requests.append(False)
+        return self._state()
+
     def refresh_feedback_background(self) -> ArxDCanState:
         self.background_feedback_event.set()
-        return self.read_state(request_feedback=True)
+        return self.read_state()
 
     def send_joint_positions(self, positions, **kwargs) -> None:
         self.commands.append(
@@ -126,8 +134,7 @@ class FakeArmWithGripper(FakeArm):
         self.gripper_position = 0.3
         self.gripper_commands: list[float] = []
 
-    def read_state(self, *, request_feedback: bool = True) -> ArxDCanState:
-        self.feedback_requests.append(request_feedback)
+    def _state(self) -> ArxDCanState:
         return ArxDCanState(
             arm=JointState(
                 names=self.joint_names,
@@ -306,7 +313,7 @@ def test_mode_does_not_apply_motion_threshold_checks() -> None:
 
 
 def test_example_parser_defaults_to_pure_torque_mode() -> None:
-    args = example.build_parser().parse_args([])
+    args = gravity_compensation_cli.build_parser().parse_args([])
 
     assert args.seconds == 0.0
     assert args.hz == 100.0
@@ -319,13 +326,13 @@ def test_example_parser_defaults_to_pure_torque_mode() -> None:
 
 
 def test_example_parses_per_joint_scales() -> None:
-    assert example.parse_joint_values(
+    assert gravity_compensation_cli.parse_joint_values(
         "1,1.55,1.55,1,1,1,1",
         expected_count=7,
         name="joint scale",
     ) == pytest.approx((1.0, 1.55, 1.55, 1.0, 1.0, 1.0, 1.0))
 
-    assert example.parse_joint_values(
+    assert gravity_compensation_cli.parse_joint_values(
         "1,1,1,-0.25,1,1,1",
         expected_count=7,
         name="joint scale",

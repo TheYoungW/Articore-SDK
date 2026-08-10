@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 10: safely set the current stationary motor positions as zero."""
+"""示例 10：安全地将当前静止位置设置为电机零点。"""
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -12,10 +12,7 @@ from arx_d_can.service_tools.zero_current_position import (
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser(
-        description=(
-            "Example 10: verify that ARX-D-CAN motors are stationary, then write "
-            "their current positions as zero and verify every write."
-        )
+        description="示例 10：确认电机静止后，将当前位置写为零点并验证。"
     )
     zero_current_position(parser.parse_args(argv))
 

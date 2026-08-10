@@ -1,7 +1,6 @@
-"""ARX-D-CAN trajectory planning APIs.
+"""ARX-D-CAN 轨迹规划 API。
 
-Joint-position sampling stays dependency-light. Cartesian and CLIK APIs are
-loaded lazily because they require Pinocchio.
+关节位置采样保持精简依赖；笛卡尔与 CLIK API 依赖 Pinocchio，因此采用延迟加载。
 """
 from __future__ import annotations
 

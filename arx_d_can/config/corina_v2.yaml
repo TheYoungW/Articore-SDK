@@ -1,7 +1,7 @@
 name: Corina V2
 urdf_path: models/Corinav2.urdf
 joint_transform_path: models/corina_v2_joint_transform.json
-# The SDK currently exposes one end-effector frame; use the right foot by default.
+# SDK 当前只公开一个末端坐标系，默认使用右脚。
 end_effector_frame: right_leg_link6
 
 channel: /dev/ttyACM0
@@ -15,14 +15,14 @@ safety:
   enable_grace_s: 2.0
   watchdog_poll_s: 0.02
   watchdog_action: safe_hold
-  # Keep the coupled virtual-PD loop at the same rate while holding.
+  # 安全保持期间，耦合虚拟 PD 循环仍保持相同频率。
   safe_hold_hz: 250.0
   feedback_fault_threshold: 3
-  # Cached A/B feedback older than this is unsafe for virtual ankle PD.
+  # A/B 缓存反馈超过此数据年龄后，不得再用于踝关节虚拟 PD。
   max_cached_feedback_age_s: 0.05
 
-# Both legs share one CAN bus. Pinocchio traverses this branched URDF with the
-# left leg first, so command/state arrays follow left leg, then right leg.
+# 双腿共用一条 CAN 总线。Pinocchio 遍历此分支 URDF 时先处理左腿，因此命令和状态
+# 数组按左腿、右腿的顺序排列。
 groups:
   arm:
     joints:
@@ -31,11 +31,10 @@ groups:
        right_leg_joint1, right_leg_joint2, right_leg_joint3,
        right_leg_joint4, right_leg_joint5, right_leg_joint6]
 
-# Conservative defaults follow the existing SDK profiles. The 27 Nm joints use
-# the 4340P defaults; the 7 Nm joints use the 4310 defaults. Verify directions,
-# zero positions, and gains on suspended hardware before normal operation.
-# Keep every ESC ID inside the unique 4-bit Damiao status-ID range. On this
-# robot each feedback/MST ID is the corresponding ESC ID plus 0x20.
+# 保守默认值沿用现有 SDK 配置：27 Nm 关节采用 4340P 默认值，7 Nm 关节采用 4310
+# 默认值。正常运行前，应在悬空硬件上验证方向、零位和增益。
+# 所有 ESC ID 必须位于达妙唯一的 4 位状态 ID 范围内。本机器人每个反馈/MST ID
+# 都等于对应 ESC ID 加 0x20。
 joints:
   - name: left_leg_joint1
     motor_id: 0x07
@@ -72,7 +71,7 @@ joints:
     feedback_id: 0x2B
     model: "4310"
     effort_limit: 7.0
-    # Logical ankle Pitch gains; the SDK sends zero motor-side MIT gains.
+    # 踝关节 Pitch 的逻辑增益；SDK 向电机侧发送零 MIT 增益。
     MIT: {kp: 60.0, kd: 1.5}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
 
@@ -81,7 +80,7 @@ joints:
     feedback_id: 0x2C
     model: "4310"
     effort_limit: 7.0
-    # Logical ankle Roll gains; the SDK sends zero motor-side MIT gains.
+    # 踝关节 Roll 的逻辑增益；SDK 向电机侧发送零 MIT 增益。
     MIT: {kp: 30.0, kd: 0.8}
     POS_VEL: {vel_kp: 0.0050, vel_ki: 0.002, pos_kp: 50.0, pos_ki: 1.0, vlim: 3.0}
 
@@ -122,8 +121,8 @@ joints:
     feedback_id: 0x25
     model: "4310"
     effort_limit: 7.0
-    # Logical Pitch gains; physical motor Kp/Kd stay zero. COUPLED.motor_kd is
-    # evaluated from filtered feedback inside the total-torque limit.
+    # Pitch 逻辑增益；物理电机 Kp/Kd 保持为零。COUPLED.motor_kd 根据滤波反馈计算，
+    # 并受总力矩限制约束。
     MIT: {kp: 60.0, kd: 1.5}
     COUPLED:
       {effort_limit: 1.2, motor_kd: 0.4, velocity_filter_s: 0.02,
@@ -136,8 +135,8 @@ joints:
     feedback_id: 0x26
     model: "4310"
     effort_limit: 7.0
-    # Logical Roll gains; physical motor Kp/Kd stay zero. COUPLED.motor_kd is
-    # evaluated from filtered feedback inside the total-torque limit.
+    # Roll 逻辑增益；物理电机 Kp/Kd 保持为零。COUPLED.motor_kd 根据滤波反馈计算，
+    # 并受总力矩限制约束。
     MIT: {kp: 30.0, kd: 0.8}
     COUPLED:
       {effort_limit: 1.2, motor_kd: 0.4, velocity_filter_s: 0.02,

@@ -18,7 +18,7 @@ _hw_cfg_cache: dict | None = None
 
 
 def _hw_config() -> dict:
-    """Load kinematics fields (urdf_path, end_effector_frame) from the hardware YAML."""
+    """从硬件 YAML 加载运动学字段（urdf_path、end_effector_frame）。"""
     global _hw_cfg_cache
     if _hw_cfg_cache is not None:
         return _hw_cfg_cache
@@ -47,12 +47,10 @@ def load_robot_model(
     urdf_path: str | None = None,
     controlled_joint_names: Sequence[str] | None = None,
 ) -> pin.Model:
-    """Load a URDF, optionally reducing it to the configured controlled joints.
+    """加载 URDF，并可选择将模型精简为配置的受控关节。
 
-    A multi-arm robot must keep one authoritative URDF.  Callers controlling
-    only one arm pass that arm's joint names; every other movable joint is
-    locked at the neutral configuration while the original frame tree and
-    transforms are preserved.
+    多臂机器人应保留一份权威 URDF。只控制单臂时，调用者传入该臂关节名称；其余
+    可动关节会锁定在中性位，同时保留原有坐标系树和变换关系。
     """
     path, _ = _resolve_urdf(urdf_path)
     model = pin.buildModelFromUrdf(path)

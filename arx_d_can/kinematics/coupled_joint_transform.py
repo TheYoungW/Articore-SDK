@@ -1,4 +1,4 @@
-"""Runtime-only coupled-joint coordinate conversion."""
+"""仅在运行时使用的耦合关节坐标转换。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,7 +16,7 @@ class _Pair:
 
 
 class CoupledJointTransform:
-    """Convert public virtual joints to physical motor coordinates and back."""
+    """在公开虚拟关节坐标与物理电机坐标之间双向转换。"""
 
     def __init__(
         self,
@@ -82,7 +82,7 @@ class CoupledJointTransform:
 
     @property
     def transformed_pairs(self) -> tuple[tuple[int, int], ...]:
-        """Physical motor index pairs that share one virtual transform."""
+        """返回共用同一个虚拟变换的物理电机索引对。"""
         return tuple(pair.indices for pair in self._pairs)
 
     def _features(self, values: np.ndarray) -> np.ndarray:

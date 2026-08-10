@@ -347,7 +347,10 @@ def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover()
             retryable=True,
         )
         for _ in range(3):
-            assert arm.read_state() is last_state
+            with pytest.raises(CommunicationError):
+                arm.read_state()
+
+        assert arm.read_cached_state() is last_state
 
         assert arm.faulted
         assert arm.safe_holding
@@ -363,7 +366,7 @@ def test_consecutive_feedback_failures_hold_without_disabling_and_auto_recover()
         arm.close()
 
 
-def test_feedback_fallback_is_visible_in_communication_health() -> None:
+def test_failed_fresh_read_is_visible_in_communication_health() -> None:
     arm, robot = make_arm(timeout=1.0, grace=1.0)
     try:
         arm.send_joint_positions([0.3])
@@ -378,11 +381,13 @@ def test_feedback_fallback_is_visible_in_communication_health() -> None:
         )
         robot.state_error = error
 
-        assert arm.read_state() is last_state
+        with pytest.raises(CommunicationError):
+            arm.read_state()
+        assert arm.read_cached_state() is last_state
         health = arm.communication_health
         assert health.consecutive_feedback_failures == 1
         assert health.has_fresh_feedback
-        assert health.using_fallback_state
+        assert not health.using_fallback_state
         assert health.last_error is error
         assert health.last_fresh_feedback_age_s is not None
         assert not health.healthy
@@ -397,7 +402,7 @@ def test_feedback_fallback_is_visible_in_communication_health() -> None:
         arm.close()
 
 
-def test_strict_feedback_raises_instead_of_returning_fallback() -> None:
+def test_read_state_always_raises_instead_of_returning_fallback() -> None:
     arm, robot = make_arm(timeout=1.0, grace=1.0)
     try:
         arm.send_joint_positions([0.3])
@@ -410,11 +415,66 @@ def test_strict_feedback_raises_instead_of_returning_fallback() -> None:
         )
 
         with pytest.raises(CommunicationError, match="feedback timed out"):
-            arm.read_state(strict_feedback=True)
+            arm.read_state()
 
         assert arm.communication_health.consecutive_feedback_failures == 1
-        assert arm.communication_health.using_fallback_state
+        assert not arm.communication_health.using_fallback_state
         assert not arm.safe_holding
+    finally:
+        arm.close()
+
+
+def test_public_state_api_separates_fresh_and_cached_reads() -> None:
+    arm, _ = make_arm(timeout=1.0, grace=1.0)
+    try:
+        with pytest.raises(RuntimeError, match="no cached state"):
+            arm.read_cached_state()
+        with pytest.raises(TypeError):
+            arm.read_state(strict_feedback=True)
+        with pytest.raises(TypeError):
+            arm.read_state(request_feedback=False)
+
+        fresh = arm.read_state()
+        assert arm.read_cached_state() is fresh
+    finally:
+        arm.close()
+
+
+def test_high_level_motion_helpers_own_the_refresh_loop(monkeypatch) -> None:
+    config = ArxDCanConfig(
+        arm_joints=(JOINT,),
+        gripper=GRIPPER,
+        watchdog_enabled=False,
+        control_hz=100.0,
+    )
+    arm = ArxDCanArm(config=config, enable_gripper=True)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(
+        "arx_d_can.sdk.arm.time.monotonic",
+        lambda: clock["now"],
+    )
+    monkeypatch.setattr(
+        "arx_d_can.sdk.arm.time.sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    try:
+        arm.hold_joint_positions([0.2], seconds=0.025, hz=100.0)
+        assert len(robot.arm.sent_pos_vel) == 3
+
+        clock["now"] = 0.0
+        robot.arm.sent_pos_vel.clear()
+        arm.move_joint_positions([0.0], seconds=0.02, hz=100.0)
+        assert len(robot.arm.sent_pos_vel) == 3
+
+        clock["now"] = 0.0
+        arm.move_gripper(1000, seconds=0.025, hz=100.0)
+        assert len(robot.gripper.sent_mit) == 3
     finally:
         arm.close()
 
@@ -492,7 +552,7 @@ def test_cached_reads_do_not_clear_background_feedback_failure_count() -> None:
     try:
         for _ in range(2):
             arm.refresh_feedback_background()
-            arm.read_state(request_feedback=False)
+            arm.read_cached_state()
             assert not arm.faulted
 
         arm.refresh_feedback_background()
@@ -517,7 +577,8 @@ def test_feedback_recovery_stays_in_hold_until_every_motor_is_enabled() -> None:
             retryable=True,
         )
         for _ in range(3):
-            arm.read_state()
+            with pytest.raises(CommunicationError):
+                arm.read_state()
         assert arm.safe_holding
 
         robot.state_error = None
@@ -775,6 +836,66 @@ def test_gripper_motor_value_is_clamped_to_mechanical_range(
         arm.close()
 
 
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        (-1.0, 0.0),
+        (0.0, 0.0),
+        (500.0, 1.32),
+        (1000.0, 2.64),
+        (1001.0, 2.64),
+    ],
+)
+def test_gripper_uses_simple_zero_to_one_thousand_scale(
+    requested: float,
+    expected: float,
+) -> None:
+    config = ArxDCanConfig(
+        arm_joints=(JOINT,),
+        gripper=GRIPPER,
+        gripper_closed_value=0.0,
+        gripper_open_value=2.64,
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config, enable_gripper=True)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        arm.set_gripper(requested)
+
+        np.testing.assert_allclose(robot.gripper.sent_mit[-1], [expected])
+    finally:
+        arm.close()
+
+
+def test_open_and_close_gripper_use_mapped_endpoints() -> None:
+    config = ArxDCanConfig(
+        arm_joints=(JOINT,),
+        gripper=GRIPPER,
+        gripper_closed_value=0.0,
+        gripper_open_value=2.64,
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config, enable_gripper=True)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    try:
+        arm.open_gripper()
+        arm.close_gripper()
+
+        np.testing.assert_allclose(robot.gripper.sent_mit[-2], [2.64])
+        np.testing.assert_allclose(robot.gripper.sent_mit[-1], [0.0])
+        assert robot.gripper.mode_calls == ["mit"]
+    finally:
+        arm.close()
+
+
 def test_clear_fault_requires_explicit_reconfigure_and_enable() -> None:
     arm, robot = make_arm()
     try:
@@ -838,6 +959,7 @@ def test_safe_hold_send_failure_keeps_retrying_without_disabling() -> None:
     [
         (False, ["joint1"], False),
         (True, ["joint1", "gripper"], True),
+        (None, ["joint1", "gripper"], True),
     ],
 )
 def test_read_state_requires_only_active_actuator_feedback(
@@ -855,9 +977,26 @@ def test_read_state_requires_only_active_actuator_feedback(
     arm.robot = robot
     arm.connect()
     try:
-        state = arm.read_state(request_feedback=True)
+        state = arm.read_state()
 
         assert robot.last_state_joint_names == expected_names
         assert (state.gripper is not None) is expects_gripper_state
+        if state.gripper is not None:
+            assert state.gripper.opening == pytest.approx(1000.0 * 0.42 / 2.64)
+            assert state.gripper.motor_position == pytest.approx(0.42)
+            assert state.gripper.position == pytest.approx(0.42)
+            assert state.gripper.motor_velocity == pytest.approx(0.42)
+            assert state.gripper.velocity == pytest.approx(0.42)
     finally:
         arm.close()
+
+
+def test_explicit_gripper_requires_model_configuration() -> None:
+    config = ArxDCanConfig(
+        arm_joints=(JOINT,),
+        gripper=None,
+        watchdog_enabled=False,
+    )
+
+    with pytest.raises(ValueError, match="does not configure a gripper"):
+        ArxDCanArm(config=config, enable_gripper=True)

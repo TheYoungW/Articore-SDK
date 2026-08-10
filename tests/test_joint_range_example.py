@@ -5,7 +5,7 @@ import math
 import pytest
 
 from arx_d_can import default_config
-from arx_d_can.examples import example_13_test_joint_range as example
+from arx_d_can.service_tools import joint_range_test as example
 
 
 def test_parser_defaults_to_corina_right_leg_joints_1_through_4() -> None:

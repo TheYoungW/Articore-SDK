@@ -5,9 +5,17 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from arx_d_can import ArxDCanArm, available_models, load_cfg
+from arx_d_can.actuator import arx_d_can as actuator_module
 
 
 MODELS_DIR = Path(__file__).resolve().parents[1] / "arx_d_can" / "models"
+
+
+def test_native_protocol_ranges_only_cover_yunyi_motors() -> None:
+    expected_models = {"4310", "4340P", "8009"}
+
+    assert set(actuator_module._NATIVE_TORQUE_RANGES) == expected_models
+    assert set(actuator_module._NATIVE_VELOCITY_RANGES) == expected_models
 
 
 def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
@@ -120,24 +128,14 @@ def test_yunyi_control_gains_follow_actuator_capability_tiers() -> None:
         assert actual == expected
 
 
-def test_yunyi_gripper_gain_scale_does_not_change_arm_gains() -> None:
-    baseline = ArxDCanArm(model="yunyi_v1_0_right", enable_gripper=True)
-    scaled = ArxDCanArm(
-        model="yunyi_v1_0_right",
-        enable_gripper=True,
-        gripper_gain_scale=0.1,
-    )
+def test_yunyi_gripper_uses_fixed_default_mit_gains() -> None:
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        arm = ArxDCanArm(model=model, enable_gripper=True)
 
-    assert [
-        (joint.mit_kp, joint.mit_kd) for joint in scaled.config.arm_joints
-    ] == [
-        (joint.mit_kp, joint.mit_kd) for joint in baseline.config.arm_joints
-    ]
-    assert scaled.config.gripper is not None
-    assert scaled.config.gripper.mit_kp == pytest.approx(0.4)
-    assert scaled.config.gripper.mit_kd == pytest.approx(0.05)
-    assert scaled.config.gripper_force_control.hold_kp == pytest.approx(0.2)
-    assert scaled.config.gripper_force_control.hold_kd == pytest.approx(0.05)
+        assert arm.config.gripper is not None
+        assert arm.config.gripper.mit_kp == pytest.approx(4.0)
+        assert arm.config.gripper.mit_kd == pytest.approx(0.5)
+        assert arm.config.gripper_force_control_enabled
 
 
 def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:

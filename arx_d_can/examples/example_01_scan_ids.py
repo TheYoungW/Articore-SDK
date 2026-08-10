@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 01: scan Damiao motor IDs without enabling the arm."""
+"""示例 01：在不使能机械臂的情况下扫描达妙电机 ID。"""
 from __future__ import annotations
 
 import argparse
@@ -14,28 +14,22 @@ def main(args: argparse.Namespace) -> None:
         config_path=args.config_path,
         port=args.port,
         baud=args.baud,
-        transport=getattr(args, "transport", None),
+        transport=args.transport,
     )
     ids = arm.scan_ids(
         start_id=args.start_id,
         end_id=args.end_id,
         model=args.model,
-        timeout_ms=args.timeout_ms,
         feedback_base=args.feedback_base,
     )
-    print("found:", " ".join(f"0x{motor_id:02X}" for motor_id in ids) or "none")
+    print("扫描结果：", " ".join(f"0x{motor_id:02X}" for motor_id in ids) or "未发现电机")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Scan Damiao motor IDs without enabling the arm.")
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start-id", type=int, default=1)
     parser.add_argument("--end-id", type=int, default=16)
     parser.add_argument("--model", default="4340P")
-    parser.add_argument("--timeout-ms", type=int, default=30)
-    parser.add_argument(
-        "--feedback-base",
-        default="0x10",
-        help="Feedback ID base; expected feedback ID is base + (motor ID & 0x0F)",
-    )
+    parser.add_argument("--feedback-base", default="0x10")
     add_connection_arguments(parser)
     main(parser.parse_args())

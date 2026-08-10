@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Service tool: safely write and verify Damiao motor zero positions."""
+"""维护工具：安全写入并验证达妙电机零点。"""
 from __future__ import annotations
 
 import argparse
@@ -28,7 +28,7 @@ def read_complete_state(arm, *, attempts: int, interval: float):
     last_error: RuntimeError | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return arm.read_state(request_feedback=True)
+            return arm.read_state()
         except RuntimeError as error:
             last_error = error
             if attempt < attempts:
@@ -148,7 +148,7 @@ def build_parser(
     *,
     description: str = "Write current stationary ARX-D-CAN motor positions as zero.",
 ) -> argparse.ArgumentParser:
-    """Build the shared safe-zero command-line interface."""
+    """构建共用的安全写零命令行接口。"""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "--include-gripper",

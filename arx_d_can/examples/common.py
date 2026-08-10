@@ -1,4 +1,4 @@
-"""Shared helpers for ARX-D-CAN examples."""
+"""ARX-D-CAN 示例共用的辅助函数。"""
 from __future__ import annotations
 
 import math
@@ -22,7 +22,7 @@ def add_connection_arguments(parser: ArgumentParser) -> None:
     profile.add_argument(
         "--arm-model",
         default=None,
-        help="Built-in arm model profile name; default: models.yaml default_model",
+        help="内置机械臂机型名称",
     )
     profile.add_argument(
         "--config-path",
@@ -30,39 +30,41 @@ def add_connection_arguments(parser: ArgumentParser) -> None:
         dest="config_path",
         type=Path,
         default=None,
-        help="Custom arm hardware YAML; cannot be combined with --arm-model",
+        help="自定义机械臂硬件 YAML，不能与 --arm-model 同时使用",
     )
     parser.add_argument(
         "--port",
         "--channel",
         dest="port",
         default=None,
-        help=(
-            "Transport channel: a serial device such as /dev/ttyACM0 or a "
-            "SocketCAN interface such as can0; default: profile value"
-        ),
+        help="通信通道，例如 /dev/ttyACM0 或 can0；默认使用机型配置",
     )
     parser.add_argument(
         "--transport",
         choices=SUPPORTED_TRANSPORTS,
         default=None,
-        help="Transport backend; default: profile value (legacy profiles infer from channel)",
+        help="通信后端；默认使用机型配置",
     )
     parser.add_argument(
         "--baud",
         type=int,
         default=None,
-        help=f"USB2CAN serial baudrate; default: profile value ({DEFAULT_BAUD} for arx_d_can)",
+        help=f"USB2CAN 串口波特率；默认使用机型配置（arx_d_can 为 {DEFAULT_BAUD}）",
     )
 
 
-def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> ArxDCanArm:
+def make_arm(
+    args: Namespace | None = None,
+    *,
+    enable_gripper: bool | None = None,
+    control_mode: str = "posvel",
+) -> ArxDCanArm:
     if args is None:
         return ArxDCanArm(
             port=DEFAULT_PORT,
             baud=DEFAULT_BAUD,
             transport="dm-serial",
-            control_mode="posvel",
+            control_mode=control_mode,
             enable_gripper=enable_gripper,
         )
     return ArxDCanArm(
@@ -71,7 +73,7 @@ def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False) -> 
         port=args.port,
         baud=args.baud,
         transport=getattr(args, "transport", None),
-        control_mode="posvel",
+        control_mode=control_mode,
         enable_gripper=enable_gripper,
     )
 
@@ -90,7 +92,7 @@ def parse_joint_positions_degrees(
     *,
     expected_count: int = 6,
 ) -> tuple[float, ...]:
-    """Parse user-facing degree values and return SDK-facing radians."""
+    """解析用户输入的角度值，并返回 SDK 使用的弧度值。"""
     return tuple(
         math.radians(value)
         for value in parse_joint_positions(text, expected_count=expected_count)

@@ -1,4 +1,4 @@
-"""Safe, synchronous gravity-compensation mode for :class:`ArxDCanArm`."""
+"""适用于 :class:`ArxDCanArm` 的安全同步重力补偿模式。"""
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -17,7 +17,7 @@ GravityProvider = Callable[[np.ndarray], np.ndarray]
 
 @dataclass(slots=True, frozen=True)
 class GravityCompensationSample:
-    """One feedback and command sample from gravity-compensation mode."""
+    """重力补偿模式下的一组反馈与命令样本。"""
 
     elapsed_s: float
     positions: tuple[float, ...]
@@ -47,13 +47,11 @@ def _gain_vector(
 
 
 class GravityCompensationMode:
-    """Run an arm in MIT gravity compensation with zero position stiffness.
+    """以零位置刚度运行机械臂 MIT 重力补偿。
 
-    The mode starts from a current-position MIT hold, gradually replaces the
-    configured Kp/Kd with gravity feedforward, and performs the inverse
-    transition before disabling.  ``damping=0`` sends both Kp and Kd as zero;
-    a small positive damping value keeps Kp at zero while adding velocity
-    damping.
+    此模式从当前位置的 MIT 保持开始，逐渐用重力前馈替代配置的 Kp/Kd，并在失能前
+    执行反向过渡。``damping=0`` 时 Kp 和 Kd 均发送零；设置较小的正阻尼值时，
+    Kp 保持为零，同时加入速度阻尼。
     """
 
     def __init__(
@@ -163,7 +161,11 @@ class GravityCompensationMode:
         return torques
 
     def _read_checked_state(self, *, request_feedback: bool = True):
-        state = self.arm.read_state(request_feedback=request_feedback)
+        state = (
+            self.arm.read_state()
+            if request_feedback
+            else self.arm.read_cached_state()
+        )
         if self.arm.faulted or self.arm.safe_holding:
             raise RuntimeError(
                 self.arm.fault_reason or "arm entered fault-safe holding"
@@ -184,13 +186,12 @@ class GravityCompensationMode:
             try:
                 refresh = getattr(self.arm, "refresh_feedback_background", None)
                 if refresh is None:
-                    self.arm.read_state(request_feedback=True)
+                    self.arm.read_state()
                 else:
                     refresh()
             except Exception:
-                # ArxDCanArm records consecutive feedback failures and enters
-                # safe hold at its configured threshold.  The real-time loop
-                # observes that state without waiting on this request.
+                # ArxDCanArm 会记录连续反馈失败，并在达到配置阈值时进入安全保持。
+                # 实时循环无需等待本次请求，即可观察到该状态。
                 continue
 
     def _start_feedback_monitor(self) -> None:
@@ -238,7 +239,7 @@ class GravityCompensationMode:
         )
 
     def _gripper_position(self, state) -> float | None:
-        """Return a finite gripper position when this arm controls a gripper."""
+        """机械臂控制夹爪时，返回有限的夹爪位置。"""
         if not getattr(self.arm, "enable_gripper", False):
             return None
         if state.gripper is None:
@@ -249,7 +250,7 @@ class GravityCompensationMode:
         return position
 
     def _refresh_gripper_command(self, state) -> None:
-        """Keep an enabled gripper alive while tracking its feedback position."""
+        """跟随反馈位置刷新命令，避免已使能夹爪超时。"""
         position = self._gripper_position(state)
         if position is not None:
             self.arm.set_gripper_motor_value(position)
@@ -289,7 +290,7 @@ class GravityCompensationMode:
             time.sleep(max(0.0, deadline - time.monotonic()))
 
     def start(self) -> GravityCompensationSample:
-        """Connect, enable, and transition into gravity compensation."""
+        """连接、使能并过渡到重力补偿状态。"""
         if self._started:
             raise RuntimeError("gravity compensation is already active")
         self._owns_connection = not self.arm.connected
@@ -313,9 +314,8 @@ class GravityCompensationMode:
             )
             self.arm.enable()
             if initial_gripper_position is not None:
-                # The gripper was enabled together with the arm.  Seed its MIT
-                # command immediately so it cannot time out before the first
-                # gravity-compensation feedback cycle.
+                # 夹爪与机械臂同时使能，因此立即写入首条 MIT 命令，避免它在第一个
+                # 重力补偿反馈周期前超时。
                 self.arm.set_gripper_motor_value(initial_gripper_position)
 
             settle_deadline = time.monotonic() + self.settle_seconds
@@ -354,7 +354,7 @@ class GravityCompensationMode:
             raise
 
     def step(self) -> GravityCompensationSample:
-        """Send one zero-stiffness gravity-compensation frame."""
+        """发送一帧零刚度重力补偿命令。"""
         if not self._started:
             raise RuntimeError("gravity compensation is not active")
         try:
@@ -387,7 +387,7 @@ class GravityCompensationMode:
         seconds: float = 0.0,
         on_sample: Callable[[GravityCompensationSample], None] | None = None,
     ) -> None:
-        """Refresh gravity compensation until timeout or ``KeyboardInterrupt``."""
+        """持续刷新重力补偿，直到超时或收到 ``KeyboardInterrupt``。"""
         if not self._started:
             raise RuntimeError("gravity compensation is not active")
         if not math.isfinite(seconds) or seconds < 0.0:
@@ -402,7 +402,7 @@ class GravityCompensationMode:
             time.sleep(max(0.0, next_tick - time.monotonic()))
 
     def stop(self) -> None:
-        """Restore the configured MIT gains, then disable the arm."""
+        """恢复配置的 MIT 增益，然后失能机械臂。"""
         transition_error: Exception | None = None
         self._stop_feedback_monitor()
         try:
@@ -433,7 +433,7 @@ class GravityCompensationMode:
             ) from transition_error
 
     def shutdown(self) -> None:
-        """Stop the mode and close a connection opened by this object."""
+        """停止当前模式，并关闭由本对象建立的连接。"""
         error: Exception | None = None
         try:
             self.stop()

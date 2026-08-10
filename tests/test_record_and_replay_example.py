@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can.examples import example_11_record_and_replay_trajectory as example
+from arx_d_can.service_tools import trajectory_recording as example
 
 
 def test_frequency_defaults_to_100_hz_and_is_limited_to_500_hz():
@@ -138,8 +138,8 @@ def test_record_uses_gravity_sample_and_cached_gripper(monkeypatch):
         def __init__(self):
             self.feedback_requests = []
 
-        def read_state(self, *, request_feedback=True):
-            self.feedback_requests.append(request_feedback)
+        def read_cached_state(self):
+            self.feedback_requests.append(False)
             return SimpleNamespace(
                 arm=SimpleNamespace(positions=(9.0, 9.0)),
                 gripper=SimpleNamespace(position=0.3),
@@ -166,9 +166,8 @@ def test_record_stops_by_wall_clock_and_skips_expired_periods(monkeypatch):
         now += seconds
 
     class SlowArm:
-        def read_state(self, *, request_feedback=True):
+        def read_state(self):
             nonlocal now
-            assert request_feedback is True
             now += 0.023
             return SimpleNamespace(
                 arm=SimpleNamespace(positions=(0.1, 0.2)),

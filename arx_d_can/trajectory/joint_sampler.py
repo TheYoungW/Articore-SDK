@@ -1,4 +1,4 @@
-"""Dependency-light joint-position trajectory sampling."""
+"""依赖精简的关节位置轨迹采样。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +10,7 @@ import numpy as np
 
 @dataclass(frozen=True, slots=True)
 class JointPositionPoint:
-    """One time-stamped joint-position command."""
+    """一条带时间戳的关节位置命令。"""
 
     time: float
     positions: np.ndarray
@@ -22,7 +22,7 @@ def _profile_scale(value: float, profile: str) -> float:
     if normalized == "linear":
         return t
     if normalized == "min_jerk":
-        # Fifth-order time scaling: zero velocity and acceleration at both ends.
+        # 五阶时间缩放：起点和终点的速度、加速度均为零。
         return 10.0 * t**3 - 15.0 * t**4 + 6.0 * t**5
     raise ValueError("profile must be 'min_jerk' or 'linear'")
 
@@ -35,7 +35,7 @@ def plan_joint_position_trajectory(
     hz: float = 500.0,
     profile: str = "min_jerk",
 ) -> list[JointPositionPoint]:
-    """Sample a joint-space position trajectory including both endpoints."""
+    """对包含起点和终点的关节空间位置轨迹进行采样。"""
     if not math.isfinite(duration) or duration <= 0.0:
         raise ValueError("duration must be a positive finite value")
     if not math.isfinite(hz) or hz <= 0.0:

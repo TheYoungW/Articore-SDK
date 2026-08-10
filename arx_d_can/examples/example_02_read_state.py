@@ -1,36 +1,12 @@
 #!/usr/bin/env python3
-"""Example 02: continuously read state without enabling the arm."""
+"""示例 02：在不使能电机的情况下读取机械臂和夹爪状态。"""
 from __future__ import annotations
 
 import argparse
 import math
-import time
 
 from arx_d_can import ArxDCanArm
 from arx_d_can.examples.common import add_connection_arguments
-
-
-def print_state(arm, *, sample_index: int | None = None) -> None:
-    state = arm.read_state()
-    prefix = "" if sample_index is None else f"[{sample_index:04d}] "
-    arm_positions = " ".join(
-        f"{name}={math.degrees(pos):+.3f}"
-        for name, pos in zip(state.arm.names, state.arm.positions)
-    )
-    print(f"{prefix}arm_pos(deg): {arm_positions}", flush=True)
-    arm_velocities = " ".join(
-        f"{name}={math.degrees(vel):+.3f}"
-        for name, vel in zip(state.arm.names, state.arm.velocities)
-    )
-    print(f"{prefix}arm_vel(deg/s): {arm_velocities}", flush=True)
-    if state.gripper is not None:
-        print(
-            f"{prefix}{state.gripper.name}: "
-            f"pos={math.degrees(state.gripper.position):+.3f} deg "
-            f"vel={math.degrees(state.gripper.velocity):+.3f} deg/s "
-            f"tau={state.gripper.torque:+.6f}",
-            flush=True,
-        )
 
 
 def main(args: argparse.Namespace) -> None:
@@ -40,43 +16,54 @@ def main(args: argparse.Namespace) -> None:
         port=args.port,
         baud=args.baud,
         transport=getattr(args, "transport", None),
+        enable_gripper=True,
     )
-    try:
-        arm.connect()
-        if not args.watch:
-            print_state(arm)
-            return
 
-        sample_index = 0
-        period = 1.0 / max(1.0, args.hz)
-        while args.count <= 0 or sample_index < args.count:
-            sample_index += 1
-            try:
-                print_state(arm, sample_index=sample_index)
-            except RuntimeError as exc:
-                print(f"[{sample_index:04d}] feedback_error: {exc}", flush=True)
-            time.sleep(period)
+    arm.connect()
+    print("机器人连接成功", flush=True)
+
+    try:
+        state = arm.read_state()
+        angles_rad = state.arm.positions
+        angles_deg = [math.degrees(value) for value in angles_rad]
+
+        print("\n--- 关节状态 ---", flush=True)
+        print(
+            "  关节角度 (deg):   ["
+            + ", ".join(f"{value:.2f}" for value in angles_deg)
+            + "]",
+            flush=True,
+        )
+        print(
+            "  关节角度 (rad):   ["
+            + ", ".join(f"{value:.4f}" for value in angles_rad)
+            + "]",
+            flush=True,
+        )
+        print(
+            "  关节速度 (rad/s): ["
+            + ", ".join(f"{value:.3f}" for value in state.arm.velocities)
+            + "]",
+            flush=True,
+        )
+        print(
+            "  关节力矩 (N·m):   ["
+            + ", ".join(f"{value:.3f}" for value in state.arm.torques)
+            + "]",
+            flush=True,
+        )
+
+        if state.gripper is not None:
+            print(
+                f"  夹爪开合度:        {state.gripper.opening:.0f} / 1000",
+                flush=True,
+            )
     finally:
-        arm.close()
+        arm.close(disable=False)
+        print("已断开连接", flush=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Read ARX-D-CAN state without enabling the arm.")
-    output_mode = parser.add_mutually_exclusive_group()
-    output_mode.add_argument(
-        "--watch",
-        dest="watch",
-        action="store_true",
-        help="Continuously print state (default)",
-    )
-    output_mode.add_argument(
-        "--once",
-        dest="watch",
-        action="store_false",
-        help="Read and print one state sample, then exit",
-    )
-    parser.set_defaults(watch=True)
-    parser.add_argument("--hz", type=float, default=10.0, help="Continuous print frequency")
-    parser.add_argument("--count", type=int, default=0, help="Stop after N samples; 0 means forever")
+    parser = argparse.ArgumentParser(description="读取一次机械臂状态，不使能电机")
     add_connection_arguments(parser)
     main(parser.parse_args())

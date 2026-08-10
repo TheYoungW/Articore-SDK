@@ -1,4 +1,4 @@
-from arx_d_can.examples.example_06_benchmark_read_rate import BenchmarkResult
+from arx_d_can.service_tools.read_benchmark import BenchmarkResult
 
 
 def test_benchmark_result_reports_achieved_hz_and_pass_state():

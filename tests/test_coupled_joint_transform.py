@@ -435,7 +435,7 @@ def test_corina_coupled_velocity_filter_rejects_one_cycle_spike() -> None:
     assert arm._filter_coupled_virtual_velocities(first) == pytest.approx(first)
     filtered = arm._filter_coupled_virtual_velocities(spike)
 
-    # 250 Hz with a 20 ms time constant gives alpha = 1/6.
+    # 250 Hz 配合 20 ms 时间常数时，alpha = 1/6。
     assert filtered[10:12] == pytest.approx((2.0, -1.0))
 
 
@@ -650,7 +650,7 @@ def test_corina_sdk_returns_virtual_joint_feedback(monkeypatch) -> None:
         lambda **_kwargs: {name: 0 for name in arm.joint_names},
     )
 
-    state = arm.read_state(request_feedback=True)
+    state = arm.read_state()
 
     assert np.asarray(state.arm.positions)[list(PAIR_INDICES)] == pytest.approx(
         virtual_position[list(PAIR_INDICES)],

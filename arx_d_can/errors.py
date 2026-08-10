@@ -1,15 +1,15 @@
-"""Public exception hierarchy for the ARX-D-CAN SDK."""
+"""ARX-D-CAN SDK 的公开异常层级。"""
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
 
 class ArxDCanError(RuntimeError):
-    """Base class for runtime failures reported by the SDK."""
+    """SDK 报告的运行时故障基类。"""
 
 
 class CommunicationError(ArxDCanError):
-    """Base class for transport and motor-feedback communication failures."""
+    """通信通道及电机反馈通信故障的基类。"""
 
     def __init__(
         self,
@@ -30,23 +30,23 @@ class CommunicationError(ArxDCanError):
 
 
 class TransportError(CommunicationError):
-    """The serial or CAN transport could not be opened, read, or written."""
+    """串口或 CAN 通道无法打开、读取或写入。"""
 
 
 class FeedbackError(CommunicationError):
-    """Base class for motor-feedback communication failures."""
+    """电机反馈通信故障的基类。"""
 
 
 class FeedbackTimeoutError(FeedbackError):
-    """Complete fresh feedback was not received before the timeout."""
+    """超时前未收到完整的新鲜反馈。"""
 
 
 class IncompleteFeedbackError(FeedbackError):
-    """Feedback was missing for one or more required motors."""
+    """一个或多个必需电机缺少反馈。"""
 
 
 class StaleFeedbackError(FeedbackError):
-    """Cached feedback is older than the configured safety limit."""
+    """缓存反馈的数据年龄超过配置的安全限制。"""
 
     def __init__(
         self,
@@ -62,7 +62,7 @@ class StaleFeedbackError(FeedbackError):
 
 
 class MotorFaultError(ArxDCanError):
-    """One or more motors explicitly reported a fault status code."""
+    """一个或多个电机明确报告了故障状态码。"""
 
     def __init__(
         self,
@@ -77,11 +77,11 @@ class MotorFaultError(ArxDCanError):
 
 
 class UnexpectedMotorStateError(MotorFaultError):
-    """A motor state is valid but inconsistent with the SDK lifecycle state."""
+    """电机状态有效，但与 SDK 生命周期状态不一致。"""
 
 
 class CommandTimeoutError(ArxDCanError):
-    """The upstream command producer stopped updating before its deadline."""
+    """上游命令生产者未在截止时间前继续更新。"""
 
 
 __all__ = [

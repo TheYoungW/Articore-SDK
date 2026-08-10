@@ -1,4 +1,4 @@
-"""motor-drive-layer integration kept behind the ARX driver boundary."""
+"""封装在 ARX 驱动边界内的 motor-drive-layer 集成。"""
 from __future__ import annotations
 
 import re
@@ -12,27 +12,14 @@ from ..errors import TransportError
 SUPPORTED_TRANSPORTS = ("auto", "dm-serial", "socketcan", "socketcanfd")
 
 _DAMIAO_MODEL_LIMITS: dict[str, tuple[float, float, float]] = {
-    "3507": (12.566, 50.0, 5.0),
     "4310": (12.5, 30.0, 10.0),
-    "4310P": (12.5, 50.0, 10.0),
-    "4340": (12.5, 10.0, 28.0),
     "4340P": (12.5, 10.0, 28.0),
-    "4340_v20": (12.5, 20.0, 28.0),
-    "6006": (12.5, 45.0, 20.0),
-    "8006": (12.5, 45.0, 40.0),
     "8009": (12.5, 45.0, 54.0),
-    "10010L": (12.5, 25.0, 200.0),
-    "10010": (12.5, 20.0, 200.0),
-    "H3510": (12.5, 280.0, 1.0),
-    "G6215": (12.5, 45.0, 10.0),
-    "H6220": (12.5, 45.0, 10.0),
-    "JH11": (12.5, 10.0, 12.0),
-    "6248P": (12.566, 20.0, 120.0),
 }
 
 
 def resolve_transport(transport: str | None, channel: str) -> str:
-    """Resolve an explicit transport or infer one for legacy configurations."""
+    """解析显式通信类型，或为旧版配置自动推断通信类型。"""
     normalized = str(transport or "auto").strip().lower().replace("_", "-")
     if normalized not in SUPPORTED_TRANSPORTS:
         raise ValueError(
@@ -50,7 +37,7 @@ def create_controller(
     channel: str,
     baud: int = 1_000_000,
 ) -> Controller:
-    """Open a motor-drive-layer controller for one supported transport."""
+    """使用受支持的通信类型打开 motor-drive-layer 控制器。"""
     resolved = resolve_transport(transport, channel)
     try:
         if resolved == "dm-serial":
@@ -82,7 +69,7 @@ def build_scan_command(
     feedback_base: str,
     timeout_ms: int,
 ) -> list[str]:
-    """Build the motor-drive-layer CLI command used for read-only ID scans."""
+    """构建用于只读 ID 扫描的 motor-drive-layer 命令行。"""
     resolved = resolve_transport(transport, port)
     command = [
         python_executable,
@@ -163,7 +150,7 @@ def _valid_scan_hit(line: str, *, model: str | None) -> int | None:
 
 
 def parse_scan_ids(output: str, *, model: str | None = None) -> list[int]:
-    """Extract only validated motor IDs from motor-drive-layer scan output."""
+    """从 motor-drive-layer 扫描输出中提取通过校验的电机 ID。"""
     return [
         motor_id
         for line in output.splitlines()

@@ -1,4 +1,4 @@
-"""Internal motor-driver boundary for the ARX-D-CAN SDK."""
+"""ARX-D-CAN SDK 的内部电机驱动边界。"""
 
 from .motor_drive_layer_backend import (
     CallError,

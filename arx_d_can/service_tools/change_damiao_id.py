@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 07: change one Damiao motor ESC_ID/MST_ID pair."""
+"""维护工具：修改一台达妙电机的 ESC_ID/MST_ID。"""
 from __future__ import annotations
 
 import argparse

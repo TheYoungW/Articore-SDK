@@ -46,23 +46,35 @@ def test_setup_motors_registers_damiao_motor_without_motor_brand_config():
 
 
 @pytest.mark.parametrize(
-    ("enable_gripper", "expected_names"),
+    ("enable_gripper", "expected_names", "has_gripper"),
     [
-        (False, ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")),
+        (
+            False,
+            ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"),
+            False,
+        ),
         (
             True,
             ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"),
+            True,
+        ),
+        (
+            None,
+            ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"),
+            True,
         ),
     ],
 )
 def test_high_level_arm_registers_only_active_actuators(
     enable_gripper,
     expected_names,
+    has_gripper,
 ):
     arm = ArxDCanArm(enable_gripper=enable_gripper)
 
     assert tuple(arm.robot.joint_names) == expected_names
-    assert arm.robot.has_gripper is enable_gripper
+    assert arm.robot.has_gripper is has_gripper
+    assert arm.has_gripper is has_gripper
 
 
 class FakeZeroMotor:
@@ -166,7 +178,6 @@ class FakeDirectionalMotor(FakeZeroMotor):
         self.torque = -0.3
         self.mit_commands = []
         self.pos_vel_commands = []
-        self.vel_commands = []
 
     def get_state(self):
         return SimpleNamespace(
@@ -181,10 +192,6 @@ class FakeDirectionalMotor(FakeZeroMotor):
 
     def send_pos_vel(self, pos, vlim):
         self.pos_vel_commands.append((pos, vlim))
-
-    def send_vel(self, vel):
-        self.vel_commands.append(vel)
-
 
 class FakeInterleavedMotor(FakeDirectionalMotor):
     def __init__(self, name, events):
@@ -249,7 +256,7 @@ def test_zero_writes_and_verifies_selected_motor(monkeypatch):
 
     assert completed == ("joint1",)
     assert first.zero_writes == 1
-    # One disable confirmation, one preflight, then three zero verification frames.
+    # 一次失能确认、一次预检查，再读取三帧零点验证反馈。
     assert first.fresh_requests == 5
     assert second.zero_writes == 0
 
@@ -586,11 +593,9 @@ def test_reversed_joint_transforms_commands_and_feedback() -> None:
 
     group.send_mit([0.5], vel=[0.2], kp=[30.0], kd=[2.0], tau=[0.7])
     group.send_pos_vel([0.6], vlim=[1.5])
-    group.send_vel([0.8])
 
     assert motor.mit_commands == [(-0.5, -0.2, 30.0, 2.0, -0.7)]
     assert motor.pos_vel_commands == [(-0.6, 1.5)]
-    assert motor.vel_commands == [-0.8]
 
     group_state = group.read_state(request_feedback=False)
     global_state = arm.get_state(request_feedback=False)
@@ -598,6 +603,11 @@ def test_reversed_joint_transforms_commands_and_feedback() -> None:
         assert positions.tolist() == [0.4]
         assert velocities.tolist() == [0.2]
         assert torques.tolist() == [0.3]
+
+
+def test_joint_group_only_exposes_pv_and_mit_control_modes() -> None:
+    assert not hasattr(JointGroup, "mode_vel")
+    assert not hasattr(JointGroup, "send_vel")
 
 
 def test_driver_clamps_mit_and_pos_vel_positions_before_direction_mapping() -> None:

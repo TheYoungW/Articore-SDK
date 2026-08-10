@@ -43,36 +43,36 @@ from .centroidal import (
 )
 
 __all__ = [
-    # robot_model
+    # 机器人模型
     "load_dynamics_model",
     "get_default_gravity",
     "set_gravity",
     "get_gravity",
     "neutral_configuration",
     "random_configuration",
-    # inertia
+    # 惯性与非线性项
     "compute_mass_matrix",
     "compute_coriolis_matrix",
     "compute_gravity_vector",
     "compute_nle",
     "compute_all_terms",
-    # forward_dynamics
+    # 正动力学
     "compute_forward_dynamics",
     "forward_dynamics_from_nle",
-    # inverse_dynamics
+    # 逆动力学
     "compute_inverse_dynamics",
     "compute_generalized_gravity",
     "compute_static_torque",
-    # derivatives
+    # 导数
     "compute_mass_matrix_derivatives",
     "compute_coriolis_derivatives",
     "compute_rnea_derivatives",
     "compute_generalized_gravity_derivatives",
-    # energy
+    # 能量
     "compute_kinetic_energy",
     "compute_potential_energy",
     "compute_total_energy",
-    # centroidal
+    # 质心动力学
     "compute_center_of_mass",
     "compute_com_velocity",
     "compute_centroidal_matrix",

@@ -1,8 +1,7 @@
-"""ARX-D-CAN Python SDK.
+"""ARX-D-CAN Python SDK。
 
-The package keeps the motor-control path light: importing ``arx_d_can`` only
-loads the USB2CAN SDK pieces. Kinematics, dynamics, trajectory planning, and
-end-pose controllers are imported lazily because they require Pinocchio.
+本包保持电机控制路径的依赖精简：导入 ``arx_d_can`` 时只加载 USB2CAN SDK 组件。
+运动学、动力学、轨迹规划和末端位姿控制器依赖 Pinocchio，因此采用延迟加载。
 """
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ from .errors import (
     TransportError,
     UnexpectedMotorStateError,
 )
+from .diagnostics import MotorDiagnostic
 from .sdk import (
     ArxDCanArm,
     ArxDCanConfig,
@@ -30,6 +30,7 @@ from .sdk import (
     CoupledTorqueTelemetry,
     CoupledTorqueSaturation,
     CommunicationHealth,
+    GripperState,
     JointMotorConfig,
     JointState,
     MitCommand,
@@ -75,6 +76,7 @@ __all__ = [
     "FeedbackTimeoutError",
     "GravityCompensationMode",
     "GravityCompensationSample",
+    "GripperState",
     "JointCfg",
     "JointGroup",
     "JointMotorConfig",
@@ -83,6 +85,7 @@ __all__ = [
     "MitCommand",
     "MotorState",
     "MotorFaultError",
+    "MotorDiagnostic",
     "StaleFeedbackError",
     "TransportError",
     "UnexpectedMotorStateError",

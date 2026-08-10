@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from arx_d_can.actuator import JointCfg
-from arx_d_can.examples import example_09_diagnose_status as example
+from arx_d_can import diagnostics as example
 
 
 class FakeController:
@@ -62,6 +62,7 @@ def test_read_diagnostics_reports_fault_and_actual_control_mode():
     assert diagnostics[0].control_mode == 2
     assert example.status_name(diagnostics[0].status_code) == "COIL_OVER_TEMPERATURE"
     assert example.mode_name(diagnostics[0].control_mode) == "POS_VEL"
+    assert example.mode_name(3) == "UNSUPPORTED"
     assert diagnostics[1].status_code == 0x0
     assert diagnostics[1].control_mode == 1
     assert diagnostics[0].velocity == pytest.approx(0.2 / 3.0)
@@ -89,9 +90,9 @@ def test_summary_warns_for_fault_and_abnormal_temperature(capsys):
         ),
     ]
 
-    example.print_summary(diagnostics, temperature_warning=80.0)
+    example.print_diagnostic_summary(diagnostics, temperature_warning=80.0)
 
     output = capsys.readouterr().out
     assert "joint4=0xC(COIL_OVER_TEMPERATURE)" in output
     assert "joint5(mos=30C,rotor=194C)" in output
-    assert "do not enable" in output
+    assert "不要直接使能" in output

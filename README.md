@@ -38,20 +38,151 @@ SDK 的 `transport` 可选 `dm-serial`、`socketcan`、`socketcanfd` 或 `auto`�
 `ArxDCanArm(transport="socketcan", channel="can0")`。两个别名不能同时指定不同值。
 建议新部署显式指定 `transport`，不要依赖自动推断。
 
-RK3588、MCP2515、经典 CAN 1 Mbps 的完整配置、扫描、读状态、控制和排错说明见
-[SocketCAN 使用说明](docs/socketcan.md)。最常用的扫描命令是：
+### SocketCAN 配置与使用
+
+SocketCAN 适用于 RK3588 上的 MCP2515、板载 CAN 控制器，以及由其他驱动暴露出的
+`can0`/`can1`。MCP2515 是经典 CAN 控制器，应使用 `transport: socketcan`，不要
+使用 `socketcanfd`。
+
+安装或更新项目后，可确认底层通信库版本及 Python 环境：
+
+```bash
+python -m pip install -e .
+python -m pip show motor-drive-layer
+which python
+python -m pip --version
+```
+
+不要混用系统 Python 与 conda Python；`python` 和 `python -m pip` 应属于同一环境。
+
+以下命令把 `can0` 设置为经典 CAN 1 Mbps：
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 1000000 restart-ms 100
+sudo ip link set can0 up
+ip -details -statistics link show can0
+```
+
+正常通信时，接口应为 `UP`，CAN 状态应为 `ERROR-ACTIVE`。`ERROR-PASSIVE`、
+`BUS-OFF` 或持续增长的 error counter 通常表示终端电阻、波特率、CAN_H/CAN_L、
+共地或供电存在问题。SocketCAN 模式下，YAML 的 `baud` 和命令行 `--baud` 不配置
+CAN 总线速率；总线速率只由 `ip link` 配置。可先用 `can-utils` 验证原始总线：
+
+```bash
+candump can0
+ip -details -statistics link show can0
+```
+
+#### 扫描电机 ID
+
+扫描不会使能电机或发送运动目标：
 
 ```bash
 python -m arx_d_can.examples.example_01_scan_ids \
   --transport socketcan \
   --channel can0 \
+  --model 4340P \
+  --start-id 1 \
+  --end-id 16 \
   --feedback-base 0x200
 ```
 
-这里 `--feedback-base 0x200` 不是固定值。扫描器按
-`feedback_id = feedback_base + (motor_id & 0x0F)` 注册临时电机；例如电机 ID 为
-`6`、实际反馈 ID 为 `0x206` 时，必须传 `0x200`。默认 `0x10` 适用于反馈 ID
-`0x11`～`0x1F` 的现有机型。
+`--port can0` 与 `--channel can0` 等价。`--feedback-base 0x200` 不是固定值；
+扫描器按以下公式计算每个候选电机的预期反馈 ID：
+
+```text
+expected_feedback_id = feedback_base + (motor_id & 0x0F)
+```
+
+例如，电机 ID `6`、反馈 ID `0x206` 必须使用 `--feedback-base 0x200`；电机 ID
+`1`、反馈 ID `0x11` 使用默认值 `0x10`。若电机的 MST_ID 不符合这一组连续映射，
+扫描器无法仅根据 ESC_ID 推导它；必须先获知实际反馈 ID，再写入机型 YAML，或用
+底层单电机命令明确指定 `--motor-id` 和 `--feedback-id`。
+
+扫描结果还会校验以下内容，避免把其他电机的反馈帧误报为当前候选 ID：
+
+- 实际 `arbitration_id` 与候选电机的预期反馈 ID 完全一致；
+- 状态码位于 Damiao 的有效范围；
+- 位置、速度、力矩和温度均为有限数；
+- 温度不是 `255°C` 等无效哨兵值；
+- 位置、速度和力矩不会同时处于所选电机型号的编码极值。
+
+若已知电机没有被扫描到，先检查 `--model`、`--feedback-base` 和 Linux CAN 错误
+计数，不要盲目扩大 ID 范围。
+
+#### YAML 与命令行配置
+
+自定义机型配置中应明确写出后端和通道：
+
+```yaml
+name: RK3588 Arm
+transport: socketcan
+channel: can0
+baud: 1000000  # 仅为兼容字段；SocketCAN 模式下不设置总线比特率
+rate: 500
+```
+
+内置机型目前明确配置为 `transport: dm-serial`。使用同一机型但临时改走板载 CAN
+时，不必编辑内置 YAML，可直接通过命令行覆盖：
+
+```bash
+python -m arx_d_can.examples.example_02_read_state \
+  --arm-model yunyi_v1_0_right \
+  --transport socketcan \
+  --channel can0
+```
+
+#### Python API
+
+读状态和运动控制使用同一组显式连接参数：
+
+```python
+import time
+from arx_d_can import ArxDCanArm
+
+arm = ArxDCanArm(
+    model="yunyi_v1_0_right",
+    transport="socketcan",
+    channel="can0",
+)
+try:
+    arm.connect()
+    print(arm.read_state())
+
+    arm.configure()
+    arm.enable()
+    target = arm.read_state().positions
+    while True:
+        arm.send_joint_positions(target)
+        time.sleep(0.01)
+finally:
+    arm.close()
+```
+
+上例的运动部分会使能整臂并持续保持当前位置，只能在机械臂处于安全环境、有人托稳
+且具备急停时运行。只验证通信时，到 `print(arm.read_state())` 为止，不要调用
+`configure()` 或 `enable()`。低层 API 也支持同样的连接配置：
+
+```python
+from arx_d_can import ArxDCan
+
+arm = ArxDCan(model="yunyi_v1_0_right", transport="socketcan", channel="can0")
+arm.connect()
+```
+
+#### SocketCAN 常见问题
+
+- `No such device`：Linux 没有名为 `can0` 的接口，先检查 `ip link` 和设备树驱动。
+- 扫描结果为 `none`：优先检查接口是否 `UP`、1 Mbps 是否一致、反馈 ID 基址和电机
+  型号是否正确。
+- 扫描到错误 ID：SDK 会校验实际仲裁 ID；若仍出现，保存完整扫描输出和
+  `candump can0`，确认总线上是否有重复反馈 ID。
+- `BUS-OFF`：先修复物理层和波特率，再重新拉起接口；应用层重试不能修复总线错误。
+- `/dev/ttyACM0` 是 dm-serial 设备，不是 SocketCAN；应使用
+  `--transport dm-serial --channel /dev/ttyACM0`。
+- `can0` 是网络接口，不是文件路径；应使用
+  `--transport socketcan --channel can0`，不需要也不应修改 `/dev/ttyACM0` 权限。
 
 ## 使用顺序
 
@@ -60,15 +191,10 @@ python -m arx_d_can.examples.example_01_scan_ids --port /dev/ttyACM0
 python -m arx_d_can.examples.example_02_read_state --port /dev/ttyACM0
 python -m arx_d_can.examples.example_03_clear_faults --port /dev/ttyACM0
 python -m arx_d_can.examples.example_04_send_position \
-  --positions "0,-20,-20,0,0,0" \
-  --velocity-limits "120,120,120,90,90,90" --port /dev/ttyACM0
-python -m arx_d_can.examples.example_04_send_position \
-  --positions "0,-20,-20,0,0,0" --mode mit \
-  --velocities "0,0,0,0,0,0" \
-  --torques "0,0,0,0,0,0" --port /dev/ttyACM0
+  --positions "0,-20,-20,0,0,0" --mode pv --port /dev/ttyACM0
 python -m arx_d_can.examples.example_05_gripper_open_close --port /dev/ttyACM0
 python -m arx_d_can.examples.example_06_benchmark_read_rate \
-  --port /dev/ttyACM0 --target-hz 500 --seconds 5
+  --port /dev/ttyACM0 --hz 500 --seconds 5
 python -m arx_d_can.examples.example_07_send_joint_trajectory \
   "0,-60,-60,0,0,0" --port /dev/ttyACM0 --return-zero
 python -m arx_d_can.examples.example_08_return_zero --port /dev/ttyACM0
@@ -81,18 +207,9 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
   --port /dev/ttyACM0 --seconds 10
 ```
 
-`example_04_send_position.py` 直接发送目标，不做插值或回零，并在发送后默认持续
-刷新目标。它通过 `--mode pv`（默认）使用 POS_VEL 位置速度模式，也可通过
-`--mode mit` 使用 MIT 模式；MIT 的 `kp/kd` 和 PV 的环路参数均读取
-所选机型的硬件 YAML。MIT 还可用 `--torques` 传入每个关节的
-前馈力矩，单位为 N·m，并用 `--velocities` 传入每个关节的目标速度；PV 用
-`--velocity-limits` 覆盖配置
-中的各关节最大速度。速度命令行参数单位均为 deg/s。MIT 的速度和力矩未提供时默认
-为全零，PV 未提供限速时使用 YAML 中各关节的 `vlim`。MIT 目标速度是阻尼项输入，
-不是最大速度限制；需要严格控制运动速度时应使用示例 07 生成插值轨迹。使用
-`Ctrl+C` 会失能全部电机，停止前必须托住机械臂；
-只有显式传入正数 `--hold-seconds` 时才会定时退出。平滑轨迹使用示例 07，直接回零
-使用示例 08。
+示例只展示高层接口。命令刷新、轨迹插值、夹爪防堵转、反馈检查和退出失能均由 SDK
+内部完成。示例 04 用于持续保持一个目标，示例 07 用于平滑运动，示例 08 用于平滑
+返回零位。控制模式目前只支持 PV 和 MIT。
 
 ## 安全机制
 
@@ -124,20 +241,26 @@ SDK 对外提供稳定的异常层级，不要求应用依赖底层 `motor-drive
 - `MotorFaultError`：电机明确返回故障状态码，不属于通讯故障；
 - `CommandTimeoutError`：上层停止更新命令，不属于总线通讯故障。
 
-这些运行期异常都继承 `RuntimeError`，已有的 `except RuntimeError` 仍然有效。默认
-`read_state()` 在机械臂已使能且存在历史状态时会容忍瞬时通讯故障并返回最后状态；
-需要在第一次失败时直接收到异常，可启用严格模式：
+这些运行期异常都继承 `RuntimeError`，已有的 `except RuntimeError` 仍然有效。
+`read_state()` 始终请求新鲜、完整的反馈，第一次失败时就会抛出通信异常，不会把
+历史缓存伪装成当前状态：
 
 ```python
 from arx_d_can import CommunicationError
 
 try:
-    state = arm.read_state(strict_feedback=True)
+    state = arm.read_state()
 except CommunicationError as exc:
     print(exc.operation, exc.motor_names, exc.retryable)
 ```
 
-无论是否启用严格模式，都可以读取当前通讯健康快照：
+只需要最近一次成功状态且不希望发送通信帧时，应显式读取缓存：
+
+```python
+state = arm.read_cached_state()
+```
+
+同时可以读取当前通讯健康快照：
 
 ```python
 health = arm.communication_health
@@ -148,73 +271,47 @@ print(health.last_fresh_feedback_age_s)
 print(health.last_error)
 ```
 
-一次成功的主动完整反馈会清除连续失败计数和当前通讯错误；只读取缓存
-`read_state(request_feedback=False)` 不会把通讯失败计数清零。
+一次成功的 `read_state()` 会清除连续失败计数和当前通讯错误；
+`read_cached_state()` 不会把通讯失败计数清零。后台安全监控仍可在 SDK 内部短暂使用
+最后状态进行安全保持，但不会通过公开的 `read_state()` 静默返回给用户。
 
 ## Python API
 
 ```python
-import time
 from arx_d_can import ArxDCanArm
 
-target = [0.0, -1.047, -1.047, 0.0, 0.0, 0.0]
-arm = ArxDCanArm(port="/dev/ttyACM0")
+arm = ArxDCanArm(model="yunyi_v1_0_right", port="/dev/ttyACM0")
 try:
     arm.connect()
     arm.configure()
     arm.enable()
-    while True:
-        arm.send_joint_positions(target)
-        time.sleep(0.01)
+
+    target = [0.0] * len(arm.joint_names)
+    state = arm.move_joint_positions(target, seconds=6.0)
+    print(state.arm.positions)
 finally:
     arm.close()
 ```
 
-### 重要：MIT 支持显式发送 Kp=0、Kd=0
-
-`send_joint_positions()` 的 `mit_kp`、`mit_kd` 支持标量 `0` 和包含零的关节数组。
-传入标量 `0` 时，SDK 会把它展开成全部机械臂关节的零增益，并原样写入当前 MIT
-控制帧；`0` 不会被当成“未设置”。因此，下面两种写法等价：
+常用接口保持简短：
 
 ```python
-# 标量 0：应用到全部关节（推荐）
-arm.send_joint_positions(
-    positions,
-    torques=torques,
-    mit_kp=0,
-    mit_kd=0,
-    mode="mit",
-)
-
-# 也可以逐关节明确传入 0；数组长度必须等于当前机型的机械臂关节数
-arm.send_joint_positions(
-    positions,
-    torques=torques,
-    mit_kp=[0.0] * len(arm.joint_names),
-    mit_kd=[0.0] * len(arm.joint_names),
-    mode="mit",
-)
+state = arm.read_state()                         # 新鲜完整反馈
+state = arm.read_cached_state()                  # 最近一次成功反馈
+arm.hold_joint_positions(target)                 # 持续保持目标
+arm.move_joint_positions(target, seconds=6.0)    # 平滑运动
+arm.move_gripper(1000)                           # 张开夹爪
+arm.move_gripper(0)                              # 闭合夹爪
+diagnostics = arm.read_motor_diagnostics()        # 只读诊断
 ```
 
-不要省略 `mit_kp` 或 `mit_kd` 来表示零增益。省略参数（默认值为 `None`）表示使用
-机型 YAML 中配置的默认增益。也就是说，只传 `torques` 仍然是“位置阻抗控制 +
-前馈力矩”，不是纯力矩控制：
+### 高级 MIT 控制
 
-```python
-arm.send_joint_positions(
-    positions,
-    velocities=velocities,
-    torques=torques,
-    mit_kp=[20.0, 20.0, 20.0, 5.0, 5.0, 5.0],
-    mit_kd=[2.0, 2.0, 2.0, 0.5, 0.5, 0.5],
-    mode="mit",
-)
-```
+普通位置控制使用机型 YAML 中的默认增益。只有实现阻抗控制或重力补偿时，才需要
+直接使用 `send_joint_positions()` 的速度、力矩和 Kp/Kd 参数。显式传入
+`mit_kp=0、mit_kd=0` 表示零增益；省略参数则使用机型默认值。
 
-`positions` 在 MIT 数据帧中仍是必填字段，但当 `mit_kp=0` 时，位置误差不再产生
-控制力矩；同理，当 `mit_kd=0` 时，目标速度误差不再产生控制力矩。纯力矩输出由
-`torques` 决定。SDK 提供 `GravityCompensationMode` 来完成重力计算、安全检查和
-零增益发送：
+重力补偿已经封装为独立高层模式：
 
 ```python
 from arx_d_can import ArxDCanArm, GravityCompensationMode
@@ -232,26 +329,8 @@ finally:
     gravity.shutdown()
 ```
 
-该模式会从当前位置保持开始，逐帧把 Kp/Kd 降到目标值并把补偿力矩升到目标值；
-退出时执行反向过渡，然后失能。默认 `damping=0`，即活动阶段明确发送
-`mit_kp=0、mit_kd=0`；需要速度阻尼时可设置较小的非零 `damping`。模式还会检查
-力矩、速度、URDF 关节限位和 SDK 故障状态。
-
-纯力矩模式没有位置保持能力，必须持续发送经过限幅和安全检查的力矩。如果希望保留
-速度阻尼，可以使用 `mit_kp=0` 和较小的非零 `mit_kd`。命令超时后，SDK 看门狗会在
-最后一次成功发送的位置恢复 YAML 默认 MIT 增益进行安全保持；这个回退不是继续发送
-零增益重力补偿。生产设备还必须具备物理急停、电机侧保护和可靠的防坠措施。
-
-`example_04_send_position.py` 的命令行参数目前不提供 Kp/Kd 覆盖选项，因此即使传入
-`--torques`，它仍使用 YAML 默认 Kp/Kd。需要发送 `Kp=0、Kd=0` 时，请使用上面的
-Python API，或直接运行示例 12：
-
-```bash
-python -m arx_d_can.examples.example_12_gravity_compensation \
-  --arm-model yunyi_v1_0_right \
-  --port /dev/ttyACM0 \
-  --seconds 10
-```
+MIT 零增益没有位置保持能力，生产设备仍必须具备物理急停、电机侧保护和可靠的
+防坠措施。
 
 ## 多机型配置
 
@@ -350,12 +429,10 @@ Yunyi V1.0 只保留一份完整双臂模型：
 right_arm = ArxDCanArm(
     model="yunyi_v1_0_right",
     port="/dev/ttyACM1",
-    enable_gripper=True,
 )
 left_arm = ArxDCanArm(
     model="yunyi_v1_0_left",
     port="/dev/ttyACM0",
-    enable_gripper=True,
 )
 ```
 
@@ -367,13 +444,18 @@ python -m arx_d_can.examples.example_02_read_state \
   --port /dev/ttyACM0
 ```
 
-示例 02 默认以 10 Hz 持续打印，按 `Ctrl+C` 停止；需要只读取一次时增加
-`--once`。
+示例 02 读取并打印一次状态后自动退出。
 
-当前配置将第 8 个 4310 作为一个夹爪电机，机械联动 URDF 中的两根手指。MIT/PV
-初始增益沿用现有 ARX 机型的保守参数，不视为 Yunyi 实机最终标定值；首次使能前
-应托稳单臂、卸载负载，并逐关节验证方向、零点和增益。左臂关节 `0x09～0x0F`
-和夹爪 `0x01/0x11` 已在 `/dev/ttyACM0` 实机确认。
+当前配置将第 8 个 4310 作为一个夹爪电机，机械联动 URDF 中的两根手指。夹爪只使用
+MIT 模式，默认 `Kp=4.0`、`Kd=0.5`；普通用户调用 `set_gripper(0..1000)` 即可，
+也可以直接调用 `open_gripper()` 或 `close_gripper()`。Yunyi 默认启用内部防堵转：
+检测到持续接触后降低保持刚度，持续过载时向张开方向回退；用户无需操作这套状态机。
+机型配置中存在夹爪时，SDK 会默认连接并读取夹爪；更换末端的用户可显式传入
+`enable_gripper=False`。反馈中的 `state.gripper.opening` 与控制接口使用相同的
+`0～1000` 刻度；原始电机弧度保留在 `state.gripper.motor_position`。
+机械臂关节的初始增益沿用现有 ARX 机型的保守参数，不视为 Yunyi 实机最终标定值；
+首次使能前应托稳单臂、卸载负载，并逐关节验证方向、零点和增益。左臂关节
+`0x09～0x0F` 和夹爪 `0x01/0x11` 已在 `/dev/ttyACM0` 实机确认。
 
 ## 维护工具
 

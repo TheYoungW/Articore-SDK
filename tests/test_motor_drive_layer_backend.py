@@ -125,11 +125,11 @@ def test_parse_scan_ids_accepts_only_validated_hit_lines():
         [
             "[.. ] id=0x1 no reply: timeout",
             f"[hit] id=0x6 feedback_id=0x206 state={state(0x206)}",
-            # Wrong arbitration ID: this is the reported ID-15 false positive.
+            # 仲裁 ID 错误：这是已报告的 ID 15 误检情况。
             f"[hit] id=0xF feedback_id=0x20f state={state(0x206)}",
             f"[hit] id=0x7 feedback_id=0x207 state={state(0x207, t_mos=255)}",
             f"[hit] id=0x8 feedback_id=0x208 state={state(0x208, pos=float('nan'))}",
-            # Position, velocity and torque all at this model's encoding limits.
+            # 位置、速度和力矩均处于该型号的编码极限。
             f"[hit] id=0x9 feedback_id=0x209 state={state(0x209, pos=12.5, vel=10, torq=28)}",
             "[hit] id=0xA feedback_id=0x20A model=4340P",
         ]

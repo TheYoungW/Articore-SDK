@@ -60,31 +60,13 @@ _HEALTHY_DAMIAO_STATUS_CODES = frozenset((0x0, 0x1))  # disabled, enabled
 _COMPLETE_FEEDBACK_ATTEMPTS = 2
 _NATIVE_TORQUE_RANGES = {
     "4310": 10.0,
-    "4310P": 10.0,
-    "4340": 28.0,
     "4340P": 28.0,
-    "4340_v20": 28.0,
-    "6006": 20.0,
-    "8006": 40.0,
     "8009": 54.0,
 }
 _NATIVE_VELOCITY_RANGES = {
-    "3507": 50.0,
     "4310": 30.0,
-    "4310P": 50.0,
-    "4340": 10.0,
     "4340P": 10.0,
-    "4340_v20": 20.0,
-    "6006": 45.0,
-    "8006": 45.0,
     "8009": 45.0,
-    "10010L": 25.0,
-    "10010": 20.0,
-    "H3510": 280.0,
-    "G6215": 45.0,
-    "H6220": 45.0,
-    "JH11": 10.0,
-    "6248P": 20.0,
 }
 
 
@@ -143,7 +125,7 @@ def _load_model_registry() -> dict[str, Any]:
 
 
 def available_models() -> tuple[str, ...]:
-    """Return the built-in model profile names in deterministic order."""
+    """按固定顺序返回内置机型配置名称。"""
     return tuple(sorted(str(name) for name in _load_model_registry()["models"]))
 
 
@@ -218,7 +200,7 @@ def _finite(value: Any, *, field: str) -> float:
 
 
 def _torque_range_scales(joint: JointCfg) -> tuple[float, float]:
-    """Return command and feedback scales for a custom MIT torque range."""
+    """返回自定义 MIT 力矩范围对应的命令与反馈缩放系数。"""
     if joint.torque_range is None:
         return 1.0, 1.0
     native_range = _NATIVE_TORQUE_RANGES.get(joint.model)
@@ -231,7 +213,7 @@ def _torque_range_scales(joint: JointCfg) -> tuple[float, float]:
 
 
 def _velocity_range_scales(joint: JointCfg) -> tuple[float, float]:
-    """Return MIT command and feedback scales for a custom velocity mapping."""
+    """返回自定义 MIT 速度映射对应的命令与反馈缩放系数。"""
     if joint.velocity_range is None:
         return 1.0, 1.0
     native_range = _NATIVE_VELOCITY_RANGES.get(joint.model)
@@ -267,7 +249,7 @@ def _apply_urdf_joint_limits(
     urdf_path: Path | None,
     joints: list[JointCfg],
 ) -> None:
-    """Attach URDF position/effort limits in logical joint coordinates."""
+    """将 URDF 中的位置和力矩限制关联到逻辑关节坐标。"""
     if urdf_path is None:
         return
     root = ET.parse(urdf_path).getroot()
@@ -362,10 +344,10 @@ def load_cfg(
     *,
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Load and validate one model profile.
+    """加载并校验一个机型配置。
 
-    ``hw_yaml`` remains the backward-compatible positional custom-config
-    argument. New code may select a built-in ``model`` instead.
+    ``hw_yaml`` 继续作为兼容旧版的位置参数，用于传入自定义配置；新代码可改用
+    ``model`` 选择内置机型。
     """
     hw_path, selected_model = _resolve_hw_cfg_path(hw_yaml, model=model)
     data = _read_yaml_mapping(hw_path, description="hardware config")
@@ -627,10 +609,6 @@ class NoOpGroup:
         self._mode = "pos_vel"
         return True
 
-    def mode_vel(self) -> bool:
-        self._mode = "vel"
-        return True
-
     def send_mit(
         self,
         pos,
@@ -644,9 +622,6 @@ class NoOpGroup:
         pass
 
     def send_pos_vel(self, pos, vlim=None) -> None:
-        pass
-
-    def send_vel(self, vel) -> None:
         pass
 
     def get_positions(self) -> np.ndarray:
@@ -727,7 +702,7 @@ class JointGroup:
         mit_kd: Optional[np.ndarray] = None,
         mit_tau: Optional[np.ndarray] = None,
     ) -> None:
-        """Enable every motor, optionally seeding an immediate MIT hold."""
+        """使能组内所有电机，并可选择立即写入一条 MIT 保持命令。"""
         hold_vectors = None
         if mit_position is not None:
             n = self.num_joints
@@ -804,7 +779,7 @@ class JointGroup:
         poll_max: int = 20,
         poll_interval: float = 0.05,
     ) -> None:
-        """Disable every motor and verify fresh DISABLED feedback."""
+        """失能组内所有电机，并通过新鲜反馈确认其处于失能状态。"""
         errors = []
         for jc in self._jcfgs:
             try:
@@ -825,7 +800,7 @@ class JointGroup:
         poll_max: int = 20,
         poll_interval: float = 0.05,
     ) -> tuple[str, ...]:
-        """Clear every motor fault in this group and leave all motors disabled."""
+        """清除本组所有电机故障，并确保所有电机保持失能。"""
         completed: list[str] = []
         errors: list[str] = []
         for jc in self._jcfgs:
@@ -834,7 +809,7 @@ class JointGroup:
                 try:
                     motor.disable()
                 except Exception:
-                    # A faulted motor may reject disable until clear_error succeeds.
+                    # 故障电机在 clear_error 成功前可能拒绝失能命令。
                     pass
                 motor.clear_error()
                 time.sleep(0.05)
@@ -931,6 +906,8 @@ class JointGroup:
         self,
         vlim: Optional[np.ndarray] = None,
     ) -> bool:
+        if self.name == "gripper":
+            raise ValueError("the gripper only supports MIT mode")
         self._mode = "pos_vel"
         if vlim is not None:
             self._pv_vlim = np.asarray(vlim, dtype=np.float64).reshape(-1)
@@ -941,19 +918,6 @@ class JointGroup:
                 self._mm[jc.name].ensure_mode(Mode.POS_VEL, 1000)
             except CallError as e:
                 print(f"[{self.name}/mode_pos_vel/{jc.name}] {e}")
-                ok = False
-            time.sleep(0.05)
-        time.sleep(0.2)
-        return ok
-
-    def mode_vel(self) -> bool:
-        self._mode = "vel"
-        ok = True
-        for jc in self._jcfgs:
-            try:
-                self._mm[jc.name].ensure_mode(Mode.VEL, 1000)
-            except CallError as e:
-                print(f"[{self.name}/mode_vel/{jc.name}] {e}")
                 ok = False
             time.sleep(0.05)
         time.sleep(0.2)
@@ -1046,22 +1010,6 @@ class JointGroup:
                         motor_names=(jc.name,),
                     ) from exc
 
-    # ── VEL 发送 ───────────────────────────────────────────────────────
-
-    def send_vel(self, vel: np.ndarray, *, strict: bool = True) -> None:
-        vel = np.asarray(vel, dtype=np.float64).reshape(-1)
-        for i in range(min(len(vel), self.num_joints)):
-            try:
-                jc = self._jcfgs[i]
-                self._mm[jc.name].send_vel(jc.direction * float(vel[i]))
-            except CallError as exc:
-                if strict:
-                    raise _transport_error(
-                        exc,
-                        operation="send_vel",
-                        motor_names=(jc.name,),
-                    ) from exc
-
     # ── 状态读取 ───────────────────────────────────────────────────────
 
     def _request_feedback(self) -> None:
@@ -1079,7 +1027,7 @@ class JointGroup:
         self,
         request_feedback: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Read this group's state and fail if fresh, healthy feedback is unavailable."""
+        """读取本组状态；无法取得新鲜且健康的反馈时抛出异常。"""
         if request_feedback:
             try:
                 self._cm["main"].request_feedback_all(timeout_ms=50)
@@ -1378,7 +1326,7 @@ class ArxDCan:
         poll_max: int = 20,
         poll_interval: float = 0.05,
     ) -> None:
-        """Disable all active motors and verify fresh DISABLED feedback."""
+        """失能所有活动电机，并通过新鲜反馈确认其处于失能状态。"""
         errors = []
         for jc in self._all_joints:
             motor = self._motor_map.get(jc.name)
@@ -1424,7 +1372,7 @@ class ArxDCan:
         poll_max: int = 20,
         poll_interval: float = 0.05,
     ) -> tuple[str, ...]:
-        """Clear selected motor faults, attempting every motor before reporting errors."""
+        """清除所选电机故障；尝试处理全部目标后再统一报告错误。"""
         configured_names = {joint.name for joint in self._all_joints}
         selected = set(joint_names or configured_names)
         unknown = selected.difference(configured_names)
@@ -1443,7 +1391,7 @@ class ArxDCan:
                 try:
                     motor.disable()
                 except Exception:
-                    # A faulted motor may reject disable until clear_error succeeds.
+                    # 故障电机在 clear_error 成功前可能拒绝失能命令。
                     pass
                 motor.clear_error()
                 time.sleep(0.05)
@@ -1475,7 +1423,7 @@ class ArxDCan:
         verify_velocity: float = 0.05,
         verify_samples: int = 3,
     ) -> tuple[str, ...]:
-        """Set selected motor positions to zero and verify fresh feedback."""
+        """将所选电机的当前位置设为零点，并通过新鲜反馈验证。"""
         if verify_samples < 1:
             raise ValueError("verify_samples must be at least 1")
         if not np.isfinite(verify_tolerance) or verify_tolerance < 0.0:
@@ -1497,8 +1445,8 @@ class ArxDCan:
         if not targets:
             raise ValueError("at least one joint must be selected for zeroing")
 
-        # Validate every target before starting this non-atomic operation and
-        # retain the pre-zero state for meaningful verification errors.
+        # 此操作并非原子操作，因此开始前先校验全部目标，并保留写零前状态，
+        # 以便给出有意义的验证错误。
         before_states = {}
         for jc in targets:
             before_states[jc.name] = self._wait_for_healthy_state(
@@ -1669,7 +1617,7 @@ class ArxDCan:
         self,
         joint_names: Optional[List[str]] = None,
     ) -> dict[str, int]:
-        """Return the latest motor status for selected joints without requesting frames."""
+        """不请求新帧，直接返回所选关节的最新电机状态。"""
         joints_by_name = {joint.name: joint for joint in self._all_joints}
         if joint_names is None:
             selected_joints = self._all_joints
@@ -1704,7 +1652,7 @@ class ArxDCan:
         self,
         joint_names: Optional[List[str]] = None,
     ) -> dict[str, Any]:
-        """Return cached feedback counters and ages without transmitting frames."""
+        """不发送任何帧，直接返回缓存反馈的计数和数据年龄。"""
         joints_by_name = {joint.name: joint for joint in self._all_joints}
         if joint_names is None:
             selected_joints = self._all_joints
@@ -1729,11 +1677,10 @@ class ArxDCan:
     # ── 生命周期 ────────────────────────────────────────────────────────
 
     def disconnect(self, *, disable: bool = True) -> None:
-        """Close the bus, optionally disabling motors first.
+        """关闭总线，并可选择先失能电机。
 
-        ``disable=False`` is intended only for clients that never enabled or
-        commanded a motor, such as read-only diagnostics.  Motion code should
-        keep the default so physical disable is attempted and verified.
+        ``disable=False`` 仅适用于从未使能或控制电机的客户端，例如只读诊断工具。
+        运动控制代码应保留默认值，以便尝试并验证物理失能。
         """
         if not self._connected:
             return

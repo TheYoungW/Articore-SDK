@@ -1,4 +1,4 @@
-"""Force-limited gripper closing state machine for MIT control."""
+"""用于 MIT 控制的夹爪限力闭合状态机。"""
 from __future__ import annotations
 
 from collections import deque

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 08: move one joint through a slow trajectory and log tracking load."""
+"""维护工具：缓慢移动单个关节并记录轨迹跟踪负载。"""
 from __future__ import annotations
 
 import argparse
@@ -127,7 +127,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
         arm.connect()
         arm.configure()
         arm.enable()
-        initial_state = arm.read_state(request_feedback=True)
+        initial_state = arm.read_state()
         prepose = parse_optional_prepose(args.prepose, expected_count=joint_count)
         base = list(initial_state.arm.positions if prepose is None else prepose)
         center = base[joint_index] if args.center_rad is None else float(args.center_rad)
@@ -146,7 +146,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
             )
 
         if args.move_seconds > 0.0:
-            current_state = arm.read_state(request_feedback=True)
+            current_state = arm.read_state()
             start = list(current_state.arm.positions)
             start[joint_index] = center
             interpolate_joint_positions(arm, current_state.arm.positions, start, seconds=args.move_seconds, hz=args.hz)
@@ -161,7 +161,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
             command = list(base)
             command[joint_index] = target
             arm.send_joint_positions(command)
-            state = arm.read_state(request_feedback=True)
+            state = arm.read_state()
             actual = float(state.arm.positions[joint_index])
             velocity = float(state.arm.velocities[joint_index]) if state.arm.velocities else 0.0
             torque = float(state.arm.torques[joint_index]) if state.arm.torques else 0.0
@@ -175,7 +175,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
                 time.sleep(delay)
 
         if args.return_center:
-            current = arm.read_state(request_feedback=True).arm.positions
+            current = arm.read_state().arm.positions
             target = list(current)
             target[joint_index] = center
             interpolate_joint_positions(arm, current, target, seconds=args.return_seconds, hz=args.hz)
@@ -185,7 +185,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
             joint_count=joint_count,
         )
         if zero_target is not None:
-            current = arm.read_state(request_feedback=True).arm.positions
+            current = arm.read_state().arm.positions
             print("returning all arm joints to zero")
             interpolate_joint_positions(
                 arm,
