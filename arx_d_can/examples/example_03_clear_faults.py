@@ -11,10 +11,9 @@ from arx_d_can.examples.common import add_connection_arguments
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
         model=args.arm_model,
-        config_path=args.config_path,
         port=args.port,
-        baud=args.baud,
         transport=args.transport,
+        baud=args.baud,
         enable_gripper=True,
     )
     arm.connect()

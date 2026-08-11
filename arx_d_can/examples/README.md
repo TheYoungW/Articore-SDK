@@ -1,10 +1,11 @@
 # ARX-D-CAN 示例
 
 示例只展示用户需要调用的高层接口。轨迹插值、命令刷新、夹爪防堵转、通信检查和
-安全失能均由 SDK 内部完成。
+安全失能均由 SDK 内部完成。调用 `enable()` 时 SDK 会自动配置所选控制模式，普通
+用户不需要额外调用 `configure()`。
 
-所有命令都可以使用 `--arm-model yunyi_v1_0_left` 或
-`--arm-model yunyi_v1_0_right` 选择机型，并用 `--port` 覆盖配置中的通信端口。
+所有示例默认使用 `yunyi_v1_0_right`，直接传入 `--port` 即可运行。左臂使用
+`--arm-model yunyi_v1_0_left`，普通用户不需要指定自定义配置文件。
 
 ## 01 扫描电机 ID
 
@@ -43,7 +44,8 @@ python -m arx_d_can.examples.example_04_send_position \
   --port /dev/ttyACM0
 ```
 
-`--mode` 只支持 `pv` 和 `mit`。示例会持续刷新目标，按 `Ctrl+C` 后自动失能。
+`--mode` 只支持 `pv` 和 `mit`。示例会停留在最后目标位置，并由 SDK 在内部持续刷新
+最后一帧；按 `Ctrl+C` 后自动失能。
 
 ```python
 arm.hold_joint_positions(target)
@@ -113,7 +115,8 @@ python -m arx_d_can.examples.example_10_set_zero_current_position \
   --port /dev/ttyACM0
 ```
 
-这是维护操作，会修改电机持久零点。执行前必须确认机械臂静止并位于正确机械零位。
+这是维护操作，会修改机械臂电机的持久零点。运行前先在电机失能状态下将机械臂手动
+摆到正确机械零位；示例只连接、调零和断开，不会使能机械臂，也不会修改夹爪零点。
 
 ## 11 录制和回放轨迹
 
@@ -125,6 +128,9 @@ python -m arx_d_can.examples.example_11_record_and_replay_trajectory \
   replay trajectory.json --port /dev/ttyACM0
 ```
 
+录制时电机保持失能，用户可以手动拖动机械臂和夹爪；回放时才会自动使能，并在结束
+或异常退出后自动失能。基础示例只保留录制和回放，高级的重力补偿录制由维护工具提供。
+
 ## 12 重力补偿
 
 ```bash
@@ -135,12 +141,3 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
 ```
 
 重力补偿会使机械臂可被手动拖动，运行前必须托稳机械臂并远离关节限位。
-
-## 13 关节行程测试
-
-这是面向维护人员的薄入口，复杂校验位于 `arx_d_can.service_tools`，不属于普通
-Yunyi 用户的首次使用流程。
-
-```bash
-python -m arx_d_can.examples.example_13_test_joint_range --help
-```

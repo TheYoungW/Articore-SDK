@@ -47,7 +47,7 @@ def parse_joint_values(
     return values
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, allow_custom_config: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="运行 MIT 重力补偿")
     parser.add_argument("--seconds", type=non_negative_float, default=0.0)
     parser.add_argument("--hz", type=positive_float, default=100.0)
@@ -58,7 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--joint-scales")
     parser.add_argument("--damping", type=non_negative_float, default=0.0)
     parser.add_argument("--countdown", type=non_negative_int, default=3)
-    add_connection_arguments(parser)
+    add_connection_arguments(
+        parser,
+        allow_custom_config=allow_custom_config,
+        default_arm_model=None if allow_custom_config else "yunyi_v1_0_right",
+    )
     return parser
 
 

@@ -234,7 +234,6 @@ class GravityCompensationMode:
             torques=torques,
             mit_kp=kp,
             mit_kd=kd,
-            mode="mit",
             require_enabled=require_enabled,
         )
 

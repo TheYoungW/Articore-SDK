@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
-"""示例 10：安全地将当前静止位置设置为电机零点。"""
+"""示例 10：将机械臂当前位置设置为电机零点。"""
 from __future__ import annotations
 
-from collections.abc import Sequence
+import argparse
 
-from arx_d_can.service_tools.zero_current_position import (
-    build_parser,
-    main as zero_current_position,
-)
+from arx_d_can import ArxDCanArm
+from arx_d_can.examples.common import add_connection_arguments
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = build_parser(
-        description="示例 10：确认电机静止后，将当前位置写为零点并验证。"
+def main(args: argparse.Namespace) -> None:
+    arm = ArxDCanArm(
+        model=args.arm_model,
+        port=args.port,
+        transport=args.transport,
+        baud=args.baud,
+        enable_gripper=True,
     )
-    zero_current_position(parser.parse_args(argv))
+
+    arm.connect()
+    print("机器人连接成功，电机保持失能状态")
+
+    try:
+        completed = arm.set_zero(joint_names=arm.joint_names)
+        print("零点设置完成：", ", ".join(completed))
+    finally:
+        arm.close()
+        print("已断开连接")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_connection_arguments(parser)
+    main(parser.parse_args())

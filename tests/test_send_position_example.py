@@ -7,11 +7,12 @@ from arx_d_can.examples import example_04_send_position as example
 
 def test_parser_only_exposes_simple_position_options() -> None:
     parser = example.build_parser()
+    destinations = {action.dest for action in parser._actions}
 
     assert parser.parse_args([]).mode == "pv"
+    assert parser.parse_args([]).arm_model == "yunyi_v1_0_right"
     assert parser.parse_args(["--mode", "mit"]).mode == "mit"
-    assert parser.parse_args([]).seconds == 0.0
-    assert parser.parse_args([]).hz == 100.0
+    assert "config_path" not in destinations
 
 
 def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
@@ -23,16 +24,11 @@ def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
         def connect(self):
             captured["calls"].append("connect")
 
-        def configure(self):
-            captured["calls"].append("configure")
-
         def enable(self):
             captured["calls"].append("enable")
 
-        def hold_joint_positions(self, positions, *, seconds, hz):
+        def hold_joint_positions(self, positions):
             captured["target"] = tuple(positions)
-            captured["seconds"] = seconds
-            captured["hz"] = hz
 
         def close(self):
             captured["calls"].append("close")
@@ -45,7 +41,7 @@ def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
 
     monkeypatch.setattr(example, "ArxDCanArm", fake_arm)
     args = example.build_parser().parse_args(
-        ["--mode", "mit", "--positions", "0,10,20,30,40,50", "--seconds", "2"]
+        ["--mode", "mit", "--positions", "0,10,20,30,40,50"]
     )
 
     example.main(args)
@@ -53,9 +49,7 @@ def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
     assert captured["enable_gripper"] is True
     assert captured["mode"] == "mit"
     assert captured["port"] is None
-    assert captured["calls"] == ["connect", "configure", "enable", "close"]
+    assert captured["calls"] == ["connect", "enable", "close"]
     assert captured["target"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 10, 20, 30, 40, 50))
     )
-    assert captured["seconds"] == 2.0
-    assert captured["hz"] == 100.0

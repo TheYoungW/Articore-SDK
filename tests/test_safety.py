@@ -664,6 +664,30 @@ def test_joint_positions_use_configured_control_mode(mode: str) -> None:
         arm.close()
 
 
+def test_control_mode_can_only_change_while_disabled() -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="pv",
+        arm_joints=(JOINT,),
+        watchdog_enabled=False,
+    )
+    arm = ArxDCanArm(config=config)
+    robot = FakeRobot()
+    arm.robot = robot
+    arm.connect()
+    arm.enable()
+    try:
+        with pytest.raises(RuntimeError, match=r"disable\(\) first"):
+            arm.configure("mit")
+        assert robot.arm.mode_calls == ["pv"]
+
+        arm.disable()
+        arm.configure("mit")
+        arm.enable()
+        assert robot.arm.mode_calls == ["pv", "mit"]
+    finally:
+        arm.close()
+
+
 def test_pv_mode_rejects_mit_torques() -> None:
     config = ArxDCanConfig(
         arm_control_mode="pv",
@@ -714,7 +738,7 @@ def test_mit_packet_can_override_kp_and_kd_without_changing_defaults() -> None:
 
 def test_scalar_zero_mit_gains_apply_to_every_joint() -> None:
     config = ArxDCanConfig(
-        arm_control_mode="pv",
+        arm_control_mode="mit",
         arm_joints=(JOINT,),
         watchdog_enabled=False,
     )
@@ -730,10 +754,9 @@ def test_scalar_zero_mit_gains_apply_to_every_joint() -> None:
             torques=[0.4],
             mit_kp=0,
             mit_kd=0,
-            mode="mit",
         )
 
-        assert robot.arm.mode_calls == ["pv", "mit"]
+        assert robot.arm.mode_calls == ["mit"]
         np.testing.assert_allclose(robot.arm.sent_mit[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_velocities[-1], [0.0])
         np.testing.assert_allclose(robot.arm.sent_mit_kp[-1], [0.0])
@@ -896,7 +919,7 @@ def test_open_and_close_gripper_use_mapped_endpoints() -> None:
         arm.close()
 
 
-def test_clear_fault_requires_explicit_reconfigure_and_enable() -> None:
+def test_enable_reconfigures_automatically_after_clear_fault() -> None:
     arm, robot = make_arm()
     try:
         arm.send_joint_positions([0.0])
@@ -907,16 +930,14 @@ def test_clear_fault_requires_explicit_reconfigure_and_enable() -> None:
         assert not arm.safe_holding
         assert arm.enabled
         assert robot.estop_calls == estop_calls
-        with pytest.raises(RuntimeError, match="configured before enable"):
-            arm.enable()
-        arm.configure()
         arm.enable()
         assert arm.enabled
+        assert robot.arm.mode_calls == ["pv"]
     finally:
         arm.close()
 
 
-def test_clear_motor_faults_clears_hardware_and_leaves_arm_disabled() -> None:
+def test_clear_motor_faults_leaves_arm_disabled_until_enable() -> None:
     arm, robot = make_arm(timeout=1.0, grace=1.0)
     try:
         arm._faulted = True
@@ -929,8 +950,9 @@ def test_clear_motor_faults_clears_hardware_and_leaves_arm_disabled() -> None:
         assert not arm.enabled
         assert not arm.faulted
         assert arm.fault_reason is None
-        with pytest.raises(RuntimeError, match="configured before enable"):
-            arm.enable()
+        arm.enable()
+        assert arm.enabled
+        assert robot.arm.mode_calls == ["pv", "pv"]
     finally:
         arm.close()
 

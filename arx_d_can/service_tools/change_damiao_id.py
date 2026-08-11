@@ -251,5 +251,9 @@ if __name__ == "__main__":
     parser.add_argument("--verify-delay", type=float, default=0.2)
     parser.add_argument("--store", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--yes", action="store_true", help="Actually write the new ID")
-    add_connection_arguments(parser)
+    add_connection_arguments(
+        parser,
+        allow_custom_config=True,
+        default_arm_model=None,
+    )
     main(parser.parse_args())

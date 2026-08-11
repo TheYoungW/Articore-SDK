@@ -14,24 +14,36 @@ from arx_d_can.driver import SUPPORTED_TRANSPORTS
 DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 1_000_000
 DEFAULT_HZ = 100.0
+DEFAULT_ARM_MODEL = "yunyi_v1_0_right"
 ZERO_ARM_POSITION = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
-def add_connection_arguments(parser: ArgumentParser) -> None:
-    profile = parser.add_mutually_exclusive_group()
+def add_connection_arguments(
+    parser: ArgumentParser,
+    *,
+    allow_custom_config: bool = False,
+    default_arm_model: str | None = DEFAULT_ARM_MODEL,
+) -> None:
+    """添加连接参数；普通示例默认只向用户展示内置机型。"""
+    profile = (
+        parser.add_mutually_exclusive_group()
+        if allow_custom_config
+        else parser
+    )
     profile.add_argument(
         "--arm-model",
-        default=None,
-        help="内置机械臂机型名称",
+        default=default_arm_model,
+        help=f"机械臂机型；默认 {default_arm_model or '使用 SDK 默认配置'}",
     )
-    profile.add_argument(
-        "--config-path",
-        "--hardware-config",
-        dest="config_path",
-        type=Path,
-        default=None,
-        help="自定义机械臂硬件 YAML，不能与 --arm-model 同时使用",
-    )
+    if allow_custom_config:
+        profile.add_argument(
+            "--config-path",
+            "--hardware-config",
+            dest="config_path",
+            type=Path,
+            default=None,
+            help="自定义机械臂硬件 YAML，不能与 --arm-model 同时使用",
+        )
     parser.add_argument(
         "--port",
         "--channel",
@@ -69,7 +81,7 @@ def make_arm(
         )
     return ArxDCanArm(
         model=args.arm_model,
-        config_path=args.config_path,
+        config_path=getattr(args, "config_path", None),
         port=args.port,
         baud=args.baud,
         transport=getattr(args, "transport", None),

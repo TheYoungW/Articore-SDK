@@ -14,10 +14,9 @@ from arx_d_can.service_tools.gravity_compensation_cli import (
 def main(args) -> None:
     arm = ArxDCanArm(
         model=args.arm_model,
-        config_path=args.config_path,
         port=args.port,
-        baud=args.baud,
         transport=args.transport,
+        baud=args.baud,
         control_mode="mit",
         enable_gripper=True,
     )

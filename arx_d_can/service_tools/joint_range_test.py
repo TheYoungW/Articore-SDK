@@ -272,7 +272,11 @@ def build_parser() -> argparse.ArgumentParser:
             "URDF limits."
         )
     )
-    add_connection_arguments(parser)
+    add_connection_arguments(
+        parser,
+        allow_custom_config=True,
+        default_arm_model=None,
+    )
     parser.add_argument(
         "--joints",
         type=parse_joint_names,

@@ -5,11 +5,11 @@ import math
 import pytest
 
 from arx_d_can import default_config
-from arx_d_can.service_tools import joint_range_test as example
+from arx_d_can.service_tools import joint_range_test as service
 
 
 def test_parser_defaults_to_corina_right_leg_joints_1_through_4() -> None:
-    args = example.build_parser().parse_args([])
+    args = service.build_parser().parse_args([])
 
     assert args.arm_model is None
     assert args.joints == tuple(f"right_leg_joint{index}" for index in range(1, 5))
@@ -21,7 +21,7 @@ def test_parser_defaults_to_corina_right_leg_joints_1_through_4() -> None:
 def test_select_joint_config_preserves_requested_order_and_directions() -> None:
     config = default_config(model="corina_v2")
 
-    selected = example.select_joint_config(
+    selected = service.select_joint_config(
         config,
         ("right_leg_joint4", "right_leg_joint1"),
     )
@@ -31,7 +31,7 @@ def test_select_joint_config_preserves_requested_order_and_directions() -> None:
     assert selected.joint_transform_path is None
     assert selected.gripper is None
 
-    arm = example.ArxDCanArm(config=selected)
+    arm = service.ArxDCanArm(config=selected)
     assert arm.joint_names == ("right_leg_joint4", "right_leg_joint1")
 
 
@@ -41,7 +41,7 @@ def test_sweep_targets_reach_95_percent_of_each_urdf_limit() -> None:
         joint for joint in config.arm_joints if joint.name == "right_leg_joint2"
     )
 
-    lower, upper = example.calculate_sweep_targets(
+    lower, upper = service.calculate_sweep_targets(
         joint,
         math.radians(-10.0),
         range_fraction=0.95,
@@ -58,7 +58,7 @@ def test_sweep_rejects_start_outside_urdf_limits() -> None:
     )
 
     with pytest.raises(ValueError, match="starts outside its URDF range"):
-        example.calculate_sweep_targets(
+        service.calculate_sweep_targets(
             joint,
             math.radians(-1.0),
             range_fraction=0.95,

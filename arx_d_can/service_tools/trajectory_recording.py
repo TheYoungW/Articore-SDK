@@ -155,7 +155,6 @@ def send_zero_stiffness(
         torques=zeros,
         mit_kp=zeros,
         mit_kd=zeros,
-        mode="mit",
         require_enabled=require_enabled,
     )
 
@@ -256,7 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
     replay_parser.add_argument("file", type=Path)
 
     for command in (record_parser, replay_parser):
-        add_connection_arguments(command)
+        add_connection_arguments(
+            command,
+            allow_custom_config=True,
+            default_arm_model=None,
+        )
     return parser
 
 

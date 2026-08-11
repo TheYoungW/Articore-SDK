@@ -235,5 +235,9 @@ if __name__ == "__main__":
     parser.add_argument("--no-return-zero", action="store_true")
     parser.add_argument("--return-zero-seconds", type=float, default=6.0)
     parser.add_argument("--csv", default="", help="Optional CSV output path")
-    add_connection_arguments(parser)
+    add_connection_arguments(
+        parser,
+        allow_custom_config=True,
+        default_arm_model=None,
+    )
     main(parser.parse_args())

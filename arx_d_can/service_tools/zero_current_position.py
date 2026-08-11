@@ -169,7 +169,11 @@ def build_parser(
     parser.add_argument("--max-velocity", type=float, default=0.05)
     parser.add_argument("--max-movement", type=float, default=0.01)
     parser.add_argument("--verify-tolerance", type=float, default=0.02)
-    add_connection_arguments(parser)
+    add_connection_arguments(
+        parser,
+        allow_custom_config=True,
+        default_arm_model=None,
+    )
     return parser
 
 

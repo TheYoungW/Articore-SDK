@@ -11,10 +11,9 @@ from arx_d_can.examples.common import add_connection_arguments
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
         model=args.arm_model,
-        config_path=args.config_path,
         port=args.port,
-        baud=args.baud,
         transport=args.transport,
+        baud=args.baud,
         control_mode="mit",
         enable_gripper=True,
     )
@@ -22,7 +21,6 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
 
     try:
-        arm.configure()
         arm.enable()
 
         print("张开夹爪")

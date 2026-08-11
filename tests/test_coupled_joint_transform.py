@@ -129,7 +129,6 @@ def test_corina_sdk_transparently_converts_joint_commands(monkeypatch) -> None:
         virtual_position,
         velocities=virtual_velocity,
         torques=virtual_torque,
-        mode="mit",
     )
 
     command = arm._last_mit_command

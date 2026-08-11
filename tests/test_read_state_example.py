@@ -32,7 +32,6 @@ def test_reads_and_prints_state_inline(monkeypatch) -> None:
     example.main(
         SimpleNamespace(
             arm_model=None,
-            config_path=None,
             port="/dev/ttyACM0",
             baud=1_000_000,
             transport="dm-serial",

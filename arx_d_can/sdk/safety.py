@@ -103,7 +103,7 @@ class _SafetyMixin:
         if self._faulted:
             raise RuntimeError(
                 f"ARX-D-CAN arm is faulted: {self._fault_reason}; "
-                "call clear_fault(), configure(), and enable() to recover"
+                "call clear_fault() and enable() to recover"
             )
 
     def _record_successful_command(

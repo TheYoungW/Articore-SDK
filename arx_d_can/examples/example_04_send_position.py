@@ -15,10 +15,9 @@ from arx_d_can.examples.common import (
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
         model=args.arm_model,
-        config_path=args.config_path,
         port=args.port,
-        baud=args.baud,
         transport=args.transport,
+        baud=args.baud,
         control_mode=args.mode,
         enable_gripper=True,
     )
@@ -31,16 +30,11 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
 
     try:
-        arm.configure()
         arm.enable()
         print(f"已进入 {args.mode.upper()} 模式")
         print("目标角度：", [round(math.degrees(value), 2) for value in target])
-        print("按 Ctrl+C 停止并失能机械臂")
-        arm.hold_joint_positions(
-            target,
-            seconds=None if args.seconds == 0 else args.seconds,
-            hz=args.hz,
-        )
+        print("保持目标位置，按 Ctrl+C 停止并失能机械臂")
+        arm.hold_joint_positions(target)
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
@@ -56,8 +50,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="逗号分隔的关节角度，单位为度",
     )
     parser.add_argument("--mode", choices=("pv", "mit"), default="pv")
-    parser.add_argument("--seconds", type=float, default=0.0, help="保持时间；0 表示持续保持")
-    parser.add_argument("--hz", type=float, default=100.0, help="命令刷新频率")
     add_connection_arguments(parser)
     return parser
 

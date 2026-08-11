@@ -3,7 +3,38 @@ from types import SimpleNamespace
 
 import pytest
 
+from arx_d_can.examples import example_11_record_and_replay_trajectory as cli_example
 from arx_d_can.service_tools import trajectory_recording as example
+
+
+def test_numbered_example_shows_direct_record_flow(monkeypatch, tmp_path):
+    captured = {"calls": []}
+
+    class FakeArm:
+        joint_names = ("joint1", "joint2")
+
+        def connect(self):
+            captured["calls"].append("connect")
+
+        def close(self):
+            captured["calls"].append("close")
+
+        def record_trajectory(self, path, *, seconds, hz):
+            captured.update(path=path, seconds=seconds, hz=hz)
+            return 1
+
+    monkeypatch.setattr(cli_example, "ArxDCanArm", lambda **_kwargs: FakeArm())
+    path = tmp_path / "trajectory.json"
+    args = cli_example.build_parser().parse_args(
+        ["record", str(path), "--seconds", "2", "--hz", "50"]
+    )
+
+    cli_example.main(args)
+
+    assert captured["calls"] == ["connect", "close"]
+    assert captured["seconds"] == 2.0
+    assert captured["hz"] == 50.0
+    assert captured["path"] == path
 
 
 def test_frequency_defaults_to_100_hz_and_is_limited_to_500_hz():
@@ -207,9 +238,8 @@ def test_zero_stiffness_command_has_no_position_velocity_or_torque_gain():
     assert positions == (0.1, -0.2)
     assert command == {
         "velocities": (0.0, 0.0),
-        "torques": (0.0, 0.0),
-        "mit_kp": (0.0, 0.0),
-        "mit_kd": (0.0, 0.0),
-        "mode": "mit",
-        "require_enabled": False,
-    }
+            "torques": (0.0, 0.0),
+            "mit_kp": (0.0, 0.0),
+            "mit_kd": (0.0, 0.0),
+            "require_enabled": False,
+        }

@@ -150,7 +150,6 @@ try:
     arm.connect()
     print(arm.read_state())
 
-    arm.configure()
     arm.enable()
     target = arm.read_state().positions
     while True:
@@ -162,7 +161,7 @@ finally:
 
 上例的运动部分会使能整臂并持续保持当前位置，只能在机械臂处于安全环境、有人托稳
 且具备急停时运行。只验证通信时，到 `print(arm.read_state())` 为止，不要调用
-`configure()` 或 `enable()`。低层 API 也支持同样的连接配置：
+`enable()`。低层 API 也支持同样的连接配置：
 
 ```python
 from arx_d_can import ArxDCan
@@ -208,8 +207,12 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
 ```
 
 示例只展示高层接口。命令刷新、轨迹插值、夹爪防堵转、反馈检查和退出失能均由 SDK
-内部完成。示例 04 用于持续保持一个目标，示例 07 用于平滑运动，示例 08 用于平滑
-返回零位。控制模式目前只支持 PV 和 MIT。
+内部完成。示例 04 会持续刷新并停留在最后目标位置，直到用户按 `Ctrl+C`；示例 07
+用于平滑运动，示例 08 用于平滑返回零位。控制模式目前只支持 PV 和 MIT。
+
+控制模式在创建 `ArxDCanArm(control_mode="pv" | "mit")` 时确定，首次调用
+`enable()` 时自动写入电机。电机使能期间禁止切换模式；确需切换时必须依次调用
+`disable()`、`configure("mit" | "pv")` 和 `enable()`。
 
 ## 安全机制
 
@@ -219,8 +222,8 @@ python -m arx_d_can.examples.example_12_gravity_compensation \
   看门狗读取实际关节位置并以 100 Hz 进入 `SAFE_HOLD`，保持手臂和夹爪当前位置。
 - `SAFE_HOLD` 期间一般发送失败会记录原因并按保持频率继续重试；耦合关节反馈过期
   属于不可继续使用旧状态的硬故障，会尝试整臂失能。
-- 故障不会自动恢复。确认硬件和空间安全后调用 `recover()`；低层 API 也可以依次
-  调用 `clear_fault()`、`configure()`、`enable()`。
+- 故障不会自动恢复。确认硬件和空间安全后调用 `recover()`；低层 API 也可以先
+  调用 `clear_fault()`，再调用会自动重新配置控制模式的 `enable()`。
 - `close()` 总是停止看门狗、尝试失能所有电机并关闭总线。
 
 看门狗参数位于 `arx_d_can/config/arx_d_can_dm.yaml` 的 `safety`。它是进程内
@@ -283,7 +286,6 @@ from arx_d_can import ArxDCanArm
 arm = ArxDCanArm(model="yunyi_v1_0_right", port="/dev/ttyACM0")
 try:
     arm.connect()
-    arm.configure()
     arm.enable()
 
     target = [0.0] * len(arm.joint_names)
@@ -358,8 +360,10 @@ arm = ArxDCanArm(model="arx_d_can", port="/dev/ttyACM0")
 arm = ArxDCanArm(config_path="/path/to/my_arm.yaml")
 ```
 
-对应的示例命令为 `--config-path /path/to/my_arm.yaml`。`--arm-model` 与
-`--config-path` 互斥；没有指定时使用 `models.yaml` 的 `default_model`。
+`config_path` 是面向自定义机械臂的高级 Python API，不在编号 example 中显示；
+编号 example 默认使用 `yunyi_v1_0_right`，通过 `--arm-model` 可以选择其他内置
+机型。直接使用 `ArxDCanArm` 且没有指定配置时，仍使用 `models.yaml` 的
+`default_model`。
 若某个电机的正方向与机械臂坐标相反，在该关节配置中设置 `direction: -1`；
 SDK 会同时反转位置、速度和力矩的指令及反馈，其他关节省略该字段即可。
 若实际电机的 MIT 协议映射范围与底层型号默认值不同，设置
@@ -474,7 +478,8 @@ python -m arx_d_can.examples.example_10_set_zero_current_position \
   --port /dev/ttyACM0
 ```
 
-默认只调所选机型的手臂关节；夹爪另加 `--include-gripper`。其他维护工具：
+编号示例只连接后设置机械臂关节零点，全程不会使能电机。需要选择单个关节或同时处理
+夹爪时，使用上面的高级维护工具及其 `--joint`、`--include-gripper` 参数。其他维护工具：
 
 ```bash
 python -m arx_d_can.service_tools.change_damiao_id --port /dev/ttyACM0

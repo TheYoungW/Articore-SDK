@@ -298,8 +298,8 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     def connect(self) -> None:
         """打开配置的总线并重置 SDK 临时状态。
 
-        此操作可重复调用，不会配置控制模式或使能电机。发送运动命令前，调用者必须
-        显式调用 :meth:`configure` 和 :meth:`enable`。
+        此操作可重复调用，不会配置控制模式或使能电机。只读场景连接后可直接读取
+        状态；需要运动时调用 :meth:`enable`，SDK 会自动完成首次模式配置。
         """
         if self._connected:
             return
@@ -321,12 +321,18 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             self._last_state = None
 
     def configure(self, mode: str | None = None) -> None:
-        """在使能电机前配置机械臂模式和可选夹爪。
+        """显式配置机械臂模式和可选夹爪，供高级控制与维护流程使用。
 
         ``mode`` 会覆盖机械臂组的默认模式。夹爪启用时始终进入 MIT 模式。
-        任何配置失败都会锁存故障，并尝试紧急失能。
+        普通用户不需要主动调用此方法，首次 :meth:`enable` 会自动配置构造机械臂时
+        选择的控制模式。任何配置失败都会锁存故障，并尝试紧急失能。
         """
         self._require_operational()
+        if self._enabled:
+            raise RuntimeError(
+                "cannot configure control mode while the arm is enabled; "
+                "call disable() first"
+            )
         try:
             self.configure_mode(mode or self._mode)
             if self.enable_gripper and self.config.gripper is not None:
@@ -380,14 +386,14 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     ) -> None:
         """使能活动电机并启动命令安全监控。
 
-        机械臂必须已连接并完成配置。在 MIT 模式下，可在使能时发送一条完整的初始
-        命令，避免电机短暂采用无关目标。初始向量顺序与 :attr:`joint_names` 一致；
-        未提供的速度和力矩默认为零，未提供的增益使用机型配置。操作失败会锁存故障，
-        并尝试失能机器人。
+        机械臂必须已连接；首次使能时会自动配置构造机械臂时选择的控制模式。在 MIT
+        模式下，可在使能时发送一条完整的初始命令，避免电机短暂采用无关目标。初始
+        向量顺序与 :attr:`joint_names` 一致；未提供的速度和力矩默认为零，未提供的
+        增益使用机型配置。操作失败会锁存故障，并尝试失能机器人。
         """
         self._require_operational()
         if not self._configured:
-            raise RuntimeError("ARX-D-CAN arm must be configured before enable")
+            self.configure()
         if initial_positions is not None and self._mode != "mit":
             raise ValueError("initial position seeding is only supported in MIT mode")
         self._reset_coupled_motor_torque_state()
@@ -537,8 +543,8 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     def clear_fault(self) -> None:
         """确认反馈可用后，清除 SDK 的故障锁存。
 
-        除非从 ``SAFE_HOLD`` 状态开始恢复，否则会紧急失能电机。配置标志会被清除，
-        恢复正常运行前必须重新配置并使能。
+        除非从 ``SAFE_HOLD`` 状态开始恢复，否则会紧急失能电机。从安全保持恢复时
+        保留当前控制模式；其他情况由下一次 :meth:`enable` 自动重新配置并使能。
         """
         self._require_connected()
         was_safe_holding = self._safe_holding
@@ -558,7 +564,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             self._fault_reason = None
             self._safe_holding = False
             self._enabled = was_safe_holding
-            self._configured = False
+            self._configured = was_safe_holding
             self._feedback_error_count = 0
             self._last_communication_error = None
             self._using_fallback_state = False
@@ -602,14 +608,14 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         return completed
 
     def recover(self) -> None:
-        """清除锁存故障，重新配置机器人并再次使能。
+        """清除锁存故障，并安全地恢复使能状态。
 
-        恢复时使用配置的默认控制模式。如果配置或使能失败，机械臂会保持故障状态，
-        不会进入部分恢复状态。
+        已失能时，:meth:`enable` 会自动恢复配置的控制模式；从 ``SAFE_HOLD`` 恢复时
+        保留原模式，避免在电机使能期间重新写入模式。如果恢复失败，机械臂会保持
+        故障状态，不会进入部分恢复状态。
         """
         self.clear_fault()
         try:
-            self.configure()
             self.enable()
         except Exception:
             if not self._faulted:
@@ -619,10 +625,15 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     def configure_mode(self, mode: str = "posvel") -> None:
         """在 ``posvel``（PV）与 ``mit`` 两种控制模式之间切换机械臂组。
 
-        总线必须已连接且没有锁存故障。切换到 POS_VEL 前，会先停止耦合 MIT 工作线程，
-        再修改电机模式。
+        总线必须已连接、没有锁存故障且电机已经失能。切换到 POS_VEL 前，会先停止
+        耦合 MIT 工作线程，再修改电机模式。
         """
         self._require_operational()
+        if self._enabled:
+            raise RuntimeError(
+                "cannot switch control mode while the arm is enabled; "
+                "call disable() first"
+            )
         normalized = mode.strip().lower().replace("_", "")
         if normalized in ("posvel", "pv"):
             self._stop_coupled_control()
@@ -840,14 +851,14 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         torques: Sequence[float] | None = None,
         mit_kp: float | Sequence[float] | None = None,
         mit_kd: float | Sequence[float] | None = None,
-        mode: str | None = None,
         require_enabled: bool = True,
     ) -> None:
         """校验并发送一条完整的逻辑关节命令。
 
         ``positions`` 始终按 :attr:`joint_names` 排列。POS_VEL 接受逐关节
         ``velocity_limits``；MIT 接受目标 ``velocities``、前馈 ``torques`` 以及
-        当前数据包使用的 Kp/Kd。未提供的 MIT 增益使用机型配置。成功发送会刷新
+        当前数据包使用的 Kp/Kd。发送格式由构造机械臂时的 ``control_mode`` 决定，
+        此方法不会切换控制模式。未提供的 MIT 增益使用机型配置。成功发送会刷新
         看门狗；发送失败且已有安全目标时进入安全保持，否则将异常传递给调用者。
         """
         self._require_connected()
@@ -910,7 +921,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             joint_count=joint_count,
             name="Kd",
         )
-        active_mode = (mode or self._mode).strip().lower().replace("_", "")
+        active_mode = self._mode
         if active_mode in ("posvel", "pv"):
             if velocity_target is not None:
                 raise ValueError("target velocities are only supported in MIT mode")
@@ -926,8 +937,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         )
         try:
             if active_mode in ("posvel", "pv"):
-                if self._mode != "posvel":
-                    self.configure_mode("posvel")
                 motor_position_target, _, _, velocity_limit_target = (
                     self._transform_command_vectors(
                         logical_position_target,
@@ -947,8 +956,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 )
                 return
             if active_mode == "mit":
-                if self._mode != "mit":
-                    self.configure_mode("mit")
                 command = self._make_mit_command(
                     logical_position_target,
                     (
@@ -1069,6 +1076,58 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 time.sleep(remaining)
             self.send_joint_positions(point.positions)
         return self.read_state()
+
+    def record_trajectory(
+        self,
+        path: str | Path,
+        *,
+        seconds: float = 10.0,
+        hz: float = 100.0,
+    ) -> int:
+        """在电机失能状态下录制机械臂和夹爪轨迹，并保存为 JSON 文件。
+
+        用户可以在录制期间手动拖动机械臂。返回保存的轨迹点数量。
+        """
+        self._require_operational()
+        if self._enabled:
+            raise RuntimeError("disable the arm before recording a trajectory")
+        duration = float(seconds)
+        sample_hz = float(hz)
+        if not math.isfinite(duration) or duration <= 0.0:
+            raise ValueError("seconds must be finite and positive")
+        if not math.isfinite(sample_hz) or not 0.0 < sample_hz <= 500.0:
+            raise ValueError("hz must be finite, positive, and at most 500")
+
+        from ..service_tools.trajectory_recording import record, save_trajectory
+
+        timestamps, positions = record(
+            self,
+            seconds=duration,
+            hz=sample_hz,
+        )
+        save_trajectory(
+            Path(path),
+            sample_hz,
+            positions,
+            timestamps=timestamps,
+            joint_names=self.joint_names,
+        )
+        return len(positions)
+
+    def replay_trajectory(self, path: str | Path) -> int:
+        """按照录制时间戳回放 JSON 轨迹，并返回发送的轨迹点数量。"""
+        self._require_operational()
+        if not self._enabled:
+            raise RuntimeError("enable the arm before replaying a trajectory")
+
+        from ..service_tools.trajectory_recording import load_trajectory, replay
+
+        _, timestamps, positions = load_trajectory(
+            Path(path),
+            expected_joint_names=self.joint_names,
+        )
+        replay(self, timestamps=timestamps, positions=positions)
+        return len(positions)
 
     def move_gripper(
         self,

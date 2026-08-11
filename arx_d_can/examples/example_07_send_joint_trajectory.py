@@ -15,10 +15,9 @@ from arx_d_can.examples.common import (
 def main(args: argparse.Namespace) -> None:
     arm = ArxDCanArm(
         model=args.arm_model,
-        config_path=args.config_path,
         port=args.port,
-        baud=args.baud,
         transport=args.transport,
+        baud=args.baud,
         enable_gripper=True,
     )
     target = parse_joint_positions_degrees(
@@ -30,7 +29,6 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
 
     try:
-        arm.configure()
         arm.enable()
 
         print("开始平滑移动")
