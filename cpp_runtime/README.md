@@ -11,9 +11,18 @@ disable confirmation while Python is blocked or has stopped running.
 
 PV safe hold preserves the last successful target with a dedicated low velocity limit. MIT safe
 hold preserves position, zeros velocity and feedforward torque, and substitutes product safety
-Kp/Kd. Grippers preserve the last successful position with low gains; overload during safe hold
-causes one bounded retreat from the measured position. If no complete arm safety target exists,
-the runtime disables and enters `FAULT` instead of sending an empty hold.
+Kp/Kd. The same persistent worker owns each configured product gripper's
+`IDLE -> MOVING -> CONTACT -> HOLDING -> OVERLOAD_RETREAT` state machine. It maps public 0..1000
+opening targets to motor position, ramps closing motion with the normal MIT gains, detects contact
+from torque plus a position-motion window and target error, then switches to a low-gain hold with
+zero feedforward torque. Sustained overload produces a rate-limited bounded retreat. No Python
+gripper control loop is involved in the native dual-arm path.
+
+In `FAULT`, arms are always linked-disabled while the product setting chooses whether grippers
+keep the last safe target or are disabled. A failed gripper hold falls back to individual motor
+disable attempts. Recovery first disables every held gripper and confirms fresh disabled feedback
+before returning to `READY`. If no complete arm safety target exists, command failure enters
+`FAULT` instead of sending an empty arm hold.
 
 `runtime_abi.h` is the stable boundary used by `arx_d_can.sdk.native_safety`. The optional generic
 motor-drive-layer transport-health callback is used when available; the wrapper remains compatible

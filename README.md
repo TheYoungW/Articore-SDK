@@ -161,10 +161,26 @@ python -m arx_d_can.examples.dual_arm.example_02_read_state
 ```python
 arm.move_gripper(1000)  # 张开
 arm.move_gripper(0)     # 闭合
+
+robot.set_grippers(left=500, right=500)
+robot.open_grippers()
+robot.close_grippers()
 ```
 
 Yunyi 夹爪固定使用 MIT 模式，默认 `Kp=4.0`。堵转检测、接触后的低刚度保持和持续
-过载回退保留在 SDK 内部。更换自定义末端时可以传入 `enable_gripper=False`。
+过载回退由双臂 C++ 安全运行时的常驻线程执行，不需要 Python 控制线程。双臂原生运行
+时启用后，单侧原始夹爪命令会被拒绝，避免绕过整机安全状态机。更换自定义末端时可用
+`ArxDCanDualArm(left_gripper=False, right_gripper=False)` 关闭产品夹爪。
+
+`read_state()` 同时公开结构化夹爪控制状态：
+
+```python
+state = robot.read_state()
+print(state.left_gripper.opening)
+print(state.left_gripper.control_state)
+print(state.left_gripper.contact_detected)
+print(state.left_gripper.overload)
+```
 
 ## Yunyi 产品配置
 
@@ -256,8 +272,9 @@ conda run --no-capture-output -n at python -m \
 中断，使 Python 的 `finally` 清理逻辑没有机会完成。运动控制不能依赖这种运行方式。
 
 - 单次双通道批量发送失败、命令超时或连续反馈失败会进入 `SAFE_HOLD`；
-- 安全保持失败、设备掉线、反馈严重过期、电机故障或意外失能会锁存 `FAULT`，并继续
-  尝试失能左右所有电机和夹爪；
+- 安全保持失败、设备掉线、反馈严重过期、电机故障或意外失能会锁存 `FAULT`；左右臂
+  联动失能，夹爪按产品配置的 `gripper_fault_action: hold | disable` 保持物体或失能，
+  保持失败时会继续尝试失能；
 - `read_state()` 只返回新鲜、完整反馈；
 - `read_cached_state()` 明确读取最近一次成功反馈；
 - `communication_health` 提供结构化通信状态；
