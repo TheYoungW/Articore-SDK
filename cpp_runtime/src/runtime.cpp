@@ -1062,6 +1062,7 @@ bool SafetyRuntime::disable_hardware(bool request_feedback,
 void SafetyRuntime::enter_fault(const std::string& reason) {
   bool preserve_grippers = false;
   {
+    std::lock_guard<std::mutex> command_lock(command_mutex_);
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (state_ == ARTICORE_DISCONNECTED) return;
     preserve_grippers =

@@ -174,6 +174,14 @@ def _config_from_loaded(
     gripper_mapping = data.get("gripper_mapping", {}) or {}
     force_control = data.get("gripper_force_control", {}) or {}
     safety = data.get("safety", {}) or {}
+    gripper_control_hz = float(force_control.get("control_hz", 100.0))
+    if not np.isfinite(gripper_control_hz) or gripper_control_hz <= 0.0:
+        raise ValueError("gripper_force_control.control_hz must be finite and positive")
+    gripper_fault_action = str(
+        safety.get("gripper_fault_action", "hold")
+    ).strip().lower()
+    if gripper_fault_action not in {"hold", "disable"}:
+        raise ValueError("safety.gripper_fault_action must be 'hold' or 'disable'")
 
     return ArxDCanConfig(
         name=str(data.get("name", "ARX-D-CAN")),
@@ -223,8 +231,8 @@ def _config_from_loaded(
             hold_kp=float(force_control.get("hold_kp", 2.0)),
             hold_kd=float(force_control.get("hold_kd", 0.5)),
         ),
-        gripper_control_hz=float(force_control.get("control_hz", 100.0)),
-        gripper_fault_action=str(safety.get("gripper_fault_action", "hold")),
+        gripper_control_hz=gripper_control_hz,
+        gripper_fault_action=gripper_fault_action,
         watchdog_enabled=_config_bool(
             safety.get("watchdog_enabled", True),
             name="safety.watchdog_enabled",
