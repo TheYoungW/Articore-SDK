@@ -17,9 +17,9 @@ except ModuleNotFoundError:
     )
 
 try:
-    from arx_d_can.examples.common import add_connection_arguments, make_arm
+    from arx_d_can.service_tools.common import add_connection_arguments, make_arm
 except ModuleNotFoundError:
-    from teleop.adapters.arm.arx_d_can.examples.common import (
+    from teleop.adapters.arm.arx_d_can.service_tools.common import (
         add_connection_arguments,
         make_arm,
     )

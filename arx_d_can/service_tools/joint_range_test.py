@@ -9,7 +9,7 @@ import time
 from typing import Sequence
 
 from arx_d_can import ArxDCanArm, ArxDCanConfig, JointMotorConfig, default_config
-from arx_d_can.examples.common import add_connection_arguments
+from arx_d_can.service_tools.common import add_connection_arguments
 from arx_d_can.trajectory import plan_joint_position_trajectory
 
 

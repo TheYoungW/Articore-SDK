@@ -1,4 +1,4 @@
-"""ARX-D-CAN 示例共用的辅助函数。"""
+"""维护工具共用的连接和关节参数辅助函数。"""
 from __future__ import annotations
 
 import math
@@ -15,7 +15,6 @@ DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 1_000_000
 DEFAULT_HZ = 100.0
 DEFAULT_ARM_MODEL = "yunyi_v1_0_right"
-ZERO_ARM_POSITION = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 
 def add_connection_arguments(
@@ -24,17 +23,9 @@ def add_connection_arguments(
     allow_custom_config: bool = False,
     default_arm_model: str | None = DEFAULT_ARM_MODEL,
 ) -> None:
-    """添加连接参数；普通示例默认只向用户展示内置机型。"""
-    profile = (
-        parser.add_mutually_exclusive_group()
-        if allow_custom_config
-        else parser
-    )
-    profile.add_argument(
-        "--arm-model",
-        default=default_arm_model,
-        help=f"机械臂机型；默认 {default_arm_model or '使用 SDK 默认配置'}",
-    )
+    """为高级维护工具添加机型和连接参数。"""
+    profile = parser.add_mutually_exclusive_group() if allow_custom_config else parser
+    profile.add_argument("--arm-model", default=default_arm_model)
     if allow_custom_config:
         profile.add_argument(
             "--config-path",
@@ -42,27 +33,10 @@ def add_connection_arguments(
             dest="config_path",
             type=Path,
             default=None,
-            help="自定义机械臂硬件 YAML，不能与 --arm-model 同时使用",
         )
-    parser.add_argument(
-        "--port",
-        "--channel",
-        dest="port",
-        default=None,
-        help="通信通道，例如 /dev/ttyACM0 或 can0；默认使用机型配置",
-    )
-    parser.add_argument(
-        "--transport",
-        choices=SUPPORTED_TRANSPORTS,
-        default=None,
-        help="通信后端；默认使用机型配置",
-    )
-    parser.add_argument(
-        "--baud",
-        type=int,
-        default=None,
-        help=f"USB2CAN 串口波特率；默认使用机型配置（arx_d_can 为 {DEFAULT_BAUD}）",
-    )
+    parser.add_argument("--port", "--channel", dest="port", default=None)
+    parser.add_argument("--transport", choices=SUPPORTED_TRANSPORTS, default=None)
+    parser.add_argument("--baud", type=int, default=None)
 
 
 def make_arm(
@@ -71,6 +45,7 @@ def make_arm(
     enable_gripper: bool | None = None,
     control_mode: str = "posvel",
 ) -> ArxDCanArm:
+    """按照维护工具参数创建通用机械臂控制器。"""
     if args is None:
         return ArxDCanArm(
             port=DEFAULT_PORT,

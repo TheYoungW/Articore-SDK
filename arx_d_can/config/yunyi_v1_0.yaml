@@ -1,0 +1,202 @@
+name: Yunyi V1.0
+urdf_path: models/yunyi_v1_0.urdf
+# Yunyi 标配 DM-USB2FDCAN Dual 原厂固件，左臂 CH0、右臂 CH1。
+transport: dm-device
+baud: 1000000
+rate: 500
+
+safety:
+  watchdog_enabled: true
+  command_timeout_s: 0.25
+  enable_grace_s: 2.0
+  watchdog_poll_s: 0.02
+  watchdog_action: safe_hold
+  safe_hold_hz: 100.0
+  safe_hold_pv_velocity_limit: 0.2
+  safe_hold_mit_kp: 5.0
+  safe_hold_mit_kd: 1.0
+  safe_hold_failure_threshold: 1
+  feedback_check_hz: 100.0
+  feedback_fault_threshold: 3
+  max_cached_feedback_age_s: 0.02
+  # 进程整体退出时原生线程也会消失，由电机固件通信超时完成最终失能。
+  motor_communication_timeout_ms: 500
+  # 普通故障优先低刚度保持物体；保持失败时自动尝试失能。
+  gripper_fault_action: hold
+
+gripper_mapping:
+  closed_value: 0.0
+  open_value: 2.64
+
+# 夹爪始终使用 MIT 模式，默认 Kp=4.0。防堵转逻辑保留为 SDK 内部安全机制。
+gripper_force_control:
+  enabled: true
+  control_hz: 100.0
+  close_speed: 1.0
+  contact_torque: 0.8
+  overload_torque: 1.5
+  motion_window_s: 0.2
+  stall_movement: 0.01
+  min_position_error: 0.05
+  contact_hold_s: 0.2
+  overload_hold_s: 0.05
+  hold_offset: 0.08
+  retreat_distance: 0.15
+  max_step_interval_s: 0.05
+  overload_retreat_interval_s: 0.1
+  hold_kp: 2.0
+  hold_kd: 0.5
+
+# 左右臂是两条独立 CAN 通道，各自固定 7 个关节；双臂命令不会展平成 14 轴。
+# 机械臂 MIT 增益使用 OpenArm 默认安全组；夹爪仍使用 Yunyi 独立安全策略。
+arms:
+  left:
+    name: Yunyi V1.0 Left Arm
+    channel: "0"
+    end_effector_frame: l-link7
+    groups:
+      arm:
+        joints: [l-joint1, l-joint2, l-joint3, l-joint4, l-joint5, l-joint6, l-joint7]
+      gripper:
+        joints: [l-gripper]
+    joints:
+      - name: l-joint1
+        motor_id: 0x09
+        feedback_id: 0x19
+        model: "8009"
+        torque_range: 40.0
+        velocity_range: 20.0
+        direction: 1
+        MIT: {kp: 70.0, kd: 2.75}
+        POS_VEL: {vel_kp: 0.010, vel_ki: 0.0025, pos_kp: 100.0, pos_ki: 0.3, vlim: 2.0}
+      - name: l-joint2
+        motor_id: 0x0A
+        feedback_id: 0x1A
+        model: "8009"
+        torque_range: 40.0
+        velocity_range: 20.0
+        MIT: {kp: 70.0, kd: 2.5}
+        POS_VEL: {vel_kp: 0.008, vel_ki: 0.002, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
+      - name: l-joint3
+        motor_id: 0x0B
+        feedback_id: 0x1B
+        model: "4340P"
+        torque_range: 20.0
+        velocity_range: 10.0
+        MIT: {kp: 70.0, kd: 2.0}
+        POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 165.0, pos_ki: 0.0, vlim: 3.3}
+      - name: l-joint4
+        motor_id: 0x0C
+        feedback_id: 0x1C
+        model: "4340P"
+        torque_range: 20.0
+        velocity_range: 10.0
+        direction: -1
+        MIT: {kp: 60.0, kd: 2.0}
+        POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 180.0, pos_ki: 0.0, vlim: 3.3}
+      - name: l-joint5
+        motor_id: 0x0D
+        feedback_id: 0x1D
+        model: "4310"
+        torque_range: 8.0
+        velocity_range: 10.0
+        MIT: {kp: 10.0, kd: 0.7}
+        POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 6.3}
+      - name: l-joint6
+        motor_id: 0x0E
+        feedback_id: 0x1E
+        model: "4310"
+        torque_range: 8.0
+        velocity_range: 10.0
+        MIT: {kp: 10.0, kd: 0.6}
+        POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 6.3}
+      - name: l-joint7
+        motor_id: 0x0F
+        feedback_id: 0x1F
+        model: "4310"
+        torque_range: 8.0
+        velocity_range: 10.0
+        MIT: {kp: 10.0, kd: 0.5}
+        POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 6.3}
+      - name: l-gripper
+        motor_id: 0x01
+        feedback_id: 0x11
+        model: "4310"
+        velocity_range: 30.0
+        MIT: {kp: 4.0, kd: 0.5}
+
+  right:
+    name: Yunyi V1.0 Right Arm
+    channel: "1"
+    end_effector_frame: r-link7
+    groups:
+      arm:
+        joints: [r-joint1, r-joint2, r-joint3, r-joint4, r-joint5, r-joint6, r-joint7]
+      gripper:
+        joints: [r-gripper]
+    joints:
+      - name: r-joint1
+        motor_id: 0x01
+        feedback_id: 0x11
+        model: "8009"
+        torque_range: 40.0
+        velocity_range: 10.0
+        direction: -1
+        MIT: {kp: 70.0, kd: 2.75}
+        POS_VEL: {vel_kp: 0.010, vel_ki: 0.0025, pos_kp: 100.0, pos_ki: 0.3, vlim: 2.0}
+      - name: r-joint2
+        motor_id: 0x02
+        feedback_id: 0x12
+        model: "8009"
+        torque_range: 40.0
+        velocity_range: 10.0
+        MIT: {kp: 70.0, kd: 2.5}
+        POS_VEL: {vel_kp: 0.008, vel_ki: 0.002, pos_kp: 80.0, pos_ki: 0.2, vlim: 2.0}
+      - name: r-joint3
+        motor_id: 0x03
+        feedback_id: 0x13
+        model: "4340P"
+        torque_range: 20.0
+        velocity_range: 10.0
+        MIT: {kp: 70.0, kd: 2.0}
+        POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 165.0, pos_ki: 0.0, vlim: 3.3}
+      - name: r-joint4
+        motor_id: 0x04
+        feedback_id: 0x14
+        model: "4340P"
+        torque_range: 20.0
+        velocity_range: 10.0
+        MIT: {kp: 60.0, kd: 2.0}
+        POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 180.0, pos_ki: 0.0, vlim: 3.3}
+      - name: r-joint5
+        motor_id: 0x05
+        feedback_id: 0x15
+        model: "4310"
+        torque_range: 8.0
+        velocity_range: 10.0
+        MIT: {kp: 10.0, kd: 0.7}
+        POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 6.3}
+      - name: r-joint6
+        motor_id: 0x06
+        feedback_id: 0x16
+        model: "4310"
+        torque_range: 8.0
+        velocity_range: 10.0
+        direction: -1
+        MIT: {kp: 10.0, kd: 0.6}
+        POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 6.3}
+      - name: r-joint7
+        motor_id: 0x07
+        feedback_id: 0x17
+        model: "4310"
+        torque_range: 8.0
+        velocity_range: 10.0
+        direction: -1
+        MIT: {kp: 10.0, kd: 0.5}
+        POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 6.3}
+      - name: r-gripper
+        motor_id: 0x08
+        feedback_id: 0x18
+        model: "4310"
+        velocity_range: 30.0
+        MIT: {kp: 4.0, kd: 0.5}

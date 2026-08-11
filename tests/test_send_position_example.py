@@ -2,16 +2,19 @@ import math
 
 import pytest
 
-from arx_d_can.examples import example_04_send_position as example
+from arx_d_can.examples.single_arm import example_04_send_position as example
 
 
 def test_parser_only_exposes_simple_position_options() -> None:
     parser = example.build_parser()
     destinations = {action.dest for action in parser._actions}
 
-    assert parser.parse_args([]).mode == "pv"
-    assert parser.parse_args([]).arm_model == "yunyi_v1_0_right"
-    assert parser.parse_args(["--mode", "mit"]).mode == "mit"
+    args = parser.parse_args(["--positions", "0,0,0,0,0,0,0"])
+    assert args.mode == "pv"
+    assert args.arm_model == "yunyi_v1_0_right"
+    assert parser.parse_args(
+        ["--positions", "0,0,0,0,0,0,0", "--mode", "mit"]
+    ).mode == "mit"
     assert "config_path" not in destinations
 
 

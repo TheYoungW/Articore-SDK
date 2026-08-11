@@ -3,7 +3,10 @@
 from .motor_drive_layer_backend import (
     CallError,
     Controller,
+    ControllerGroup,
+    MotorMitCommand,
     Mode,
+    PosVelCommand,
     SUPPORTED_TRANSPORTS,
     build_scan_command,
     create_controller,
@@ -14,7 +17,10 @@ from .motor_drive_layer_backend import (
 __all__ = [
     "CallError",
     "Controller",
+    "ControllerGroup",
+    "MotorMitCommand",
     "Mode",
+    "PosVelCommand",
     "SUPPORTED_TRANSPORTS",
     "build_scan_command",
     "create_controller",

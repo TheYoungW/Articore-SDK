@@ -10,14 +10,14 @@ from pathlib import Path
 import time
 
 try:
-    from arx_d_can.examples.common import (
+    from arx_d_can.service_tools.common import (
         add_connection_arguments,
         interpolate_joint_positions,
         make_arm,
         parse_joint_positions,
     )
 except ModuleNotFoundError:
-    from teleop.adapters.arm.arx_d_can.examples.common import (
+    from teleop.adapters.arm.arx_d_can.service_tools.common import (
         add_connection_arguments,
         interpolate_joint_positions,
         make_arm,

@@ -3,5 +3,10 @@ default_model: arx_d_can
 models:
   arx_d_can: arx_d_can_dm.yaml
   corina_v2: corina_v2.yaml
-  yunyi_v1_0_right: yunyi_v1_0_right.yaml
-  yunyi_v1_0_left: yunyi_v1_0_left.yaml
+  # 兼容旧机型名称；左右臂实际来自同一份 Yunyi 产品配置。
+  yunyi_v1_0_right:
+    config: yunyi_v1_0.yaml
+    arm: right
+  yunyi_v1_0_left:
+    config: yunyi_v1_0.yaml
+    arm: left

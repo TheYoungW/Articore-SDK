@@ -112,6 +112,19 @@ class FakeRobot:
         self.estop_error: Exception | None = None
         self.state_error: Exception | None = None
         self.status_codes = {"joint1": 1, "gripper": 1}
+        self.configured_can_timeouts: dict[str, int] = {}
+        self._motor_map = {
+            name: type(
+                "FakeMotor",
+                (),
+                {
+                    "set_can_timeout_ms": lambda _motor, timeout, motor_name=name: (
+                        self.configured_can_timeouts.__setitem__(motor_name, timeout)
+                    )
+                },
+            )()
+            for name in ("joint1", "gripper")
+        }
 
     def connect(self) -> None:
         pass
@@ -187,6 +200,8 @@ def test_mit_enable_passes_exact_initial_hold_to_joint_group() -> None:
     arm.robot = robot
     arm.connect()
     arm.configure("mit")
+
+    assert robot.configured_can_timeouts == {"joint1": 500}
     try:
         arm.enable(
             initial_positions=[-0.347],

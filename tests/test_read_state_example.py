@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from arx_d_can.examples import example_02_read_state as example
+from arx_d_can.examples.single_arm import example_02_read_state as example
 
 
 def test_reads_and_prints_state_inline(monkeypatch) -> None:

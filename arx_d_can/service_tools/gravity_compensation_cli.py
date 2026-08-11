@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import math
 
-from arx_d_can.examples.common import add_connection_arguments
+from .common import add_connection_arguments
 
 
 def positive_float(value: str) -> float:

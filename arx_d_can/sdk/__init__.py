@@ -7,6 +7,14 @@ import time
 from ..actuator import load_cfg
 from .arm import ArxDCanArm
 from .config import ArxDCanConfig, JointMotorConfig, default_config
+from .dual_arm import ArxDCanDualArm, ArxDCanDualArmState
+from .native_safety import (
+    GripperControlState,
+    GripperSafetyHealth,
+    SafetyHealth,
+    SafetyState,
+    TransportHealth,
+)
 from .state import (
     ArxDCanState,
     CommunicationHealth,
@@ -23,16 +31,23 @@ from .state import (
 for _public_type in (
     ArxDCanArm,
     ArxDCanConfig,
+    ArxDCanDualArm,
+    ArxDCanDualArmState,
     ArxDCanState,
     CommunicationHealth,
     CoupledControlStats,
     CoupledTorqueSaturation,
     CoupledTorqueTelemetry,
+    GripperControlState,
+    GripperSafetyHealth,
     GripperState,
     JointMotorConfig,
     JointState,
     MitCommand,
     MotorState,
+    SafetyHealth,
+    SafetyState,
+    TransportHealth,
 ):
     _public_type.__module__ = __name__
 del _public_type
@@ -41,15 +56,22 @@ del _public_type
 __all__ = [
     "ArxDCanArm",
     "ArxDCanConfig",
+    "ArxDCanDualArm",
+    "ArxDCanDualArmState",
     "ArxDCanState",
     "CommunicationHealth",
     "CoupledControlStats",
     "CoupledTorqueSaturation",
     "CoupledTorqueTelemetry",
     "GripperState",
+    "GripperControlState",
+    "GripperSafetyHealth",
     "JointMotorConfig",
     "JointState",
     "MitCommand",
     "MotorState",
+    "SafetyHealth",
+    "SafetyState",
+    "TransportHealth",
     "default_config",
 ]

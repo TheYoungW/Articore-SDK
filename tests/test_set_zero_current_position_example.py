@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from arx_d_can.examples import example_10_set_zero_current_position as example
+from arx_d_can.examples.single_arm import example_10_set_zero_current_position as example
 
 
 def test_zero_example_connects_and_sets_arm_zero_without_enabling(monkeypatch) -> None:

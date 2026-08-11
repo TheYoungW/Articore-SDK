@@ -19,11 +19,16 @@ def __getattr__(name: str) -> Any:
             "GravityCompensationMode": GravityCompensationMode,
             "GravityCompensationSample": GravityCompensationSample,
         }[name]
+    if name == "DualArmGravityCompensationMode":
+        from .dual_gravity_compensation import DualArmGravityCompensationMode
+
+        return DualArmGravityCompensationMode
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
     "ArxDCanEndPose",
+    "DualArmGravityCompensationMode",
     "GravityCompensationMode",
     "GravityCompensationSample",
 ]

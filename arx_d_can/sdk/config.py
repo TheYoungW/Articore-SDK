@@ -53,14 +53,22 @@ class ArxDCanConfig:
     gripper_force_control: GripperForceControlConfig = field(
         default_factory=GripperForceControlConfig
     )
+    gripper_control_hz: float = 100.0
+    gripper_fault_action: str = "hold"
     watchdog_enabled: bool = True
     command_timeout_s: float = 0.25
     enable_grace_s: float = 2.0
     watchdog_poll_s: float = 0.02
     watchdog_action: str = "safe_hold"
     safe_hold_hz: float = 100.0
+    safe_hold_pv_velocity_limit: float = 0.2
+    safe_hold_mit_kp: float = 5.0
+    safe_hold_mit_kd: float = 1.0
+    safe_hold_failure_threshold: int = 1
+    feedback_check_hz: float = 100.0
     feedback_fault_threshold: int = 3
     max_cached_feedback_age_s: float = 0.02
+    motor_communication_timeout_ms: int = 500
     name: str = "ARX-D-CAN"
     model: str = "custom"
     hardware_config_path: str | None = None
@@ -215,6 +223,8 @@ def _config_from_loaded(
             hold_kp=float(force_control.get("hold_kp", 2.0)),
             hold_kd=float(force_control.get("hold_kd", 0.5)),
         ),
+        gripper_control_hz=float(force_control.get("control_hz", 100.0)),
+        gripper_fault_action=str(safety.get("gripper_fault_action", "hold")),
         watchdog_enabled=_config_bool(
             safety.get("watchdog_enabled", True),
             name="safety.watchdog_enabled",
@@ -224,9 +234,21 @@ def _config_from_loaded(
         watchdog_poll_s=float(safety.get("watchdog_poll_s", 0.02)),
         watchdog_action=str(safety.get("watchdog_action", "safe_hold")),
         safe_hold_hz=float(safety.get("safe_hold_hz", 100.0)),
+        safe_hold_pv_velocity_limit=float(
+            safety.get("safe_hold_pv_velocity_limit", 0.2)
+        ),
+        safe_hold_mit_kp=float(safety.get("safe_hold_mit_kp", 5.0)),
+        safe_hold_mit_kd=float(safety.get("safe_hold_mit_kd", 1.0)),
+        safe_hold_failure_threshold=int(
+            safety.get("safe_hold_failure_threshold", 1)
+        ),
+        feedback_check_hz=float(safety.get("feedback_check_hz", 100.0)),
         feedback_fault_threshold=int(safety.get("feedback_fault_threshold", 3)),
         max_cached_feedback_age_s=float(
             safety.get("max_cached_feedback_age_s", 0.02)
+        ),
+        motor_communication_timeout_ms=int(
+            safety.get("motor_communication_timeout_ms", 500)
         ),
     )
 
@@ -311,9 +333,21 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
         },
         "gripper_force_control": {
             "enabled": config.gripper_force_control_enabled,
+            "control_hz": config.gripper_control_hz,
             "close_speed": force.close_speed,
             "contact_torque": force.contact_torque,
             "overload_torque": force.overload_torque,
+            "motion_window_s": force.motion_window_s,
+            "stall_movement": force.stall_movement,
+            "min_position_error": force.min_position_error,
+            "contact_hold_s": force.contact_hold_s,
+            "overload_hold_s": force.overload_hold_s,
+            "hold_offset": force.hold_offset,
+            "retreat_distance": force.retreat_distance,
+            "max_step_interval_s": force.max_step_interval_s,
+            "overload_retreat_interval_s": force.overload_retreat_interval_s,
+            "hold_kp": force.hold_kp,
+            "hold_kd": force.hold_kd,
         },
         "safety": {
             "watchdog_enabled": config.watchdog_enabled,
@@ -322,8 +356,15 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             "watchdog_poll_s": config.watchdog_poll_s,
             "watchdog_action": config.watchdog_action,
             "safe_hold_hz": config.safe_hold_hz,
+            "safe_hold_pv_velocity_limit": config.safe_hold_pv_velocity_limit,
+            "safe_hold_mit_kp": config.safe_hold_mit_kp,
+            "safe_hold_mit_kd": config.safe_hold_mit_kd,
+            "safe_hold_failure_threshold": config.safe_hold_failure_threshold,
+            "feedback_check_hz": config.feedback_check_hz,
             "feedback_fault_threshold": config.feedback_fault_threshold,
             "max_cached_feedback_age_s": config.max_cached_feedback_age_s,
+            "motor_communication_timeout_ms": config.motor_communication_timeout_ms,
+            "gripper_fault_action": config.gripper_fault_action,
         },
     }
 

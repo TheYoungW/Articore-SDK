@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -49,8 +49,18 @@ def _load_profile(config_path: str | Path | None, *, model: str | None) -> dict:
     return sdk_package.load_cfg(config_path, model=model)
 
 
+@dataclass(slots=True, frozen=True)
+class _PreparedJointPositionBatch:
+    """一侧机械臂已完成验证和坐标换算的批量命令。"""
+
+    mode: str
+    joint_positions: tuple[float, ...]
+    commands: tuple[object, ...]
+    mit_command: MitCommand | None = None
+
+
 class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
-    """通过 dm-serial 或 Linux SocketCAN 控制 ARX 机械臂的高层 SDK。"""
+    """通过 DM Device、dm-serial 或 Linux SocketCAN 控制机械臂。"""
 
     def __init__(
         self,
@@ -157,6 +167,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         self._last_joint_command: tuple[float, ...] | None = None
         self._last_mit_command: MitCommand | None = None
         self._last_gripper_command: float | None = None
+        self._dual_runtime_managed = False
         self._last_state: ArxDCanState | None = None
         self._coupled_control_stop = threading.Event()
         self._coupled_control_wakeup = threading.Event()
@@ -211,6 +222,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         self._coupled_hold_candidate_since: dict[tuple[int, int], float] = {}
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
         self._gripper_command_lock = threading.RLock()
+        self._gripper_command_sink = None
         self._gripper_force_controller: GripperForceController | None = None
         if (
             self.enable_gripper
@@ -338,6 +350,10 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             if self.enable_gripper and self.config.gripper is not None:
                 if not self.robot.gripper.mode_mit():
                     raise RuntimeError("ARX-D-CAN gripper did not enter MIT mode")
+            for name in self._active_joint_names():
+                self.robot._motor_map[name].set_can_timeout_ms(
+                    self.config.motor_communication_timeout_ms
+                )
         except Exception as exc:
             self._trip_fault(f"configuration failed: {exc}")
             raise
@@ -842,6 +858,113 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
 
         return read_motor_diagnostics(self, timeout_ms=timeout_ms)
 
+    def _supports_parallel_joint_batch(self) -> bool:
+        """返回当前模式能否由多 Controller 批量接口直接发送。"""
+        return not (self._mode == "mit" and self._joint_transform is not None)
+
+    def _controller_for_parallel_batch(self):
+        """返回机械臂组的底层 Controller。"""
+        self._require_connected()
+        return self.robot.arm._controller_for_batch()
+
+    def _prepare_parallel_joint_positions(
+        self,
+        positions: Sequence[float],
+    ) -> _PreparedJointPositionBatch | None:
+        """校验一侧关节目标，并生成可交给 ControllerGroup 的命令。"""
+        self._require_connected()
+        if self._safe_holding:
+            return None
+        self._require_operational()
+        if not self._enabled:
+            raise RuntimeError("ARX-D-CAN arm is not enabled")
+        if not self._supports_parallel_joint_batch():
+            raise RuntimeError(
+                "coupled MIT control uses its dedicated inner loop and cannot "
+                "join a direct controller batch"
+            )
+
+        joint_count = len(self.config.arm_joints)
+        values = tuple(float(value) for value in positions)
+        if len(values) != joint_count:
+            raise ValueError(
+                f"expected {joint_count} joint positions, got {len(values)}"
+            )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError("joint positions must be finite")
+        logical_position = np.asarray(values, dtype=np.float64)
+
+        if self._mode in ("posvel", "pv"):
+            motor_position, _, _, velocity_limit = self._transform_command_vectors(
+                logical_position
+            )
+            commands = self.robot.arm._make_pos_vel_batch_commands(
+                motor_position,
+                vlim=velocity_limit,
+            )
+            return _PreparedJointPositionBatch(
+                mode="pv",
+                joint_positions=values,
+                commands=commands,
+            )
+
+        if self._mode == "mit":
+            command = self._make_mit_command(
+                logical_position,
+                np.zeros(joint_count),
+                self._resolved_mit_gains(None, gain="kp"),
+                self._resolved_mit_gains(None, gain="kd"),
+                np.zeros(joint_count),
+            )
+            position, velocity, kp, kd, torque = self._compose_mit_motor_command(
+                command
+            )
+            commands = self.robot.arm._make_mit_batch_commands(
+                position,
+                vel=velocity,
+                kp=kp,
+                kd=kd,
+                tau=torque,
+            )
+            return _PreparedJointPositionBatch(
+                mode="mit",
+                joint_positions=command.positions,
+                commands=commands,
+                mit_command=command,
+            )
+
+        raise ValueError("mode must be 'posvel' or 'mit'")
+
+    def _complete_parallel_joint_positions(
+        self,
+        prepared: _PreparedJointPositionBatch,
+    ) -> None:
+        """在底层批量发送成功后刷新安全监控所需的状态。"""
+        self._record_successful_command(
+            joint_positions=prepared.joint_positions,
+            mit_command=prepared.mit_command,
+        )
+        if prepared.mode == "mit":
+            self._start_coupled_control()
+            self._coupled_control_wakeup.set()
+
+    def _handle_joint_command_failure(self, exc: Exception) -> bool:
+        """处理发送失败；返回是否已进入安全保持并吸收本次异常。"""
+        if isinstance(exc, CommunicationError):
+            self._record_communication_error(
+                exc,
+                using_fallback=(
+                    False if isinstance(exc, StaleFeedbackError) else None
+                ),
+            )
+        if isinstance(exc, StaleFeedbackError):
+            self._trip_fault(str(exc))
+            return False
+        holding = self._begin_safe_hold(f"joint command failed: {exc}")
+        with self._state_lock:
+            has_hold_target = self._last_joint_command is not None
+        return holding and has_hold_target
+
     def send_joint_positions(
         self,
         positions: Sequence[float],
@@ -861,6 +984,11 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         此方法不会切换控制模式。未提供的 MIT 增益使用机型配置。成功发送会刷新
         看门狗；发送失败且已有安全目标时进入安全保持，否则将异常传递给调用者。
         """
+        if self._dual_runtime_managed:
+            raise RuntimeError(
+                "this arm is managed by ArxDCanDualArm; submit a complete left/right "
+                "command through ArxDCanDualArm.send_joint_positions()"
+            )
         self._require_connected()
         if self._safe_holding:
             return
@@ -983,18 +1111,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 self._coupled_control_wakeup.set()
                 return
         except Exception as exc:
-            if isinstance(exc, CommunicationError):
-                self._record_communication_error(
-                    exc,
-                    using_fallback=False if isinstance(exc, StaleFeedbackError) else None,
-                )
-            if isinstance(exc, StaleFeedbackError):
-                self._trip_fault(str(exc))
-                raise
-            holding = self._begin_safe_hold(f"joint command failed: {exc}")
-            with self._state_lock:
-                has_hold_target = self._last_joint_command is not None
-            if holding and has_hold_target:
+            if self._handle_joint_command_failure(exc):
                 return
             raise
         raise ValueError("mode must be 'posvel' or 'mit'")
@@ -1205,6 +1322,10 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         夹爪始终使用机型配置中的 MIT 增益；Yunyi 默认 Kp 为 4.0、Kd 为 0.5。
         """
         self._require_connected()
+        if self._dual_runtime_managed:
+            raise RuntimeError(
+                "this gripper is managed by ArxDCanDualArm; use set_grippers()"
+            )
         if self._safe_holding:
             return
         self._require_operational()
@@ -1249,6 +1370,10 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         目标会限制在配置的行程范围内，并通过 MIT 模式发送。
         """
         self._require_connected()
+        if self._dual_runtime_managed:
+            raise RuntimeError(
+                "raw gripper commands are disabled while the C++ dual-arm runtime is active"
+            )
         if self._safe_holding:
             return
         self._require_operational()
@@ -1286,16 +1411,15 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 )
                 try:
                     with self._io_lock:
-                        self.robot.gripper.send_mit(
-                            np.array([command.position]),
-                            kp=np.array([command.kp]),
-                            kd=np.array([command.kd]),
-                            strict=True,
+                        self._send_gripper_mit(
+                            command.position, command.kp, command.kd
                         )
                 except Exception as exc:
                     if isinstance(exc, CommunicationError):
                         self._record_communication_error(exc, using_fallback=None)
                     self._gripper_force_controller.reset()
+                    if self._gripper_command_sink is not None:
+                        raise
                     holding = self._begin_safe_hold(f"gripper command failed: {exc}")
                     with self._state_lock:
                         has_hold_target = self._last_gripper_command is not None
@@ -1308,13 +1432,12 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 return
             try:
                 with self._io_lock:
-                    self.robot.gripper.send_mit(
-                        np.array([target]),
-                        strict=True,
-                    )
+                    self._send_gripper_mit(target)
             except Exception as exc:
                 if isinstance(exc, CommunicationError):
                     self._record_communication_error(exc, using_fallback=None)
+                if self._gripper_command_sink is not None:
+                    raise
                 holding = self._begin_safe_hold(f"gripper command failed: {exc}")
                 with self._state_lock:
                     has_hold_target = self._last_gripper_command is not None
@@ -1322,3 +1445,32 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                     return
                 raise
             self._record_successful_command(gripper_position=target)
+
+    def _set_gripper_command_sink(self, sink) -> None:
+        """将夹爪底层 MIT 命令交给双臂原生安全运行时。"""
+        self._gripper_command_sink = sink
+
+    def _set_dual_runtime_managed(self, managed: bool) -> None:
+        """禁止绕过双臂原生状态机直接提交单侧关节命令。"""
+        self._dual_runtime_managed = bool(managed)
+
+    def _send_gripper_mit(
+        self,
+        position: float,
+        kp: float | None = None,
+        kd: float | None = None,
+    ) -> None:
+        if self._gripper_command_sink is None:
+            self.robot.gripper.send_mit(
+                np.array([position]),
+                kp=None if kp is None else np.array([kp]),
+                kd=None if kd is None else np.array([kd]),
+                strict=True,
+            )
+            return
+        commands = self.robot.gripper._make_mit_batch_commands(
+            np.array([position]),
+            kp=None if kp is None else np.array([kp]),
+            kd=None if kd is None else np.array([kd]),
+        )
+        self._gripper_command_sink(commands)

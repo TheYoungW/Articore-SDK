@@ -6,7 +6,7 @@ import argparse
 import math
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.common import add_connection_arguments
+from arx_d_can.examples.single_arm.common import add_connection_arguments
 
 
 def main(args: argparse.Namespace) -> None:

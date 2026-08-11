@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can.examples import example_11_record_and_replay_trajectory as cli_example
+from arx_d_can.examples.single_arm import example_11_record_and_replay_trajectory as cli_example
 from arx_d_can.service_tools import trajectory_recording as example
 
 

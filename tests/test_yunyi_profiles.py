@@ -30,8 +30,10 @@ def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
     assert left.config.gripper is not None
     assert right.config.gripper.name == "r-gripper"
     assert left.config.gripper.name == "l-gripper"
-    assert right.config.port == "/dev/ttyACM1"
-    assert left.config.port == "/dev/ttyACM0"
+    assert right.config.transport == "dm-device"
+    assert left.config.transport == "dm-device"
+    assert right.config.port == "1"
+    assert left.config.port == "0"
 
 
 def test_yunyi_motor_models_and_ids_match_each_single_can_bus() -> None:
@@ -95,20 +97,22 @@ def test_yunyi_joint_velocity_ranges_match_hardware_registers() -> None:
         assert [joint.velocity_range for joint in joints] == expected
 
 
-def test_yunyi_control_gains_follow_actuator_capability_tiers() -> None:
-    high_damped = (120.0, 8.0, 0.010, 0.0025, 100.0, 0.3, 7.0)
-    high_soft = (120.0, 8.0, 0.008, 0.002, 80.0, 0.2, 7.0)
-    medium_joint3 = (60.0, 4.0, 0.0125, 0.001, 165.0, 0.0, 5.0)
-    medium_joint4 = (100.0, 4.0, 0.0125, 0.001, 180.0, 0.0, 5.0)
-    low = (18.0, 2.0, 0.006, 0.0015, 80.0, 0.2, 3.0)
+def test_yunyi_uses_openarm_default_mit_gains() -> None:
+    joint1 = (70.0, 2.75, 0.010, 0.0025, 100.0, 0.3, 2.0)
+    joint2 = (70.0, 2.5, 0.008, 0.002, 80.0, 0.2, 2.0)
+    joint3 = (70.0, 2.0, 0.0125, 0.001, 165.0, 0.0, 3.3)
+    joint4 = (60.0, 2.0, 0.0125, 0.001, 180.0, 0.0, 3.3)
+    joint5 = (10.0, 0.7, 0.006, 0.0015, 80.0, 0.2, 6.3)
+    joint6 = (10.0, 0.6, 0.006, 0.0015, 80.0, 0.2, 6.3)
+    joint7 = (10.0, 0.5, 0.006, 0.0015, 80.0, 0.2, 6.3)
     expected = [
-        high_damped,
-        high_soft,
-        medium_joint3,
-        medium_joint4,
-        low,
-        low,
-        low,
+        joint1,
+        joint2,
+        joint3,
+        joint4,
+        joint5,
+        joint6,
+        joint7,
     ]
 
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):

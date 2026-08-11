@@ -6,7 +6,7 @@ import argparse
 import math
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.common import (
+from arx_d_can.examples.single_arm.common import (
     add_connection_arguments,
     parse_joint_positions_degrees,
 )
@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--positions",
-        default="0,-57.30,-57.30,0,34.38,0",
+        required=True,
         help="逗号分隔的关节角度，单位为度",
     )
     parser.add_argument("--mode", choices=("pv", "mit"), default="pv")

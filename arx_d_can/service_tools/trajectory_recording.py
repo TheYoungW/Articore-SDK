@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanArm, GravityCompensationMode
-from arx_d_can.examples.common import add_connection_arguments, make_arm
+from .common import add_connection_arguments, make_arm
 
 
 DEFAULT_HZ = 100.0

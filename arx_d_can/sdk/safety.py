@@ -59,6 +59,25 @@ class _SafetyMixin:
             raise ValueError("watchdog_action must be 'safe_hold' or 'disable'")
         if self.config.safe_hold_hz <= 0.0:
             raise ValueError("safe_hold_hz must be positive")
+        if (
+            not math.isfinite(self.config.safe_hold_pv_velocity_limit)
+            or self.config.safe_hold_pv_velocity_limit <= 0.0
+        ):
+            raise ValueError("safe_hold_pv_velocity_limit must be finite and positive")
+        if (
+            not math.isfinite(self.config.safe_hold_mit_kp)
+            or self.config.safe_hold_mit_kp < 0.0
+            or not math.isfinite(self.config.safe_hold_mit_kd)
+            or self.config.safe_hold_mit_kd < 0.0
+        ):
+            raise ValueError("safe_hold MIT gains must be finite and non-negative")
+        if self.config.safe_hold_failure_threshold < 1:
+            raise ValueError("safe_hold_failure_threshold must be at least 1")
+        if (
+            not math.isfinite(self.config.feedback_check_hz)
+            or self.config.feedback_check_hz <= 0.0
+        ):
+            raise ValueError("feedback_check_hz must be finite and positive")
         if self.config.feedback_fault_threshold < 1:
             raise ValueError("feedback_fault_threshold must be at least 1")
         if (
@@ -66,6 +85,10 @@ class _SafetyMixin:
             or self.config.max_cached_feedback_age_s <= 0.0
         ):
             raise ValueError("max_cached_feedback_age_s must be finite and positive")
+        if not 1 <= self.config.motor_communication_timeout_ms <= 0xFFFFFFFF // 20:
+            raise ValueError(
+                "motor_communication_timeout_ms must be in 1..=214748364"
+            )
         for joint in self.config.arm_joints:
             if (
                 not math.isfinite(joint.coupled_motor_kd)

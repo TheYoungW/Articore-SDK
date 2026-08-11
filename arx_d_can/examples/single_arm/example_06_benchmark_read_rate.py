@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.common import add_connection_arguments
+from arx_d_can.examples.single_arm.common import add_connection_arguments
 from arx_d_can.service_tools.read_benchmark import benchmark_state_reads
 
 

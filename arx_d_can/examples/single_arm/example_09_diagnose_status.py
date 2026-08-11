@@ -8,7 +8,7 @@ import time
 
 from arx_d_can import ArxDCanArm
 from arx_d_can.diagnostics import print_diagnostic_summary
-from arx_d_can.examples.common import add_connection_arguments
+from arx_d_can.examples.single_arm.common import add_connection_arguments
 
 
 def main(args: argparse.Namespace) -> None:

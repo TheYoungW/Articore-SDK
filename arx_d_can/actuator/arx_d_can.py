@@ -43,7 +43,9 @@ import yaml
 from ..driver import (
     CallError,
     Controller,
+    MotorMitCommand,
     Mode,
+    PosVelCommand,
     create_controller,
     resolve_transport,
 )
@@ -147,7 +149,16 @@ def _resolve_hw_cfg_path(
             raise ValueError(
                 f"unknown arm model {selected_model!r}; available models: {choices}"
             )
-        hw_yaml = str(models[selected_model])
+        entry = models[selected_model]
+        if isinstance(entry, str):
+            hw_yaml = entry
+        elif isinstance(entry, dict) and isinstance(entry.get("config"), str):
+            hw_yaml = entry["config"]
+        else:
+            raise ValueError(
+                f"model registry entry {selected_model!r} must be a path or "
+                "a mapping containing 'config'"
+            )
 
     path = Path(hw_yaml).expanduser()
     if path.is_absolute():
@@ -159,6 +170,40 @@ def _resolve_hw_cfg_path(
     if not resolved.is_file():
         raise FileNotFoundError(f"hardware config not found: {resolved}")
     return resolved, selected_model
+
+
+def _select_product_arm(
+    data: dict[str, Any],
+    *,
+    selected_model: str | None,
+    path: Path,
+) -> dict[str, Any]:
+    """从产品级配置中选出一条独立 CAN 通道对应的机械臂。"""
+    arms = data.get("arms")
+    if arms is None:
+        return data
+    if not isinstance(arms, dict) or not arms:
+        raise ValueError(f"product config must define a non-empty arms mapping: {path}")
+    if selected_model is None:
+        raise ValueError(
+            f"product config contains multiple arms; select a registered model: {path}"
+        )
+
+    entry = _load_model_registry()["models"].get(selected_model)
+    side = entry.get("arm") if isinstance(entry, dict) else None
+    if not isinstance(side, str) or side not in arms:
+        raise ValueError(
+            f"model {selected_model!r} must select one arm from product config {path}"
+        )
+    arm = arms[side]
+    if not isinstance(arm, dict):
+        raise ValueError(f"arms.{side} must be a mapping: {path}")
+
+    merged = {key: value for key, value in data.items() if key != "arms"}
+    merged.update(arm)
+    merged["product_name"] = str(data.get("name", path.stem))
+    merged["arm_side"] = side
+    return merged
 
 
 # --------------------------------------------------------------------------
@@ -350,7 +395,11 @@ def load_cfg(
     ``model`` 选择内置机型。
     """
     hw_path, selected_model = _resolve_hw_cfg_path(hw_yaml, model=model)
-    data = _read_yaml_mapping(hw_path, description="hardware config")
+    data = _select_product_arm(
+        _read_yaml_mapping(hw_path, description="hardware config"),
+        selected_model=selected_model,
+        path=hw_path,
+    )
 
     raw_joints = data.get("joints")
     if not isinstance(raw_joints, list) or not raw_joints:
@@ -547,6 +596,8 @@ def load_cfg(
 
     return {
         "name": data.get("name", "ARX-D-CAN"),
+        "product_name": data.get("product_name"),
+        "arm_side": data.get("arm_side"),
         "model": selected_model or str(data.get("name", hw_path.stem)),
         "hardware_path": str(hw_path),
         "urdf_path": None if urdf_path is None else str(urdf_path),
@@ -688,6 +739,102 @@ class JointGroup:
     @property
     def mode(self) -> str:
         return self._mode
+
+    def _controller_for_batch(self) -> Controller:
+        """返回本组所在的底层 Controller，仅供 SDK 组合批量发送。"""
+        try:
+            return self._cm["main"]
+        except KeyError as exc:
+            raise RuntimeError("joint group is not connected") from exc
+
+    def _make_mit_batch_commands(
+        self,
+        pos: np.ndarray,
+        vel: Optional[np.ndarray] = None,
+        kp: Optional[np.ndarray] = None,
+        kd: Optional[np.ndarray] = None,
+        tau: Optional[np.ndarray] = None,
+    ) -> tuple[MotorMitCommand, ...]:
+        """生成已完成限位和方向换算的底层 MIT 批量命令。"""
+        n = self.num_joints
+        position = np.asarray(pos, dtype=np.float64).reshape(-1)
+        velocity = (
+            np.zeros(n)
+            if vel is None
+            else np.asarray(vel, dtype=np.float64).reshape(-1)
+        )
+        stiffness = (
+            self._mit_kp
+            if kp is None
+            else np.asarray(kp, dtype=np.float64).reshape(-1)
+        )
+        damping = (
+            self._mit_kd
+            if kd is None
+            else np.asarray(kd, dtype=np.float64).reshape(-1)
+        )
+        torque = (
+            np.zeros(n)
+            if tau is None
+            else np.asarray(tau, dtype=np.float64).reshape(-1)
+        )
+        vectors = (position, velocity, stiffness, damping, torque)
+        if any(vector.size != n for vector in vectors):
+            raise ValueError(f"MIT batch expects {n} values per vector")
+        if any(not np.all(np.isfinite(vector)) for vector in vectors):
+            raise ValueError("MIT batch values must be finite")
+
+        commands = []
+        for index, joint in enumerate(self._jcfgs):
+            velocity_scale, _ = _velocity_range_scales(joint)
+            torque_scale, _ = _torque_range_scales(joint)
+            limited_position = self._clamp_position(joint, float(position[index]))
+            limited_torque = self._clamp_effort(joint, float(torque[index]))
+            commands.append(
+                MotorMitCommand(
+                    self._mm[joint.name],
+                    joint.direction * limited_position,
+                    joint.direction * float(velocity[index]) * velocity_scale,
+                    float(stiffness[index]),
+                    float(damping[index]),
+                    joint.direction * limited_torque * torque_scale,
+                )
+            )
+        return tuple(commands)
+
+    def _make_pos_vel_batch_commands(
+        self,
+        pos: np.ndarray,
+        vlim: Optional[np.ndarray] = None,
+    ) -> tuple[PosVelCommand, ...]:
+        """生成已完成限位和方向换算的底层 PV 批量命令。"""
+        n = self.num_joints
+        position = np.asarray(pos, dtype=np.float64).reshape(-1)
+        velocity_limit = (
+            self._pv_vlim
+            if vlim is None
+            else np.asarray(vlim, dtype=np.float64).reshape(-1)
+        )
+        if position.size != n or velocity_limit.size != n:
+            raise ValueError(
+                f"POS_VEL batch expects {n} positions and velocity limits"
+            )
+        if not np.all(np.isfinite(position)) or not np.all(
+            np.isfinite(velocity_limit)
+        ):
+            raise ValueError("POS_VEL batch values must be finite")
+        if np.any(velocity_limit <= 0.0):
+            raise ValueError("POS_VEL velocity limits must be positive")
+
+        return tuple(
+            PosVelCommand(
+                self._mm[joint.name],
+                joint.direction
+                * self._clamp_position(joint, float(position[index])),
+                float(velocity_limit[index]),
+            )
+            for index, joint in enumerate(self._jcfgs)
+        )
 
     # ── 使能 / 失能 ────────────────────────────────────────────────────
 
@@ -1694,9 +1841,9 @@ class ArxDCan:
         time.sleep(0.1)
         for ctrl in self._ctrl_map.values():
             try:
-                ctrl.shutdown()
+                ctrl.close_bus()
             except Exception as exc:
-                errors.append(f"controller shutdown: {exc}")
+                errors.append(f"controller close_bus: {exc}")
             try:
                 ctrl.close()
             except Exception as exc:

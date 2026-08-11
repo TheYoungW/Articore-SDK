@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""示例 03：安全清除所有活动 ARX-D-CAN 电机故障。"""
+"""示例 10：将机械臂当前位置设置为电机零点。"""
 from __future__ import annotations
 
 import argparse
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.common import add_connection_arguments
+from arx_d_can.examples.single_arm.common import add_connection_arguments
 
 
 def main(args: argparse.Namespace) -> None:
@@ -16,13 +16,13 @@ def main(args: argparse.Namespace) -> None:
         baud=args.baud,
         enable_gripper=True,
     )
+
     arm.connect()
-    print("机器人连接成功")
+    print("机器人连接成功，电机保持失能状态")
 
     try:
-        names = arm.clear_motor_faults()
-        print("故障已清除：", ", ".join(names))
-        print("所有电机保持失能状态")
+        completed = arm.set_zero(joint_names=arm.joint_names)
+        print("零点设置完成：", ", ".join(completed))
     finally:
         arm.close()
         print("已断开连接")

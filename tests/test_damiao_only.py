@@ -515,6 +515,40 @@ def test_complete_feedback_raises_after_two_failed_attempts():
     assert controller.calls == 2
 
 
+@pytest.mark.parametrize("disable", [False, True])
+def test_disconnect_closes_bus_without_controller_shutdown(disable):
+    events = []
+
+    class FakeCloseController:
+        def close_bus(self):
+            events.append("close_bus")
+
+        def close(self):
+            events.append("close")
+
+        def shutdown(self):
+            raise AssertionError("disconnect must not invoke duplicate disable")
+
+    arm = ArxDCan.__new__(ArxDCan)
+    arm._connected = True
+    arm._ctrl_map = {"main": FakeCloseController()}
+    arm._motor_map = {"joint1": object()}
+    arm.stop_control_loop = lambda: events.append("stop")
+    arm.disable_all = lambda: events.append("disable")
+
+    arm.disconnect(disable=disable)
+
+    assert events == [
+        "stop",
+        *(["disable"] if disable else []),
+        "close_bus",
+        "close",
+    ]
+    assert arm._connected is False
+    assert arm._ctrl_map == {}
+    assert arm._motor_map == {}
+
+
 def test_global_state_can_require_only_selected_joint_feedback():
     arm = make_zero_arm(
         FakeZeroMotor(position=0.4),

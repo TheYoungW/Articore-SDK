@@ -40,6 +40,17 @@ def test_build_scan_command_uses_dm_serial_arguments():
     assert "--channel" not in command
 
 
+def test_build_scan_command_uses_dm_device_arguments():
+    command = build_command(port="1", transport="dm-device")
+
+    assert command[command.index("--transport") + 1] == "dm-device"
+    assert command[command.index("--dm-device-type") + 1] == "usb2canfd-dual"
+    assert command[command.index("--dm-channel") + 1] == "1"
+    assert command[command.index("--dm-bitrate") + 1] == "921600"
+    assert command[command.index("--dm-data-bitrate") + 1] == "5000000"
+    assert "--channel" not in command
+
+
 @pytest.mark.parametrize("transport", ["socketcan", "socketcanfd"])
 def test_build_scan_command_uses_socketcan_channel(transport: str):
     command = build_command(port="can0", transport=transport)
@@ -69,6 +80,11 @@ def test_create_controller_selects_matching_motor_drive_layer_constructor(monkey
             return object()
 
         @classmethod
+        def from_dm_device(cls, **kwargs):
+            calls.append(("dm-device", kwargs))
+            return object()
+
+        @classmethod
         def from_socketcanfd(cls, channel):
             calls.append(("socketcanfd", channel))
             return object()
@@ -76,11 +92,21 @@ def test_create_controller_selects_matching_motor_drive_layer_constructor(monkey
     monkeypatch.setattr(backend, "Controller", FakeController)
 
     create_controller(transport="dm-serial", channel="/dev/ttyACM0", baud=500000)
+    create_controller(transport="dm-device", channel="1", baud=1000000)
     create_controller(transport="socketcan", channel="can0")
     create_controller(transport="socketcanfd", channel="can1")
 
     assert calls == [
         ("dm-serial", "/dev/ttyACM0", 500000),
+        (
+            "dm-device",
+            {
+                "device": "usb2canfd-dual",
+                "channel": "1",
+                "bitrate": 1000000,
+                "data_bitrate": 5000000,
+            },
+        ),
         ("socketcan", "can0"),
         ("socketcanfd", "can1"),
     ]

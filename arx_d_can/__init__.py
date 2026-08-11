@@ -25,16 +25,23 @@ from .diagnostics import MotorDiagnostic
 from .sdk import (
     ArxDCanArm,
     ArxDCanConfig,
+    ArxDCanDualArm,
+    ArxDCanDualArmState,
     ArxDCanState,
     CoupledControlStats,
     CoupledTorqueTelemetry,
     CoupledTorqueSaturation,
     CommunicationHealth,
     GripperState,
+    GripperControlState,
+    GripperSafetyHealth,
     JointMotorConfig,
     JointState,
     MitCommand,
     MotorState,
+    SafetyHealth,
+    SafetyState,
+    TransportHealth,
     default_config,
 )
 
@@ -54,6 +61,10 @@ def __getattr__(name: str) -> Any:
             "GravityCompensationMode": GravityCompensationMode,
             "GravityCompensationSample": GravityCompensationSample,
         }[name]
+    if name == "DualArmGravityCompensationMode":
+        from .controllers import DualArmGravityCompensationMode
+
+        return DualArmGravityCompensationMode
     if name in {"actuator", "controllers", "dynamics", "kinematics", "trajectory"}:
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -64,6 +75,8 @@ __all__ = [
     "ArxDCanError",
     "ArxDCanArm",
     "ArxDCanConfig",
+    "ArxDCanDualArm",
+    "ArxDCanDualArmState",
     "ArxDCanEndPose",
     "ArxDCanState",
     "CoupledControlStats",
@@ -72,11 +85,14 @@ __all__ = [
     "CommandTimeoutError",
     "CommunicationError",
     "CommunicationHealth",
+    "DualArmGravityCompensationMode",
     "FeedbackError",
     "FeedbackTimeoutError",
     "GravityCompensationMode",
     "GravityCompensationSample",
     "GripperState",
+    "GripperControlState",
+    "GripperSafetyHealth",
     "JointCfg",
     "JointGroup",
     "JointMotorConfig",
@@ -84,10 +100,13 @@ __all__ = [
     "IncompleteFeedbackError",
     "MitCommand",
     "MotorState",
+    "SafetyHealth",
+    "SafetyState",
     "MotorFaultError",
     "MotorDiagnostic",
     "StaleFeedbackError",
     "TransportError",
+    "TransportHealth",
     "UnexpectedMotorStateError",
     "actuator",
     "available_models",

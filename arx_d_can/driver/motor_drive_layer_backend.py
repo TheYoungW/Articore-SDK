@@ -4,12 +4,28 @@ from __future__ import annotations
 import re
 from math import isfinite
 
-from motor_drive_layer import CallError, Controller, Mode
+from motor_drive_layer import (
+    CallError,
+    Controller,
+    ControllerGroup,
+    MitCommand as MotorMitCommand,
+    Mode,
+    PosVelCommand,
+)
 
 from ..errors import TransportError
 
 
-SUPPORTED_TRANSPORTS = ("auto", "dm-serial", "socketcan", "socketcanfd")
+SUPPORTED_TRANSPORTS = (
+    "auto",
+    "dm-serial",
+    "dm-device",
+    "socketcan",
+    "socketcanfd",
+)
+
+_DM_DEVICE_TYPE = "usb2canfd-dual"
+_DM_DEVICE_DATA_BITRATE = 5_000_000
 
 _DAMIAO_MODEL_LIMITS: dict[str, tuple[float, float, float]] = {
     "4310": (12.5, 30.0, 10.0),
@@ -42,6 +58,13 @@ def create_controller(
     try:
         if resolved == "dm-serial":
             return Controller.from_dm_serial(channel, baud)
+        if resolved == "dm-device":
+            return Controller.from_dm_device(
+                device=_DM_DEVICE_TYPE,
+                channel=channel,
+                bitrate=baud,
+                data_bitrate=_DM_DEVICE_DATA_BITRATE,
+            )
         if resolved == "socketcan":
             return Controller(channel)
         if resolved == "socketcanfd":
@@ -83,6 +106,17 @@ def build_scan_command(
     ]
     if resolved == "dm-serial":
         command.extend(["--serial-port", port, "--serial-baud", str(baud)])
+    elif resolved == "dm-device":
+        command.extend([
+            "--dm-device-type",
+            _DM_DEVICE_TYPE,
+            "--dm-channel",
+            port,
+            "--dm-bitrate",
+            str(baud),
+            "--dm-data-bitrate",
+            str(_DM_DEVICE_DATA_BITRATE),
+        ])
     else:
         command.extend(["--channel", port])
     command.extend([

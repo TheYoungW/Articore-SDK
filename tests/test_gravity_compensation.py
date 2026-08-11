@@ -14,7 +14,7 @@ from arx_d_can.sdk import (
     JointState,
     MotorState,
 )
-from arx_d_can.examples import example_12_gravity_compensation as example
+from arx_d_can.examples.single_arm import example_12_gravity_compensation as example
 from arx_d_can.service_tools import gravity_compensation_cli
 
 
