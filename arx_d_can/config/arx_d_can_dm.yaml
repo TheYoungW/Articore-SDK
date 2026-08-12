@@ -8,11 +8,8 @@ baud: 1000000
 rate: 500
 
 safety:
-  watchdog_enabled: true
   command_timeout_s: 0.25
   enable_grace_s: 2.0
-  watchdog_poll_s: 0.02
-  watchdog_action: safe_hold
   safe_hold_hz: 100.0
   feedback_fault_threshold: 3
 
@@ -26,8 +23,7 @@ gripper_mapping:
   closed_value: 0.0
   open_value: 2.64
 
-gripper_force_control:
-  enabled: false
+gripper_protection:
   close_speed: 1.0
   contact_torque: 0.8
   overload_torque: 1.5

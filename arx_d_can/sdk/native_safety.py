@@ -1,17 +1,43 @@
-"""ctypes boundary for the native Articore dual-arm safety runtime."""
+"""Articore 单臂/双臂原生安全运行时的 ctypes 边界。"""
 from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
-from enum import Enum
-from importlib import import_module
+from enum import Enum, IntEnum
 import math
 from typing import Sequence
 
+from motor_drive_layer import articore_runtime_library_path
 from motor_drive_layer.abi import get_abi
 
 
 _UINT64_MAX = (1 << 64) - 1
+_ARTICORE_ABI_MAJOR = 1
+_ARTICORE_ABI_MINOR = 5
+ARTICORE_CAP_COMMAND_LIFETIME = 1 << 11
+ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY = 1 << 12
+ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1 << 13
+_REQUIRED_CAPABILITIES = (
+    (1 << 0)  # 命令看门狗
+    | (1 << 1)  # 安全保持
+    | (1 << 2)  # 夹爪保护
+    | (1 << 3)  # 单通道
+    | (1 << 4)  # 双通道
+    | (1 << 5)  # 结构化通信健康状态
+    | (1 << 8)  # 实时关节命令邮箱
+    | (1 << 9)  # 原生关节轨迹
+    | (1 << 10)  # 原子使能事务
+    | ARTICORE_CAP_COMMAND_LIFETIME
+    | ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY
+    | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
+)
+
+
+class CommandLifetime(IntEnum):
+    """原生实时命令邮箱的生命周期。"""
+
+    STREAMING = 1
+    HOLD_UNTIL_REPLACED = 2
 
 
 class SafetyState(str, Enum):
@@ -33,6 +59,14 @@ class GripperControlState(str, Enum):
     FAULT = "FAULT"
 
 
+class TrajectoryStatus(str, Enum):
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    PREEMPTED = "PREEMPTED"
+    FAILED = "FAILED"
+    CANCELED = "CANCELED"
+
+
 _STATE_BY_CODE = {
     0: SafetyState.DISCONNECTED,
     1: SafetyState.READY,
@@ -50,6 +84,19 @@ _GRIPPER_STATE_BY_CODE = {
     4: GripperControlState.HOLDING,
     5: GripperControlState.OVERLOAD_RETREAT,
     6: GripperControlState.FAULT,
+}
+
+_TRAJECTORY_STATUS_BY_CODE = {
+    1: TrajectoryStatus.RUNNING,
+    2: TrajectoryStatus.COMPLETED,
+    3: TrajectoryStatus.PREEMPTED,
+    4: TrajectoryStatus.FAILED,
+    5: TrajectoryStatus.CANCELED,
+}
+
+_TRAJECTORY_PROFILE_BY_NAME = {
+    "min_jerk": 1,
+    "linear": 2,
 }
 
 
@@ -132,6 +179,75 @@ class NativeMotorDescriptor:
     upper_position: float = math.inf
 
 
+@dataclass(slots=True, frozen=True)
+class NativeJointControlConfig:
+    """一个机械臂关节在 motor 原生坐标中的控制参数。"""
+
+    motor: object
+    lower_position: float
+    upper_position: float
+    velocity_limit: float
+    torque_limit: float
+    mit_kp: float
+    mit_kd: float
+    mit_feedforward_torque: float = 0.0
+
+
+@dataclass(slots=True, frozen=True)
+class TrajectoryInfo:
+    trajectory_id: int
+    status: TrajectoryStatus
+    profile: str
+    duration_s: float
+    elapsed_s: float
+    error: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class EnableMotorResult:
+    """原子使能事务中一台电机的最终确认结果。"""
+
+    side: int
+    name: str
+    can_id: int
+    status_code: int
+    has_feedback: bool
+    feedback_fresh: bool
+    enabled: bool
+
+
+@dataclass(slots=True, frozen=True)
+class MissingEnableMotor:
+    """原子使能事务中未取得有效反馈的电机标识。"""
+
+    side: int
+    can_id: int
+
+
+@dataclass(slots=True, frozen=True)
+class EnableReport:
+    """最近一次原子使能事务的结构化报告。"""
+
+    success: bool
+    disable_confirmed: bool
+    expected_count: int
+    enabled_count: int
+    missing_count: int
+    failure_count: int
+    missing_motors: tuple[MissingEnableMotor, ...]
+    motors: tuple[EnableMotorResult, ...]
+    error: str | None
+
+
+class NativeEnableError(RuntimeError):
+    """原生原子使能失败，并携带无需解析字符串的结构化报告。"""
+
+    def __init__(self, report: EnableReport) -> None:
+        self.report = report
+        detail = report.error or "原子使能事务失败"
+        super().__init__(detail)
+
+
 class _RuntimeConfig(ctypes.Structure):
     _fields_ = [
         ("control_hz", ctypes.c_uint32),
@@ -154,7 +270,7 @@ class _MotorApi(ctypes.Structure):
         ("group_send_pos_vel", ctypes.c_void_p),
         ("group_send_mit", ctypes.c_void_p),
         ("controller_disable_all", ctypes.c_void_p),
-        ("controller_request_feedback_all", ctypes.c_void_p),
+        ("controller_request_feedback_all_ex", ctypes.c_void_p),
         ("motor_get_state", ctypes.c_void_p),
         ("motor_get_feedback_stats", ctypes.c_void_p),
         ("last_error_message", ctypes.c_void_p),
@@ -216,6 +332,68 @@ class _GripperTarget(ctypes.Structure):
     _fields_ = [
         ("motor", ctypes.c_void_p),
         ("opening", ctypes.c_float),
+    ]
+
+
+class _JointControlConfig(ctypes.Structure):
+    _fields_ = [
+        ("motor", ctypes.c_void_p),
+        ("lower_position", ctypes.c_float),
+        ("upper_position", ctypes.c_float),
+        ("velocity_limit", ctypes.c_float),
+        ("torque_limit", ctypes.c_float),
+        ("mit_kp", ctypes.c_float),
+        ("mit_kd", ctypes.c_float),
+        ("mit_feedforward_torque", ctypes.c_float),
+    ]
+
+
+class _JointTrajectoryTarget(ctypes.Structure):
+    _fields_ = [
+        ("motor", ctypes.c_void_p),
+        ("target_position", ctypes.c_float),
+        ("velocity_limit", ctypes.c_float),
+    ]
+
+
+class _TrajectoryInfo(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("trajectory_id", ctypes.c_uint64),
+        ("status", ctypes.c_int32),
+        ("profile", ctypes.c_int32),
+        ("duration_ns", ctypes.c_uint64),
+        ("elapsed_ns", ctypes.c_uint64),
+        ("error", ctypes.c_char * 256),
+    ]
+
+
+class _EnableMotorResult(ctypes.Structure):
+    _fields_ = [
+        ("side", ctypes.c_uint8),
+        ("can_id", ctypes.c_uint8),
+        ("status_code", ctypes.c_uint8),
+        ("has_feedback", ctypes.c_uint8),
+        ("feedback_fresh", ctypes.c_uint8),
+        ("enabled", ctypes.c_uint8),
+        ("name", ctypes.c_char * 64),
+    ]
+
+
+class _EnableReport(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("success", ctypes.c_int32),
+        ("disable_confirmed", ctypes.c_int32),
+        ("expected_count", ctypes.c_uint32),
+        ("enabled_count", ctypes.c_uint32),
+        ("missing_count", ctypes.c_uint32),
+        ("failure_count", ctypes.c_uint32),
+        ("missing_motor_sides", ctypes.c_uint8 * 32),
+        ("missing_motor_ids", ctypes.c_uint32 * 32),
+        ("motor_count", ctypes.c_uint32),
+        ("motors", _EnableMotorResult * 32),
+        ("error", ctypes.c_char * 512),
     ]
 
 
@@ -300,15 +478,16 @@ def _seconds(age_ns: int) -> float | None:
 
 
 class NativeSafetyRuntime:
-    """Owns the C++ watchdog and safety state machine for one dual-arm pair."""
+    """管理单臂或双臂的 C++ 看门狗与安全状态机。"""
 
     def __init__(
         self,
         *,
         controller_group: object,
         left_controller: object,
-        right_controller: object,
+        right_controller: object | None = None,
         motors: Sequence[NativeMotorDescriptor],
+        joints: Sequence[NativeJointControlConfig],
         control_hz: float = 500.0,
         command_timeout_s: float = 0.25,
         enable_grace_s: float = 2.0,
@@ -319,24 +498,49 @@ class NativeSafetyRuntime:
         safe_hold_failure_threshold: int = 1,
         disable_feedback_timeout_ms: int = 50,
         safe_pv_velocity_limit: float = 0.2,
-        gripper_control_hz: float = 100.0,
+        gripper_control_hz: float = 500.0,
         gripper_fault_action: str = "hold",
     ) -> None:
-        native_module = import_module("arx_d_can._articore_runtime_native")
-        self._lib = ctypes.CDLL(native_module.__file__)
+        self._lib = ctypes.CDLL(articore_runtime_library_path())
+        # 先读取旧 ABI 也具备的版本与能力符号。误装旧版运行库时应给出明确的版本
+        # 错误，而不是因 ABI 1.5 新符号不存在而抛出晦涩的 AttributeError。
+        self._lib.articore_runtime_abi_version.restype = ctypes.c_uint32
+        self._lib.articore_runtime_capabilities.restype = ctypes.c_uint64
+        version = int(self._lib.articore_runtime_abi_version())
+        major = version >> 16
+        minor = version & 0xFFFF
+        if major != _ARTICORE_ABI_MAJOR or minor < _ARTICORE_ABI_MINOR:
+            raise RuntimeError(
+                "incompatible Articore runtime ABI: "
+                f"expected {_ARTICORE_ABI_MAJOR}.{_ARTICORE_ABI_MINOR} or newer, "
+                f"got {major}.{minor}"
+            )
+        capabilities = int(self._lib.articore_runtime_capabilities())
+        missing = _REQUIRED_CAPABILITIES & ~capabilities
+        if missing:
+            raise RuntimeError(
+                "Articore runtime is missing required capabilities: "
+                f"0x{missing:x}"
+            )
         self._bind()
         self._motor_abi = get_abi()
         motor_lib = self._motor_abi.lib
-        transport_health_pointer = 0
-        if getattr(self._motor_abi, "has_transport_health", False):
-            transport_health_pointer = _function_pointer(
-                motor_lib.motor_controller_get_transport_health
+        if not getattr(self._motor_abi, "has_transport_health", False):
+            raise RuntimeError(
+                "motor-drive-layer 0.8.2 must expose structured transport health"
             )
+        if not getattr(self._motor_abi, "has_structured_feedback_report", False):
+            raise RuntimeError(
+                "motor-drive-layer 0.8.2 must expose structured feedback reports"
+            )
+        transport_health_pointer = _function_pointer(
+            motor_lib.motor_controller_get_transport_health
+        )
         self._api = _MotorApi(
             _function_pointer(motor_lib.motor_controller_group_send_pos_vel),
             _function_pointer(motor_lib.motor_controller_group_send_mit),
             _function_pointer(motor_lib.motor_controller_disable_all),
-            _function_pointer(motor_lib.motor_controller_request_feedback_all),
+            _function_pointer(motor_lib.motor_controller_request_feedback_all_ex),
             _function_pointer(motor_lib.motor_handle_get_state),
             _function_pointer(motor_lib.motor_handle_get_feedback_stats),
             _function_pointer(motor_lib.motor_last_error_message),
@@ -398,43 +602,98 @@ class NativeSafetyRuntime:
             max(1, round(gripper_control_hz)),
             1 if normalized_fault_action == "hold" else 2,
         )
-        self._ptr = self._lib.articore_runtime_create(
+        self._ptr = self._lib.articore_runtime_create_ex(
             ctypes.byref(config),
             ctypes.byref(self._api),
             _pointer(controller_group, name="ControllerGroup"),
             _pointer(left_controller, name="left Controller"),
-            _pointer(right_controller, name="right Controller"),
+            (
+                0
+                if right_controller is None
+                else _pointer(right_controller, name="right Controller")
+            ),
             native_descriptors,
             len(descriptors),
+            _function_pointer(motor_lib.motor_controller_enable_all),
+            _function_pointer(motor_lib.motor_handle_enable),
         )
         if not self._ptr:
             raise RuntimeError(f"native safety runtime creation failed: {self._error()}")
+        try:
+            self._configure_joints(joints)
+        except Exception:
+            self._lib.articore_runtime_free(self._ptr)
+            self._ptr = None
+            raise
         self._pv_array = None
         self._arm_mit_array = None
         self._gripper_mit_array = None
         self._gripper_target_array = None
+        self._trajectory_target_array = None
 
     def _bind(self) -> None:
         lib = self._lib
-        lib.articore_runtime_create.argtypes = [
+        lib.articore_runtime_abi_version.restype = ctypes.c_uint32
+        lib.articore_runtime_capabilities.restype = ctypes.c_uint64
+        lib.articore_runtime_create_ex.argtypes = [
             ctypes.POINTER(_RuntimeConfig), ctypes.POINTER(_MotorApi), ctypes.c_void_p,
             ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_MotorDescriptor), ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_void_p,
         ]
-        lib.articore_runtime_create.restype = ctypes.c_void_p
+        lib.articore_runtime_create_ex.restype = ctypes.c_void_p
         lib.articore_runtime_free.argtypes = [ctypes.c_void_p]
         lib.articore_runtime_connect.argtypes = [ctypes.c_void_p]
         lib.articore_runtime_enable.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+        lib.articore_runtime_get_last_enable_report.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_EnableReport),
+        ]
+        lib.articore_runtime_configure_joints.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_JointControlConfig),
+            ctypes.c_uint32,
+        ]
         lib.articore_runtime_submit_pos_vel.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(_PosVelCommand), ctypes.c_uint32,
         ]
         lib.articore_runtime_submit_mit.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(_MitCommand), ctypes.c_uint32,
         ]
+        lib.articore_runtime_submit_pos_vel_ex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_PosVelCommand),
+            ctypes.c_uint32,
+            ctypes.c_int32,
+        ]
+        lib.articore_runtime_submit_mit_ex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_MitCommand),
+            ctypes.c_uint32,
+            ctypes.c_int32,
+        ]
         lib.articore_runtime_submit_gripper_mit.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(_MitCommand), ctypes.c_uint32,
         ]
         lib.articore_runtime_set_gripper_openings.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(_GripperTarget), ctypes.c_uint32,
+        ]
+        lib.articore_runtime_start_joint_trajectory.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_JointTrajectoryTarget),
+            ctypes.c_uint32,
+            ctypes.c_int32,
+        ]
+        lib.articore_runtime_start_joint_trajectory.restype = ctypes.c_uint64
+        lib.articore_runtime_get_trajectory.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.POINTER(_TrajectoryInfo),
+        ]
+        lib.articore_runtime_wait_trajectory.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint64,
+            ctypes.c_uint32,
+            ctypes.POINTER(_TrajectoryInfo),
         ]
         lib.articore_runtime_report_feedback_failure.argtypes = [
             ctypes.c_void_p, ctypes.c_uint8, ctypes.c_char_p,
@@ -449,9 +708,15 @@ class NativeSafetyRuntime:
         lib.articore_runtime_last_error.restype = ctypes.c_char_p
         for name in (
             "articore_runtime_connect", "articore_runtime_enable",
+            "articore_runtime_get_last_enable_report",
+            "articore_runtime_configure_joints",
             "articore_runtime_submit_pos_vel", "articore_runtime_submit_mit",
+            "articore_runtime_submit_pos_vel_ex",
+            "articore_runtime_submit_mit_ex",
             "articore_runtime_submit_gripper_mit",
             "articore_runtime_set_gripper_openings",
+            "articore_runtime_get_trajectory",
+            "articore_runtime_wait_trajectory",
             "articore_runtime_report_feedback_failure", "articore_runtime_disable",
             "articore_runtime_estop", "articore_runtime_recover",
             "articore_runtime_get_health", "articore_runtime_close",
@@ -469,14 +734,93 @@ class NativeSafetyRuntime:
     def connect(self) -> None:
         self._ok(self._lib.articore_runtime_connect(self._ptr), "runtime connect")
 
+    def _configure_joints(
+        self,
+        joints: Sequence[NativeJointControlConfig],
+    ) -> None:
+        values = tuple(joints)
+        if not values:
+            raise ValueError("native safety runtime requires arm joint configuration")
+        native = (_JointControlConfig * len(values))()
+        for index, joint in enumerate(values):
+            native[index] = _JointControlConfig(
+                _pointer(joint.motor, name="joint control motor"),
+                float(joint.lower_position),
+                float(joint.upper_position),
+                float(joint.velocity_limit),
+                float(joint.torque_limit),
+                float(joint.mit_kp),
+                float(joint.mit_kd),
+                float(joint.mit_feedforward_torque),
+            )
+        self._ok(
+            self._lib.articore_runtime_configure_joints(
+                self._ptr,
+                native,
+                len(values),
+            ),
+            "runtime joint configuration",
+        )
+        self._native_joint_configs = native
+
     def enable(self, mode: str) -> None:
         normalized = mode.strip().lower().replace("_", "")
         mode_id = 1 if normalized in {"pv", "posvel"} else 2 if normalized == "mit" else 0
         if mode_id == 0:
             raise ValueError("mode must be PV or MIT")
-        self._ok(self._lib.articore_runtime_enable(self._ptr, mode_id), "runtime enable")
+        result = self._lib.articore_runtime_enable(self._ptr, mode_id)
+        if result != 0:
+            raise NativeEnableError(self.last_enable_report)
 
-    def submit_pos_vel(self, commands: Sequence[object]) -> None:
+    @property
+    def last_enable_report(self) -> EnableReport:
+        """返回最近一次原子使能事务的结构化结果。"""
+        native = _EnableReport()
+        native.struct_size = ctypes.sizeof(_EnableReport)
+        self._ok(
+            self._lib.articore_runtime_get_last_enable_report(
+                self._ptr,
+                ctypes.byref(native),
+            ),
+            "runtime enable report",
+        )
+        missing_count = min(int(native.missing_count), 32)
+        motor_count = min(int(native.motor_count), 32)
+        return EnableReport(
+            success=bool(native.success),
+            disable_confirmed=bool(native.disable_confirmed),
+            expected_count=int(native.expected_count),
+            enabled_count=int(native.enabled_count),
+            missing_count=int(native.missing_count),
+            failure_count=int(native.failure_count),
+            missing_motors=tuple(
+                MissingEnableMotor(
+                    side=int(native.missing_motor_sides[index]),
+                    can_id=int(native.missing_motor_ids[index]),
+                )
+                for index in range(missing_count)
+            ),
+            motors=tuple(
+                EnableMotorResult(
+                    side=int(value.side),
+                    name=_text(value.name) or "",
+                    can_id=int(value.can_id),
+                    status_code=int(value.status_code),
+                    has_feedback=bool(value.has_feedback),
+                    feedback_fresh=bool(value.feedback_fresh),
+                    enabled=bool(value.enabled),
+                )
+                for value in native.motors[:motor_count]
+            ),
+            error=_text(native.error),
+        )
+
+    def submit_pos_vel(
+        self,
+        commands: Sequence[object],
+        *,
+        lifetime: CommandLifetime = CommandLifetime.STREAMING,
+    ) -> None:
         count = len(commands)
         if self._pv_array is None or len(self._pv_array) != count:
             self._pv_array = (_PosVelCommand * count)()
@@ -487,8 +831,11 @@ class NativeSafetyRuntime:
             self._pv_array[index].target_position = float(command.pos)
             self._pv_array[index].velocity_limit = float(command.vlim)
         self._ok(
-            self._lib.articore_runtime_submit_pos_vel(
-                self._ptr, self._pv_array, count
+            self._lib.articore_runtime_submit_pos_vel_ex(
+                self._ptr,
+                self._pv_array,
+                count,
+                int(CommandLifetime(lifetime)),
             ),
             "runtime PV submit",
         )
@@ -512,10 +859,20 @@ class NativeSafetyRuntime:
             native.feedforward_torque = float(command.tau)
         return array, count
 
-    def submit_mit(self, commands: Sequence[object]) -> None:
+    def submit_mit(
+        self,
+        commands: Sequence[object],
+        *,
+        lifetime: CommandLifetime = CommandLifetime.STREAMING,
+    ) -> None:
         array, count = self._mit_commands(commands, gripper=False)
         self._ok(
-            self._lib.articore_runtime_submit_mit(self._ptr, array, count),
+            self._lib.articore_runtime_submit_mit_ex(
+                self._ptr,
+                array,
+                count,
+                int(CommandLifetime(lifetime)),
+            ),
             "runtime MIT submit",
         )
 
@@ -548,6 +905,95 @@ class NativeSafetyRuntime:
             ),
             "runtime gripper opening submit",
         )
+
+    @staticmethod
+    def _trajectory_info(native: _TrajectoryInfo) -> TrajectoryInfo:
+        try:
+            status = _TRAJECTORY_STATUS_BY_CODE[int(native.status)]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"native runtime returned unknown trajectory status {native.status}"
+            ) from exc
+        profile = {1: "min_jerk", 2: "linear"}.get(
+            int(native.profile),
+            f"unknown:{int(native.profile)}",
+        )
+        return TrajectoryInfo(
+            trajectory_id=int(native.trajectory_id),
+            status=status,
+            profile=profile,
+            duration_s=int(native.duration_ns) / 1_000_000_000.0,
+            elapsed_s=int(native.elapsed_ns) / 1_000_000_000.0,
+            error=_text(native.error),
+        )
+
+    def start_joint_trajectory(
+        self,
+        targets: Sequence[tuple[object, float, float]],
+        *,
+        profile: str = "min_jerk",
+    ) -> int:
+        normalized = str(profile).strip().lower().replace("-", "_")
+        try:
+            profile_id = _TRAJECTORY_PROFILE_BY_NAME[normalized]
+        except KeyError as exc:
+            raise ValueError("profile must be 'min_jerk' or 'linear'") from exc
+        values = tuple(targets)
+        if not values:
+            raise ValueError("joint trajectory targets must not be empty")
+        count = len(values)
+        if self._trajectory_target_array is None or len(self._trajectory_target_array) != count:
+            self._trajectory_target_array = (_JointTrajectoryTarget * count)()
+        for index, (motor, position, velocity_limit) in enumerate(values):
+            self._trajectory_target_array[index] = _JointTrajectoryTarget(
+                _pointer(motor, name="trajectory motor"),
+                float(position),
+                float(velocity_limit),
+            )
+        trajectory_id = int(
+            self._lib.articore_runtime_start_joint_trajectory(
+                self._ptr,
+                self._trajectory_target_array,
+                count,
+                profile_id,
+            )
+        )
+        if trajectory_id == 0:
+            raise RuntimeError(f"runtime trajectory start failed: {self._error()}")
+        return trajectory_id
+
+    def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+        native = _TrajectoryInfo()
+        native.struct_size = ctypes.sizeof(_TrajectoryInfo)
+        self._ok(
+            self._lib.articore_runtime_get_trajectory(
+                self._ptr,
+                int(trajectory_id),
+                ctypes.byref(native),
+            ),
+            "runtime trajectory query",
+        )
+        return self._trajectory_info(native)
+
+    def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+        initial = self.get_trajectory(trajectory_id)
+        remaining = max(0.0, initial.duration_s - initial.elapsed_s)
+        timeout_ms = min(
+            0xFFFFFFFF,
+            max(1, math.ceil((remaining + 5.0) * 1000.0)),
+        )
+        native = _TrajectoryInfo()
+        native.struct_size = ctypes.sizeof(_TrajectoryInfo)
+        self._ok(
+            self._lib.articore_runtime_wait_trajectory(
+                self._ptr,
+                int(trajectory_id),
+                timeout_ms,
+                ctypes.byref(native),
+            ),
+            "runtime trajectory wait",
+        )
+        return self._trajectory_info(native)
 
     def report_feedback_failure(self, side: int, reason: str) -> None:
         self._ok(
@@ -653,11 +1099,18 @@ class NativeSafetyRuntime:
 
 
 __all__ = [
+    "EnableMotorResult",
+    "EnableReport",
     "GripperControlState",
     "GripperSafetyHealth",
+    "MissingEnableMotor",
+    "NativeEnableError",
+    "NativeJointControlConfig",
     "NativeMotorDescriptor",
     "NativeSafetyRuntime",
     "SafetyHealth",
     "SafetyState",
+    "TrajectoryInfo",
+    "TrajectoryStatus",
     "TransportHealth",
 ]

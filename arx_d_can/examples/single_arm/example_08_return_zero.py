@@ -6,7 +6,10 @@ import argparse
 import math
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.examples.single_arm.common import add_connection_arguments
+from arx_d_can.examples.single_arm.common import (
+    add_connection_arguments,
+    positive_velocity_degrees,
+)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -26,7 +29,7 @@ def main(args: argparse.Namespace) -> None:
         arm.enable()
 
         print("机械臂开始返回零位")
-        state = arm.move_joint_positions(zero, seconds=args.seconds)
+        state = arm.move_joint_positions(zero, velocity=args.velocity)
         print(
             "当前角度：",
             [round(math.degrees(value), 2) for value in state.arm.positions],
@@ -34,7 +37,7 @@ def main(args: argparse.Namespace) -> None:
 
         if arm.has_gripper:
             print("夹爪返回闭合位置")
-            arm.move_gripper(0, seconds=2.0)
+            arm.set_gripper_opening(0)
     finally:
         arm.close()
         print("已断开连接")
@@ -42,6 +45,10 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seconds", type=float, default=6.0, help="回零运动时间")
+    parser.add_argument(
+        "--velocity",
+        type=positive_velocity_degrees,
+        help="回零速度，单位为度/秒；省略时使用 SDK 默认轨迹速度",
+    )
     add_connection_arguments(parser)
     main(parser.parse_args())

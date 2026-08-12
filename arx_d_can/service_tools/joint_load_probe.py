@@ -160,7 +160,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
             target = sine_target(center=center, amplitude=amplitude, elapsed=elapsed, period=args.period)
             command = list(base)
             command[joint_index] = target
-            arm.send_joint_positions(command)
+            arm.stream_joint_positions(command)
             state = arm.read_state()
             actual = float(state.arm.positions[joint_index])
             velocity = float(state.arm.velocities[joint_index]) if state.arm.velocities else 0.0

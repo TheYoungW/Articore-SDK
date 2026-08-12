@@ -11,39 +11,51 @@ from typing import Any
 from .actuator import ArxDCan, JointCfg, JointGroup, available_models, load_cfg
 from .errors import (
     ArxDCanError,
-    CommandTimeoutError,
     CommunicationError,
     FeedbackError,
     FeedbackTimeoutError,
     IncompleteFeedbackError,
     MotorFaultError,
-    StaleFeedbackError,
     TransportError,
     UnexpectedMotorStateError,
 )
-from .diagnostics import MotorDiagnostic
 from .sdk import (
     ArxDCanArm,
     ArxDCanConfig,
     ArxDCanDualArm,
     ArxDCanDualArmState,
     ArxDCanState,
-    CoupledControlStats,
-    CoupledTorqueTelemetry,
-    CoupledTorqueSaturation,
-    CommunicationHealth,
+    EnableMotorResult,
+    EnableReport,
     GripperState,
     GripperControlState,
     GripperSafetyHealth,
     JointMotorConfig,
     JointState,
     MitCommand,
+    MotorDiagnostic,
     MotorState,
+    MissingEnableMotor,
+    NativeEnableError,
     SafetyHealth,
     SafetyState,
     TransportHealth,
     default_config,
 )
+
+# 异常实现由各层内部共享，但公共类型身份统一归属于包级 API。
+for _public_error in (
+    ArxDCanError,
+    CommunicationError,
+    FeedbackError,
+    FeedbackTimeoutError,
+    IncompleteFeedbackError,
+    MotorFaultError,
+    TransportError,
+    UnexpectedMotorStateError,
+):
+    _public_error.__module__ = __name__
+del _public_error
 
 
 def __getattr__(name: str) -> Any:
@@ -61,10 +73,19 @@ def __getattr__(name: str) -> Any:
             "GravityCompensationMode": GravityCompensationMode,
             "GravityCompensationSample": GravityCompensationSample,
         }[name]
-    if name == "DualArmGravityCompensationMode":
-        from .controllers import DualArmGravityCompensationMode
+    if name in {
+        "DualArmGravityCompensationMode",
+        "DualArmGravityCompensationSample",
+    }:
+        from .controllers import (
+            DualArmGravityCompensationMode,
+            DualArmGravityCompensationSample,
+        )
 
-        return DualArmGravityCompensationMode
+        return {
+            "DualArmGravityCompensationMode": DualArmGravityCompensationMode,
+            "DualArmGravityCompensationSample": DualArmGravityCompensationSample,
+        }[name]
     if name in {"actuator", "controllers", "dynamics", "kinematics", "trajectory"}:
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -79,13 +100,11 @@ __all__ = [
     "ArxDCanDualArmState",
     "ArxDCanEndPose",
     "ArxDCanState",
-    "CoupledControlStats",
-    "CoupledTorqueTelemetry",
-    "CoupledTorqueSaturation",
-    "CommandTimeoutError",
     "CommunicationError",
-    "CommunicationHealth",
+    "EnableMotorResult",
+    "EnableReport",
     "DualArmGravityCompensationMode",
+    "DualArmGravityCompensationSample",
     "FeedbackError",
     "FeedbackTimeoutError",
     "GravityCompensationMode",
@@ -100,11 +119,12 @@ __all__ = [
     "IncompleteFeedbackError",
     "MitCommand",
     "MotorState",
+    "MissingEnableMotor",
+    "NativeEnableError",
     "SafetyHealth",
     "SafetyState",
     "MotorFaultError",
     "MotorDiagnostic",
-    "StaleFeedbackError",
     "TransportError",
     "TransportHealth",
     "UnexpectedMotorStateError",

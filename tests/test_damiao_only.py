@@ -5,7 +5,7 @@ import pytest
 from arx_d_can.actuator import arx_d_can as actuator_module
 from arx_d_can.actuator.arx_d_can import ArxDCan, JointCfg, JointGroup
 from arx_d_can.driver import CallError
-from arx_d_can.errors import IncompleteFeedbackError
+from arx_d_can import IncompleteFeedbackError
 from arx_d_can.sdk import ArxDCanArm
 from arx_d_can.service_tools import zero_current_position as zero_tool
 
@@ -487,7 +487,7 @@ def test_global_state_rejects_damiao_fault_status():
         arm.get_state(request_feedback=False)
 
 
-def test_complete_feedback_retries_one_transient_timeout():
+def test_complete_feedback_retries_one_transient_failure():
     arm = make_zero_arm(FakeZeroMotor())
     controller = FakeFlakyFeedbackController(failures=1)
     arm._ctrl_map = {"main": controller}

@@ -1,5 +1,4 @@
 from pathlib import Path
-import math
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -34,6 +33,8 @@ def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
     assert left.config.transport == "dm-device"
     assert right.config.port == "1"
     assert left.config.port == "0"
+    assert right.config.max_cached_feedback_age_s == pytest.approx(0.1)
+    assert left.config.max_cached_feedback_age_s == pytest.approx(0.1)
 
 
 def test_yunyi_motor_models_and_ids_match_each_single_can_bus() -> None:
@@ -80,8 +81,8 @@ def test_yunyi_gripper_mappings_match_calibrated_ranges() -> None:
     assert right == {"closed_value": 0.0, "open_value": 2.64}
 
 
-def test_yunyi_joint_torque_ranges_match_hardware() -> None:
-    expected = [40.0, 40.0, 20.0, 20.0, 8.0, 8.0, 8.0, None]
+def test_yunyi_joint_torque_ranges_match_urdf_limits() -> None:
+    expected = [40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0, None]
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         joints = load_cfg(model=model)["joints"]
         assert [joint.torque_range for joint in joints] == expected
@@ -97,14 +98,28 @@ def test_yunyi_joint_velocity_ranges_match_hardware_registers() -> None:
         assert [joint.velocity_range for joint in joints] == expected
 
 
-def test_yunyi_uses_openarm_default_mit_gains() -> None:
-    joint1 = (70.0, 2.75, 0.010, 0.0025, 100.0, 0.3, 2.0)
-    joint2 = (70.0, 2.5, 0.008, 0.002, 80.0, 0.2, 2.0)
-    joint3 = (70.0, 2.0, 0.0125, 0.001, 165.0, 0.0, 3.3)
-    joint4 = (60.0, 2.0, 0.0125, 0.001, 180.0, 0.0, 3.3)
-    joint5 = (10.0, 0.7, 0.006, 0.0015, 80.0, 0.2, 6.3)
-    joint6 = (10.0, 0.6, 0.006, 0.0015, 80.0, 0.2, 6.3)
-    joint7 = (10.0, 0.5, 0.006, 0.0015, 80.0, 0.2, 6.3)
+def test_yunyi_product_speed_profile_is_independent_of_urdf_limits() -> None:
+    expected = (2.0, 2.0, 3.3, 3.3, 6.3, 6.3, 6.3)
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        arm = ArxDCanArm(model=model, enable_gripper=False)
+        config = arm.config
+        assert config.product_velocity_at_400 == expected
+        assert tuple(config.product_velocity_at_400) != tuple(
+            joint.pv_vlim for joint in config.arm_joints
+        )
+        assert tuple(arm._default_joint_velocity_limits()) == pytest.approx(
+            tuple(value * 0.5 for value in expected)
+        )
+
+
+def test_yunyi_control_gains_and_velocity_limits_match_product_profile() -> None:
+    joint1 = (70.0, 2.75, 0.010, 0.0025, 100.0, 0.3, 16.0)
+    joint2 = (70.0, 2.5, 0.008, 0.002, 80.0, 0.2, 16.0)
+    joint3 = (70.0, 2.0, 0.0125, 0.001, 165.0, 0.0, 5.0)
+    joint4 = (60.0, 2.0, 0.0125, 0.001, 180.0, 0.0, 5.0)
+    joint5 = (10.0, 0.7, 0.006, 0.0015, 80.0, 0.2, 20.0)
+    joint6 = (10.0, 0.6, 0.006, 0.0015, 80.0, 0.2, 20.0)
+    joint7 = (10.0, 0.5, 0.006, 0.0015, 80.0, 0.2, 20.0)
     expected = [
         joint1,
         joint2,
@@ -132,6 +147,22 @@ def test_yunyi_uses_openarm_default_mit_gains() -> None:
         assert actual == expected
 
 
+def test_yunyi_native_mit_trajectory_gains_come_from_yaml() -> None:
+    expected_kp = (70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0)
+    expected_kd = (2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5)
+
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        arm = ArxDCanArm(model=model, enable_gripper=False)
+        arm.robot._motor_map.update(
+            {joint.name: object() for joint in arm.config.arm_joints}
+        )
+
+        native = arm._native_joint_control_configs()
+
+        assert tuple(joint.mit_kp for joint in native) == expected_kp
+        assert tuple(joint.mit_kd for joint in native) == expected_kd
+
+
 def test_yunyi_gripper_uses_fixed_default_mit_gains() -> None:
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         arm = ArxDCanArm(model=model, enable_gripper=True)
@@ -139,7 +170,16 @@ def test_yunyi_gripper_uses_fixed_default_mit_gains() -> None:
         assert arm.config.gripper is not None
         assert arm.config.gripper.mit_kp == pytest.approx(4.0)
         assert arm.config.gripper.mit_kd == pytest.approx(0.5)
-        assert arm.config.gripper_force_control_enabled
+
+
+def test_yunyi_arm_and_gripper_share_500_hz_normal_control_rate() -> None:
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        arm = ArxDCanArm(model=model, enable_gripper=True)
+
+        assert arm.config.control_hz == pytest.approx(500.0)
+        # ABI 兼容字段保留，但不再表示独立的低频夹爪线程。
+        assert arm.config.gripper_protection.control_hz == pytest.approx(500.0)
+        assert arm.config.safe_hold_hz == pytest.approx(100.0)
 
 
 def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
@@ -153,24 +193,45 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
     assert len([joint for joint in joints if joint.attrib["type"] == "revolute"]) == 14
     assert len([joint for joint in joints if joint.attrib["type"] == "prismatic"]) == 4
 
+    expected_efforts = [40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0]
+    expected_velocities = [16.0, 16.0, 5.0, 5.0, 20.0, 20.0, 20.0]
+    for side in ("l", "r"):
+        limits = [
+            root.find(f"joint[@name='{side}-joint{index}']/limit")
+            for index in range(1, 8)
+        ]
+        assert all(limit is not None for limit in limits)
+        assert [float(limit.attrib["effort"]) for limit in limits] == expected_efforts
+        assert [float(limit.attrib["velocity"]) for limit in limits] == expected_velocities
+
+        model = f"yunyi_v1_0_{'left' if side == 'l' else 'right'}"
+        profile_joints = load_cfg(model=model)["joints"][:7]
+        assert [joint.torque_range for joint in profile_joints] == expected_efforts
+        assert [joint.vlim for joint in profile_joints] == expected_velocities
+
+    expected_joint4_limits = {
+        "r": (-0.1744, 2.2678),
+        "l": (-0.1744, 2.2678),
+    }
     for side in ("r", "l"):
         joint3 = root.find(f"joint[@name='{side}-joint3']")
         assert joint3 is not None
         joint3_limit = joint3.find("limit")
         assert joint3_limit is not None
-        assert float(joint3_limit.attrib["lower"]) == pytest.approx(
-            math.radians(-145.0)
-        )
-        assert float(joint3_limit.attrib["upper"]) == pytest.approx(
-            math.radians(145.0)
-        )
+        assert float(joint3_limit.attrib["lower"]) == pytest.approx(-2.5294)
+        assert float(joint3_limit.attrib["upper"]) == pytest.approx(2.5294)
 
         joint4 = root.find(f"joint[@name='{side}-joint4']")
         assert joint4 is not None
         joint4_limit = joint4.find("limit")
         assert joint4_limit is not None
-        assert float(joint4_limit.attrib["lower"]) == pytest.approx(math.radians(-5.0))
-        assert float(joint4_limit.attrib["upper"]) == pytest.approx(math.radians(90.0))
+        expected_joint4_lower, expected_joint4_upper = expected_joint4_limits[side]
+        assert float(joint4_limit.attrib["lower"]) == pytest.approx(
+            expected_joint4_lower
+        )
+        assert float(joint4_limit.attrib["upper"]) == pytest.approx(
+            expected_joint4_upper
+        )
 
         profile_joint4 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
             "joints"
@@ -178,17 +239,17 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
         profile_joint3 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
             "joints"
         ][2]
-        assert profile_joint3.lower_limit == pytest.approx(math.radians(-145.0))
-        assert profile_joint3.upper_limit == pytest.approx(math.radians(145.0))
-        assert profile_joint4.lower_limit == pytest.approx(math.radians(-5.0))
-        assert profile_joint4.upper_limit == pytest.approx(math.radians(90.0))
+        assert profile_joint3.lower_limit == pytest.approx(-2.5294)
+        assert profile_joint3.upper_limit == pytest.approx(2.5294)
+        assert profile_joint4.lower_limit == pytest.approx(expected_joint4_lower)
+        assert profile_joint4.upper_limit == pytest.approx(expected_joint4_upper)
 
         joint6 = root.find(f"joint[@name='{side}-joint6']")
         assert joint6 is not None
         limit = joint6.find("limit")
         assert limit is not None
-        assert math.isclose(float(limit.attrib["lower"]), math.radians(-45))
-        assert math.isclose(float(limit.attrib["upper"]), math.radians(60))
+        assert float(limit.attrib["lower"]) == pytest.approx(-0.785)
+        assert float(limit.attrib["upper"]) == pytest.approx(0.785)
 
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         assert Path(load_cfg(model=model)["urdf_path"]) == dual_path

@@ -9,26 +9,32 @@ def __getattr__(name: str) -> Any:
         from .arx_d_can_endpose_controller import ArxDCanEndPose
 
         return ArxDCanEndPose
-    if name in {"GravityCompensationMode", "GravityCompensationSample"}:
+    if name in {
+        "DualArmGravityCompensationMode",
+        "DualArmGravityCompensationSample",
+        "GravityCompensationMode",
+        "GravityCompensationSample",
+    }:
         from .gravity_compensation import (
+            DualArmGravityCompensationMode,
+            DualArmGravityCompensationSample,
             GravityCompensationMode,
             GravityCompensationSample,
         )
 
         return {
+            "DualArmGravityCompensationMode": DualArmGravityCompensationMode,
+            "DualArmGravityCompensationSample": DualArmGravityCompensationSample,
             "GravityCompensationMode": GravityCompensationMode,
             "GravityCompensationSample": GravityCompensationSample,
         }[name]
-    if name == "DualArmGravityCompensationMode":
-        from .dual_gravity_compensation import DualArmGravityCompensationMode
-
-        return DualArmGravityCompensationMode
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
     "ArxDCanEndPose",
     "DualArmGravityCompensationMode",
+    "DualArmGravityCompensationSample",
     "GravityCompensationMode",
     "GravityCompensationSample",
 ]

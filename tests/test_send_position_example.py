@@ -18,7 +18,7 @@ def test_parser_only_exposes_simple_position_options() -> None:
     assert "config_path" not in destinations
 
 
-def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
+def test_main_uses_native_smooth_trajectory(monkeypatch) -> None:
     captured = {"calls": []}
 
     class FakeArm:
@@ -30,7 +30,7 @@ def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
         def enable(self):
             captured["calls"].append("enable")
 
-        def hold_joint_positions(self, positions):
+        def move_joint_positions(self, positions):
             captured["target"] = tuple(positions)
 
         def close(self):
@@ -43,6 +43,11 @@ def test_main_uses_blocking_high_level_hold(monkeypatch) -> None:
         return FakeArm()
 
     monkeypatch.setattr(example, "ArxDCanArm", fake_arm)
+    monkeypatch.setattr(
+        example.time,
+        "sleep",
+        lambda _seconds: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
     args = example.build_parser().parse_args(
         ["--mode", "mit", "--positions", "0,10,20,30,40,50"]
     )

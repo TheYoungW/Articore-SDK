@@ -162,3 +162,12 @@ def test_parse_scan_ids_accepts_only_validated_hit_lines():
     )
 
     assert parse_scan_ids(output, model="4340P") == [6]
+
+
+def test_parse_scan_ids_accepts_dm_device_arbitration_id_mapping():
+    output = (
+        f"[hit] id=0x6 feedback_id=0x16 "
+        f"state={state(0x206)}"
+    )
+
+    assert parse_scan_ids(output, model="4340P") == [6]

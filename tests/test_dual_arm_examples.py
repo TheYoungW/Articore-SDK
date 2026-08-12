@@ -1,10 +1,24 @@
 from pathlib import Path
 
 
-def test_dual_arm_examples_match_single_arm_numbering() -> None:
+def test_dual_arm_examples_use_contiguous_numbers() -> None:
     root = Path(__file__).resolve().parents[1] / "arx_d_can" / "examples"
-    single = {path.name for path in (root / "single_arm").glob("example_*.py")}
-    dual = {path.name for path in (root / "dual_arm").glob("example_*.py")}
+    dual = sorted(path.name for path in (root / "dual_arm").glob("example_*.py"))
 
-    assert dual == single
-    assert len(dual) == 12
+    assert dual == [
+        "example_01_scan_ids.py",
+        "example_02_switch_control_mode.py",
+        "example_03_enable_disable.py",
+        "example_04_read_state.py",
+        "example_05_clear_faults.py",
+        "example_06_send_position_pv.py",
+        "example_07_send_position_mit.py",
+        "example_08_set_gripper_openings.py",
+        "example_09_benchmark_read_rate.py",
+        "example_10_send_joint_trajectory.py",
+        "example_11_return_zero.py",
+        "example_12_diagnose_status.py",
+        "example_13_set_zero_current_position.py",
+        "example_14_record_and_replay_trajectory.py",
+        "example_15_gravity_compensation.py",
+    ]

@@ -68,21 +68,17 @@ def test_dual_trajectory_rejects_wrong_product_joints(tmp_path) -> None:
 def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> None:
     commands: list[tuple] = []
 
-    class Side:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def set_gripper(self, value: float) -> None:
-            commands.append((self.name, value))
-
     class Robot:
-        left = Side("left_gripper")
-        right = Side("right_gripper")
+        left = type("Side", (), {"has_gripper": True})()
+        right = type("Side", (), {"has_gripper": True})()
         left.has_gripper = True
         right.has_gripper = True
 
-        def send_joint_positions(self, *, left, right) -> None:
+        def _submit_joint_positions(self, *, left, right) -> None:
             commands.append(("arms", tuple(left), tuple(right)))
+
+        def set_gripper_openings(self, *, left, right) -> None:
+            commands.append(("grippers", left, right))
 
     monkeypatch.setattr(
         "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
@@ -96,6 +92,5 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
 
     assert commands == [
         ("arms", (0.1,), (0.2,)),
-        ("left_gripper", 1000.0),
-        ("right_gripper", 0.0),
+        ("grippers", 1000.0, 0.0),
     ]

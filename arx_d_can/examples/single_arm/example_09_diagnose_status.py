@@ -7,7 +7,7 @@ import math
 import time
 
 from arx_d_can import ArxDCanArm
-from arx_d_can.diagnostics import print_diagnostic_summary
+from arx_d_can.sdk.diagnostics import print_diagnostic_summary
 from arx_d_can.examples.single_arm.common import add_connection_arguments
 
 
@@ -25,7 +25,7 @@ def main(args: argparse.Namespace) -> None:
     try:
         diagnostics = []
         for sample in range(1, args.samples + 1):
-            diagnostics = arm.read_motor_diagnostics(timeout_ms=args.timeout_ms)
+            diagnostics = arm.read_motor_diagnostics()
             print(f"\n--- 诊断数据 #{sample} ---")
             for item in diagnostics:
                 if item.error is not None:
@@ -52,7 +52,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--samples", type=int, default=3, help="读取次数")
     parser.add_argument("--interval", type=float, default=0.1, help="读取间隔")
-    parser.add_argument("--timeout-ms", type=int, default=100)
     parser.add_argument("--temperature-warning", type=float, default=80.0)
     add_connection_arguments(parser)
     main(parser.parse_args())

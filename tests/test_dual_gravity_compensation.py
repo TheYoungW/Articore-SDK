@@ -1,46 +1,139 @@
 from __future__ import annotations
 
-from arx_d_can.controllers import dual_gravity_compensation as module
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from arx_d_can.controllers.gravity_compensation import DualArmGravityCompensationMode
+from arx_d_can.sdk import ArxDCanConfig, JointMotorConfig
 
 
-def test_dual_gravity_start_run_and_shutdown(monkeypatch) -> None:
-    calls: list[str] = []
+def _joint(name: str) -> JointMotorConfig:
+    return JointMotorConfig(
+        name=name,
+        motor_id=1,
+        feedback_id=0x11,
+        model="4340P",
+        mit_kp=10.0,
+        mit_kd=1.0,
+        pv_vel_kp=0.01,
+        pv_vel_ki=0.001,
+        pv_pos_kp=50.0,
+        pv_pos_ki=0.5,
+        pv_vlim=2.0,
+    )
 
-    class FakeMode:
-        def __init__(self, arm, **_kwargs) -> None:
-            self.name = arm
 
-        def start(self) -> None:
-            calls.append(f"start:{self.name}")
+class _Arm:
+    def __init__(self, name: str, mode: str = "mit") -> None:
+        self.joint_names = (name,)
+        self._mode = mode
+        self.config = ArxDCanConfig(
+            arm_control_mode=mode,
+            feedback_check_hz=100.0,
+            arm_joints=(_joint(name),),
+        )
 
-        def step(self) -> None:
-            calls.append(f"step:{self.name}")
 
-        def stop(self) -> None:
-            calls.append(f"stop:{self.name}")
+class _Robot:
+    def __init__(self, mode: str = "mit") -> None:
+        self.left = _Arm("left_joint", mode)
+        self.right = _Arm("right_joint", mode)
+        self.connected = False
+        self.enabled = False
+        self.calls: list[tuple[str, object]] = []
+        self.commands: list[dict[str, object]] = []
+        self.safety_health = SimpleNamespace(
+            safe_holding=False,
+            fault_reason=None,
+        )
 
-    class FakeRobot:
-        left = "left"
-        right = "right"
-        connected = False
+    @staticmethod
+    def _side(position: float):
+        return SimpleNamespace(
+            arm=SimpleNamespace(
+                positions=(position,),
+                velocities=(0.0,),
+            )
+        )
 
-        def connect(self) -> None:
-            calls.append("connect")
-            self.connected = True
+    def _state(self):
+        return SimpleNamespace(left=self._side(0.1), right=self._side(-0.2))
 
-        def close(self) -> None:
-            calls.append("close")
-            self.connected = False
+    def connect(self) -> None:
+        self.connected = True
+        self.calls.append(("connect", None))
 
-    monkeypatch.setattr(module, "GravityCompensationMode", FakeMode)
-    robot = FakeRobot()
-    gravity = module.DualArmGravityCompensationMode(robot, hz=100.0)
+    def read_state(self):
+        self.calls.append(("read_state", None))
+        return self._state()
 
-    gravity.start()
-    gravity.run(seconds=0.001)
-    gravity.shutdown()
+    def read_cached_state(self):
+        self.calls.append(("read_cached_state", None))
+        return self._state()
 
-    assert calls[:3] == ["connect", "start:left", "start:right"]
-    assert "step:left" in calls
-    assert "step:right" in calls
-    assert calls[-3:] == ["stop:left", "stop:right", "close"]
+    def enable(self, **kwargs) -> None:
+        self.enabled = True
+        self.calls.append(("enable", kwargs))
+
+    def _submit_joint_positions(self, **kwargs) -> None:
+        assert self.enabled
+        self.commands.append(
+            {
+                key: np.asarray(value, dtype=float).copy()
+                for key, value in kwargs.items()
+            }
+        )
+
+    def disable(self) -> None:
+        self.enabled = False
+        self.calls.append(("disable", None))
+
+    def close(self) -> None:
+        self.connected = False
+        self.enabled = False
+        self.calls.append(("close", None))
+
+
+def _mode(robot: _Robot) -> DualArmGravityCompensationMode:
+    return DualArmGravityCompensationMode(
+        robot,
+        transition_seconds=0.0,
+        left_gravity_provider=lambda _positions: np.array([1.0]),
+        right_gravity_provider=lambda _positions: np.array([-2.0]),
+    )
+
+
+def test_dual_gravity_uses_one_atomic_runtime_submission() -> None:
+    robot = _Robot()
+    gravity = _mode(robot)
+
+    sample = gravity.start()
+
+    enable_kwargs = next(value for name, value in robot.calls if name == "enable")
+    assert enable_kwargs["left_initial_positions"] == pytest.approx((0.1,))
+    assert enable_kwargs["right_initial_positions"] == pytest.approx((-0.2,))
+    assert len(robot.commands) == 1
+    np.testing.assert_allclose(robot.commands[0]["left_torques"], [1.0])
+    np.testing.assert_allclose(robot.commands[0]["right_torques"], [-2.0])
+    assert sample.left.commanded_torques == pytest.approx((1.0,))
+    assert sample.right.commanded_torques == pytest.approx((-2.0,))
+
+    gravity.step()
+    assert len(robot.commands) == 2
+
+    gravity.stop()
+    assert not robot.connected
+    assert not robot.enabled
+    assert robot.calls[-1] == ("close", None)
+
+
+def test_dual_gravity_requires_mit_mode() -> None:
+    robot = _Robot(mode="pv")
+    gravity = _mode(robot)
+
+    with pytest.raises(RuntimeError, match="control_mode='mit'"):
+        gravity.start()
+
+    assert not robot.connected

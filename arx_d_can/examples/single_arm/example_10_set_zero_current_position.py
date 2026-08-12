@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 10：将机械臂当前位置设置为电机零点。"""
+"""示例 10：将所有已启用电机的当前位置设置为零点。"""
 from __future__ import annotations
 
 import argparse
@@ -21,7 +21,7 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功，电机保持失能状态")
 
     try:
-        completed = arm.set_zero(joint_names=arm.joint_names)
+        completed = arm.set_zero()
         print("零点设置完成：", ", ".join(completed))
     finally:
         arm.close()

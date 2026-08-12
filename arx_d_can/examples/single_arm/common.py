@@ -78,3 +78,11 @@ def parse_joint_positions_degrees(
         math.radians(value)
         for value in parse_joint_positions(text, expected_count=expected_count)
     )
+
+
+def positive_velocity_degrees(text: str) -> float:
+    """解析正数速度，并从度/秒转换为弧度/秒。"""
+    value = float(text)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("速度必须是有限正数")
+    return math.radians(value)

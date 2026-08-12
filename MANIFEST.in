@@ -1,3 +1,0 @@
-graft cpp_runtime
-prune cpp_runtime/build
-global-exclude *.o *.a *.so *.dylib *.dll *.py[cod] __pycache__

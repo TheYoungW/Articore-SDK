@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""示例 04：使用 PV 或 MIT 模式发送一组机械臂关节目标。"""
+"""示例 04：使用 PV 或 MIT 模式平滑移动到目标位置。"""
 from __future__ import annotations
 
 import argparse
 import math
+import time
 
 from arx_d_can import ArxDCanArm
 from arx_d_can.examples.single_arm.common import (
@@ -33,8 +34,10 @@ def main(args: argparse.Namespace) -> None:
         arm.enable()
         print(f"已进入 {args.mode.upper()} 模式")
         print("目标角度：", [round(math.degrees(value), 2) for value in target])
-        print("保持目标位置，按 Ctrl+C 停止并失能机械臂")
-        arm.hold_joint_positions(target)
+        arm.move_joint_positions(target)
+        print("已到达目标位置，按 Ctrl+C 失能并退出")
+        while True:
+            time.sleep(1.0)
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:

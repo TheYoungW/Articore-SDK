@@ -2,13 +2,58 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 from typing import Sequence
 
 import numpy as np
 
 from ..actuator import JointCfg, load_cfg
-from .gripper_force_control import GripperForceControlConfig
+
+
+@dataclass(slots=True, frozen=True)
+class GripperProtectionConfig:
+    """传递给 motor 原生运行时的夹爪保护参数。"""
+
+    control_hz: float = 500.0
+    close_speed: float = 1.0
+    contact_torque: float = 0.8
+    overload_torque: float = 1.5
+    motion_window_s: float = 0.2
+    stall_movement: float = 0.01
+    min_position_error: float = 0.05
+    contact_hold_s: float = 0.2
+    overload_hold_s: float = 0.05
+    hold_offset: float = 0.08
+    retreat_distance: float = 0.15
+    max_step_interval_s: float = 0.05
+    overload_retreat_interval_s: float = 0.1
+    hold_kp: float = 2.0
+    hold_kd: float = 0.5
+
+    def __post_init__(self) -> None:
+        values = tuple(
+            float(getattr(self, name))
+            for name in self.__dataclass_fields__
+        )
+        if not all(math.isfinite(value) and value >= 0.0 for value in values):
+            raise ValueError("gripper protection values must be finite and non-negative")
+        required_positive = {
+            "control_hz": self.control_hz,
+            "close_speed": self.close_speed,
+            "contact_torque": self.contact_torque,
+            "motion_window_s": self.motion_window_s,
+            "hold_offset": self.hold_offset,
+            "retreat_distance": self.retreat_distance,
+            "max_step_interval_s": self.max_step_interval_s,
+            "overload_retreat_interval_s": self.overload_retreat_interval_s,
+            "hold_kp": self.hold_kp,
+        }
+        for name, value in required_positive.items():
+            if value <= 0.0:
+                raise ValueError(f"{name} must be positive")
+        if self.overload_torque <= self.contact_torque:
+            raise ValueError("overload_torque must be greater than contact_torque")
 
 
 @dataclass(slots=True, frozen=True)
@@ -27,12 +72,6 @@ class JointMotorConfig:
     direction: float = 1.0
     torque_range: float | None = None
     effort_limit: float | None = None
-    coupled_effort_limit: float | None = None
-    coupled_motor_kd: float = 0.0
-    coupled_velocity_filter_s: float = 0.0
-    coupled_torque_rise_rate: float | None = None
-    coupled_hold_torque_rise_rate: float | None = None
-    coupled_torque_brake_rate: float | None = None
     velocity_range: float | None = None
     lower_limit: float | None = None
     upper_limit: float | None = None
@@ -43,23 +82,19 @@ class ArxDCanConfig:
     port: str = "/dev/ttyACM0"
     transport: str = "auto"
     baud: int = 1_000_000
-    control_hz: float = 100.0
+    control_hz: float = 500.0
     arm_control_mode: str = "posvel"
     arm_joints: tuple[JointMotorConfig, ...] = ()
+    product_velocity_at_400: tuple[float, ...] = ()
     gripper: JointMotorConfig | None = None
     gripper_open_value: float = 2.64
     gripper_closed_value: float = 0.0
-    gripper_force_control_enabled: bool = False
-    gripper_force_control: GripperForceControlConfig = field(
-        default_factory=GripperForceControlConfig
+    gripper_protection: GripperProtectionConfig = field(
+        default_factory=GripperProtectionConfig
     )
-    gripper_control_hz: float = 100.0
     gripper_fault_action: str = "hold"
-    watchdog_enabled: bool = True
     command_timeout_s: float = 0.25
     enable_grace_s: float = 2.0
-    watchdog_poll_s: float = 0.02
-    watchdog_action: str = "safe_hold"
     safe_hold_hz: float = 100.0
     safe_hold_pv_velocity_limit: float = 0.2
     safe_hold_mit_kp: float = 5.0
@@ -73,7 +108,6 @@ class ArxDCanConfig:
     model: str = "custom"
     hardware_config_path: str | None = None
     urdf_path: str | None = None
-    joint_transform_path: str | None = None
     end_effector_frame: str = "gripper_end"
 
     @property
@@ -102,30 +136,10 @@ def _joint_from_yaml(joint: JointCfg) -> JointMotorConfig:
         direction=joint.direction,
         torque_range=joint.torque_range,
         effort_limit=joint.effort_limit,
-        coupled_effort_limit=joint.coupled_effort_limit,
-        coupled_motor_kd=joint.coupled_motor_kd,
-        coupled_velocity_filter_s=joint.coupled_velocity_filter_s,
-        coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
-        coupled_hold_torque_rise_rate=joint.coupled_hold_torque_rise_rate,
-        coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
         velocity_range=joint.velocity_range,
         lower_limit=joint.lower_limit,
         upper_limit=joint.upper_limit,
     )
-
-
-def _config_bool(value: object, *, name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "yes", "on", "1"}:
-            return True
-        if normalized in {"false", "no", "off", "0"}:
-            return False
-    if isinstance(value, (int, float)) and value in (0, 1):
-        return bool(value)
-    raise ValueError(f"{name} must be a boolean")
 
 
 def _connection_channel(port: str | None, channel: str | None) -> str | None:
@@ -172,16 +186,51 @@ def _config_from_loaded(
     arm_names = list(groups.get("arm", {}).get("joints", []))
     gripper_names = list(groups.get("gripper", {}).get("joints", []))
     gripper_mapping = data.get("gripper_mapping", {}) or {}
-    force_control = data.get("gripper_force_control", {}) or {}
+    motion = data.get("motion", {}) or {}
+    protection = data.get("gripper_protection", {}) or {}
     safety = data.get("safety", {}) or {}
-    gripper_control_hz = float(force_control.get("control_hz", 100.0))
+    gripper_control_hz = float(
+        protection.get("control_hz", data.get("rate", 500.0))
+    )
     if not np.isfinite(gripper_control_hz) or gripper_control_hz <= 0.0:
-        raise ValueError("gripper_force_control.control_hz must be finite and positive")
+        raise ValueError("gripper_protection.control_hz must be finite and positive")
     gripper_fault_action = str(
         safety.get("gripper_fault_action", "hold")
     ).strip().lower()
     if gripper_fault_action not in {"hold", "disable"}:
         raise ValueError("safety.gripper_fault_action must be 'hold' or 'disable'")
+
+    product_velocity_at_400 = tuple(
+        float(value) for value in motion.get("joint_velocity_at_max", ())
+    )
+    speed_level_max = float(motion.get("speed_level_max", 400.0))
+    if speed_level_max != 400.0:
+        raise ValueError("motion.speed_level_max must be 400")
+    if product_velocity_at_400:
+        if len(product_velocity_at_400) != len(arm_names):
+            raise ValueError(
+                "motion.joint_velocity_at_max must match the arm joint count"
+            )
+        if not all(
+            math.isfinite(value) and value > 0.0
+            for value in product_velocity_at_400
+        ):
+            raise ValueError(
+                "motion.joint_velocity_at_max values must be finite and positive"
+            )
+        configured_limits = tuple(
+            joints_by_name[name].pv_vlim for name in arm_names
+        )
+        if any(
+            velocity > limit
+            for velocity, limit in zip(
+                product_velocity_at_400,
+                configured_limits,
+            )
+        ):
+            raise ValueError(
+                "motion.joint_velocity_at_max must not exceed URDF/YAML limits"
+            )
 
     return ArxDCanConfig(
         name=str(data.get("name", "ARX-D-CAN")),
@@ -190,11 +239,6 @@ def _config_from_loaded(
             None if data.get("hardware_path") is None else str(data["hardware_path"])
         ),
         urdf_path=None if data.get("urdf_path") is None else str(data["urdf_path"]),
-        joint_transform_path=(
-            None
-            if data.get("joint_transform_path") is None
-            else str(data["joint_transform_path"])
-        ),
         end_effector_frame=str(data.get("end_effector_frame", "gripper_end")),
         port=str(data.get("channel", "/dev/ttyACM0") if port is None else port),
         transport=str(
@@ -202,45 +246,36 @@ def _config_from_loaded(
         ),
         baud=int(data.get("baud", 1_000_000) if baud is None else baud),
         control_hz=float(
-            data.get("rate", 100.0) if control_hz is None else control_hz
+            data.get("rate", 500.0) if control_hz is None else control_hz
         ),
         arm_control_mode=arm_control_mode,
         arm_joints=tuple(joints_by_name[name] for name in arm_names),
+        product_velocity_at_400=product_velocity_at_400,
         gripper=joints_by_name.get(gripper_names[0]) if gripper_names else None,
         gripper_closed_value=float(gripper_mapping.get("closed_value", 0.0)),
         gripper_open_value=float(gripper_mapping.get("open_value", 2.64)),
-        gripper_force_control_enabled=_config_bool(
-            force_control.get("enabled", False),
-            name="gripper_force_control.enabled",
-        ),
-        gripper_force_control=GripperForceControlConfig(
-            close_speed=float(force_control.get("close_speed", 1.0)),
-            contact_torque=float(force_control.get("contact_torque", 0.8)),
-            overload_torque=float(force_control.get("overload_torque", 1.5)),
-            motion_window_s=float(force_control.get("motion_window_s", 0.2)),
-            stall_movement=float(force_control.get("stall_movement", 0.01)),
-            min_position_error=float(force_control.get("min_position_error", 0.05)),
-            contact_hold_s=float(force_control.get("contact_hold_s", 0.2)),
-            overload_hold_s=float(force_control.get("overload_hold_s", 0.05)),
-            hold_offset=float(force_control.get("hold_offset", 0.08)),
-            retreat_distance=float(force_control.get("retreat_distance", 0.15)),
-            max_step_interval_s=float(force_control.get("max_step_interval_s", 0.05)),
+        gripper_protection=GripperProtectionConfig(
+            control_hz=gripper_control_hz,
+            close_speed=float(protection.get("close_speed", 1.0)),
+            contact_torque=float(protection.get("contact_torque", 0.8)),
+            overload_torque=float(protection.get("overload_torque", 1.5)),
+            motion_window_s=float(protection.get("motion_window_s", 0.2)),
+            stall_movement=float(protection.get("stall_movement", 0.01)),
+            min_position_error=float(protection.get("min_position_error", 0.05)),
+            contact_hold_s=float(protection.get("contact_hold_s", 0.2)),
+            overload_hold_s=float(protection.get("overload_hold_s", 0.05)),
+            hold_offset=float(protection.get("hold_offset", 0.08)),
+            retreat_distance=float(protection.get("retreat_distance", 0.15)),
+            max_step_interval_s=float(protection.get("max_step_interval_s", 0.05)),
             overload_retreat_interval_s=float(
-                force_control.get("overload_retreat_interval_s", 0.1)
+                protection.get("overload_retreat_interval_s", 0.1)
             ),
-            hold_kp=float(force_control.get("hold_kp", 2.0)),
-            hold_kd=float(force_control.get("hold_kd", 0.5)),
+            hold_kp=float(protection.get("hold_kp", 2.0)),
+            hold_kd=float(protection.get("hold_kd", 0.5)),
         ),
-        gripper_control_hz=gripper_control_hz,
         gripper_fault_action=gripper_fault_action,
-        watchdog_enabled=_config_bool(
-            safety.get("watchdog_enabled", True),
-            name="safety.watchdog_enabled",
-        ),
         command_timeout_s=float(safety.get("command_timeout_s", 0.25)),
         enable_grace_s=float(safety.get("enable_grace_s", 2.0)),
-        watchdog_poll_s=float(safety.get("watchdog_poll_s", 0.02)),
-        watchdog_action=str(safety.get("watchdog_action", "safe_hold")),
         safe_hold_hz=float(safety.get("safe_hold_hz", 100.0)),
         safe_hold_pv_velocity_limit=float(
             safety.get("safe_hold_pv_velocity_limit", 0.2)
@@ -300,12 +335,6 @@ def _actuator_joint_from_sdk(joint: JointMotorConfig) -> JointCfg:
         direction=joint.direction,
         torque_range=joint.torque_range,
         effort_limit=joint.effort_limit,
-        coupled_effort_limit=joint.coupled_effort_limit,
-        coupled_motor_kd=joint.coupled_motor_kd,
-        coupled_velocity_filter_s=joint.coupled_velocity_filter_s,
-        coupled_torque_rise_rate=joint.coupled_torque_rise_rate,
-        coupled_hold_torque_rise_rate=joint.coupled_hold_torque_rise_rate,
-        coupled_torque_brake_rate=joint.coupled_torque_brake_rate,
         velocity_range=joint.velocity_range,
         lower_limit=joint.lower_limit,
         upper_limit=joint.upper_limit,
@@ -321,48 +350,47 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
     if config.gripper is not None:
         joints.append(_actuator_joint_from_sdk(config.gripper))
         groups["gripper"] = {"joints": [config.gripper.name]}
-    force = config.gripper_force_control
+    protection = config.gripper_protection
     return {
         "name": config.name,
         "model": config.model,
         "hardware_path": config.hardware_config_path,
         "urdf_path": config.urdf_path,
-        "joint_transform_path": config.joint_transform_path,
         "end_effector_frame": config.end_effector_frame,
         "channel": config.port,
         "transport": config.transport,
         "baud": config.baud,
         "rate": config.control_hz,
+        "motion": {
+            "speed_level_max": 400.0,
+            "joint_velocity_at_max": list(config.product_velocity_at_400),
+        },
         "groups": groups,
         "joints": joints,
         "gripper_mapping": {
             "closed_value": config.gripper_closed_value,
             "open_value": config.gripper_open_value,
         },
-        "gripper_force_control": {
-            "enabled": config.gripper_force_control_enabled,
-            "control_hz": config.gripper_control_hz,
-            "close_speed": force.close_speed,
-            "contact_torque": force.contact_torque,
-            "overload_torque": force.overload_torque,
-            "motion_window_s": force.motion_window_s,
-            "stall_movement": force.stall_movement,
-            "min_position_error": force.min_position_error,
-            "contact_hold_s": force.contact_hold_s,
-            "overload_hold_s": force.overload_hold_s,
-            "hold_offset": force.hold_offset,
-            "retreat_distance": force.retreat_distance,
-            "max_step_interval_s": force.max_step_interval_s,
-            "overload_retreat_interval_s": force.overload_retreat_interval_s,
-            "hold_kp": force.hold_kp,
-            "hold_kd": force.hold_kd,
+        "gripper_protection": {
+            "control_hz": protection.control_hz,
+            "close_speed": protection.close_speed,
+            "contact_torque": protection.contact_torque,
+            "overload_torque": protection.overload_torque,
+            "motion_window_s": protection.motion_window_s,
+            "stall_movement": protection.stall_movement,
+            "min_position_error": protection.min_position_error,
+            "contact_hold_s": protection.contact_hold_s,
+            "overload_hold_s": protection.overload_hold_s,
+            "hold_offset": protection.hold_offset,
+            "retreat_distance": protection.retreat_distance,
+            "max_step_interval_s": protection.max_step_interval_s,
+            "overload_retreat_interval_s": protection.overload_retreat_interval_s,
+            "hold_kp": protection.hold_kp,
+            "hold_kd": protection.hold_kd,
         },
         "safety": {
-            "watchdog_enabled": config.watchdog_enabled,
             "command_timeout_s": config.command_timeout_s,
             "enable_grace_s": config.enable_grace_s,
-            "watchdog_poll_s": config.watchdog_poll_s,
-            "watchdog_action": config.watchdog_action,
             "safe_hold_hz": config.safe_hold_hz,
             "safe_hold_pv_velocity_limit": config.safe_hold_pv_velocity_limit,
             "safe_hold_mit_kp": config.safe_hold_mit_kp,

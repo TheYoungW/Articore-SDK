@@ -149,7 +149,7 @@ def send_zero_stiffness(
 ) -> None:
     """发送不含重力补偿的零增益、零力矩 MIT 帧。"""
     zeros = (0.0,) * len(positions)
-    arm.send_joint_positions(
+    arm._submit_joint_positions(
         positions,
         velocities=zeros,
         torques=zeros,
@@ -180,12 +180,19 @@ def replay(
         remaining = started + timestamp - first_timestamp - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        arm.send_joint_positions(point[:joint_count])
+        arm.stream_joint_positions(point[:joint_count])
         arm.set_gripper_motor_value(point[joint_count])
 
 
 def run(args: argparse.Namespace) -> None:
-    arm = make_arm(args, enable_gripper=True)
+    needs_mit = args.command == "record" and (
+        args.enable or args.gravity_compensation
+    )
+    arm = make_arm(
+        args,
+        enable_gripper=True,
+        control_mode="mit" if needs_mit else "pv",
+    )
     arm.connect()
     print("机器人连接成功")
     try:
@@ -195,14 +202,13 @@ def run(args: argparse.Namespace) -> None:
                 gravity_mode = GravityCompensationMode(arm, hz=args.hz)
                 gravity_mode.start()
             elif args.enable:
-                arm.configure("mit")
                 initial = arm.read_state()
-                send_zero_stiffness(
-                    arm,
-                    initial.arm.positions,
-                    require_enabled=False,
+                zeros = (0.0,) * len(initial.arm.positions)
+                arm.enable(
+                    initial_positions=initial.arm.positions,
+                    mit_kp=zeros,
+                    mit_kd=zeros,
                 )
-                arm.enable()
             try:
                 timestamps, positions = record(
                     arm,
@@ -230,7 +236,6 @@ def run(args: argparse.Namespace) -> None:
             args.file,
             expected_joint_names=arm.joint_names,
         )
-        arm.configure()
         arm.enable()
         replay(arm, timestamps=timestamps, positions=positions)
         print("轨迹回放完成")

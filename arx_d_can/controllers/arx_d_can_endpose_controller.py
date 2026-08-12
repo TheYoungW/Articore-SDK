@@ -170,17 +170,6 @@ class ArxDCanEndPose:
     def set_gripper_target(self, pos: float) -> None:
         self._gripper_target = float(pos)
 
-    def open_gripper(self) -> None:
-        if self._has_gripper:
-            self._gripper_group._mit_kp.fill(0)
-            self._gripper_group._mit_kd.fill(0)
-            pv = self._gripper_group._pv_vlim
-            self._gripper_target = float(pv[0]) if pv.size > 0 else 0.0
-
-    def close_gripper(self) -> None:
-        if self._has_gripper:
-            self._gripper_target = 0.0
-
     def safe_home(
         self,
         max_vel: float = 0.5,

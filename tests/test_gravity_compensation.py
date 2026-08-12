@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-import math
-import threading
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from arx_d_can.controllers.gravity_compensation import GravityCompensationMode
-from arx_d_can.sdk import (
-    ArxDCanConfig,
-    ArxDCanState,
-    JointMotorConfig,
-    JointState,
-    MotorState,
-)
-from arx_d_can.examples.single_arm import example_12_gravity_compensation as example
+from arx_d_can.sdk import ArxDCanConfig, ArxDCanState, JointMotorConfig, JointState
 from arx_d_can.service_tools import gravity_compensation_cli
 
 
-def joint(name: str, *, torque_range: float) -> JointMotorConfig:
+def joint(name: str, *, effort_limit: float | None = None) -> JointMotorConfig:
     return JointMotorConfig(
         name=name,
         motor_id=1,
@@ -31,46 +23,43 @@ def joint(name: str, *, torque_range: float) -> JointMotorConfig:
         pv_pos_kp=50.0,
         pv_pos_ki=0.5,
         pv_vlim=2.0,
-        torque_range=torque_range,
+        effort_limit=effort_limit,
         lower_limit=-2.0,
         upper_limit=2.0,
     )
 
 
 class FakeArm:
-    def __init__(self) -> None:
+    def __init__(self, *, mode: str = "mit", effort_limit: float | None = None) -> None:
         self.config = ArxDCanConfig(
-            arm_control_mode="mit",
+            arm_control_mode=mode,
+            feedback_check_hz=100.0,
             arm_joints=(
-                joint("joint1", torque_range=10.0),
-                joint("joint2", torque_range=20.0),
+                joint("joint1", effort_limit=effort_limit),
+                joint("joint2", effort_limit=effort_limit),
             ),
-            watchdog_enabled=False,
         )
         self.joint_names = self.config.joint_names
+        self._mode = mode
         self.connected = False
         self.enabled = False
         self.faulted = False
         self.safe_holding = False
         self.fault_reason = None
-        self.enable_gripper = False
         self.positions = (0.1, -0.2)
         self.velocities = (0.0, 0.0)
         self.calls: list[tuple[str, object]] = []
         self.commands: list[dict[str, object]] = []
-        self.feedback_requests: list[bool] = []
-        self.background_feedback_event = threading.Event()
+        self.fresh_reads = 0
+        self.cached_reads = 0
 
     def connect(self) -> None:
         self.connected = True
         self.calls.append(("connect", None))
 
-    def configure(self, mode: str) -> None:
-        self.calls.append(("configure", mode))
-
-    def enable(self) -> None:
+    def enable(self, **kwargs) -> None:
         self.enabled = True
-        self.calls.append(("enable", None))
+        self.calls.append(("enable", kwargs))
 
     def disable(self) -> None:
         self.enabled = False
@@ -92,111 +81,53 @@ class FakeArm:
         )
 
     def read_state(self) -> ArxDCanState:
-        self.feedback_requests.append(True)
+        self.fresh_reads += 1
         return self._state()
 
     def read_cached_state(self) -> ArxDCanState:
-        self.feedback_requests.append(False)
+        self.cached_reads += 1
         return self._state()
 
-    def refresh_feedback_background(self) -> ArxDCanState:
-        self.background_feedback_event.set()
-        return self.read_state()
-
-    def send_joint_positions(self, positions, **kwargs) -> None:
+    def _submit_joint_positions(self, positions, **kwargs) -> None:
+        assert self.enabled
         self.commands.append(
             {
                 "positions": np.asarray(positions, dtype=float).copy(),
                 **{
-                    key: (
-                        np.asarray(value, dtype=float).copy()
-                        if isinstance(value, (tuple, list, np.ndarray))
-                        else value
-                    )
+                    key: np.asarray(value, dtype=float).copy()
                     for key, value in kwargs.items()
                 },
             }
         )
 
 
-class FakeArmWithGripper(FakeArm):
-    def __init__(self) -> None:
-        super().__init__()
-        gripper = joint("gripper", torque_range=2.0)
-        self.config = ArxDCanConfig(
-            arm_control_mode="mit",
-            arm_joints=self.config.arm_joints,
-            gripper=gripper,
-            watchdog_enabled=False,
-        )
-        self.joint_names = self.config.joint_names
-        self.enable_gripper = True
-        self.gripper_position = 0.3
-        self.gripper_commands: list[float] = []
-
-    def _state(self) -> ArxDCanState:
-        return ArxDCanState(
-            arm=JointState(
-                names=self.joint_names,
-                positions=self.positions,
-                velocities=self.velocities,
-                torques=(0.0, 0.0),
-            ),
-            gripper=MotorState(
-                name="gripper",
-                motor_id=1,
-                feedback_id=0x11,
-                position=self.gripper_position,
-                velocity=0.0,
-            ),
-        )
-
-    def set_gripper_motor_value(
-        self,
-        value: float,
-        *,
-        require_enabled: bool = True,
-    ) -> None:
-        assert not require_enabled or self.enabled
-        self.gripper_commands.append(float(value))
-        self.calls.append(("gripper", float(value)))
-
-
 def make_mode(arm: FakeArm, **kwargs) -> GravityCompensationMode:
-    kwargs.setdefault("feedback_check_hz", 0.0)
     return GravityCompensationMode(
         arm,
         transition_seconds=0.0,
-        settle_seconds=0.0,
         gravity_provider=lambda _positions: np.array([1.0, -2.0]),
         **kwargs,
     )
 
 
-def test_mode_sends_zero_kp_kd_and_gravity_torque() -> None:
+def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     arm = FakeArm()
     mode = make_mode(arm)
 
     sample = mode.start()
 
     assert mode.active
-    assert arm.connected
-    assert arm.enabled
-    assert arm.calls[:3] == [
-        ("connect", None),
-        ("configure", "mit"),
-        ("enable", None),
-    ]
-    assert arm.commands[0]["require_enabled"] is False
-    np.testing.assert_allclose(arm.commands[0]["mit_kp"], [10.0, 10.0])
-    np.testing.assert_allclose(arm.commands[0]["mit_kd"], [1.0, 1.0])
+    assert arm.fresh_reads == 1
+    assert arm.cached_reads == 1
+    assert [name for name, _ in arm.calls[:2]] == ["connect", "enable"]
+    enable_kwargs = arm.calls[1][1]
+    np.testing.assert_allclose(enable_kwargs["initial_positions"], arm.positions)
     np.testing.assert_allclose(arm.commands[-1]["mit_kp"], [0.0, 0.0])
     np.testing.assert_allclose(arm.commands[-1]["mit_kd"], [0.0, 0.0])
     np.testing.assert_allclose(arm.commands[-1]["torques"], [1.0, -2.0])
     assert sample.commanded_torques == pytest.approx((1.0, -2.0))
-    assert arm.feedback_requests[-1] is False
 
-    mode.shutdown()
+    mode.stop()
 
     assert not arm.connected
     assert not arm.enabled
@@ -204,24 +135,23 @@ def test_mode_sends_zero_kp_kd_and_gravity_torque() -> None:
     assert arm.calls[-1] == ("close", None)
 
 
-def test_mode_checks_complete_feedback_in_background() -> None:
+def test_mode_uses_native_cache_without_python_feedback_thread() -> None:
     arm = FakeArm()
-    mode = make_mode(arm, feedback_check_hz=1000.0)
-
+    mode = make_mode(arm)
     mode.start()
     try:
-        assert arm.background_feedback_event.wait(0.2)
-        cached_reads_before = arm.feedback_requests.count(False)
+        fresh_before = arm.fresh_reads
+        cached_before = arm.cached_reads
 
         mode.step()
 
-        assert arm.feedback_requests.count(False) == cached_reads_before + 1
-        assert any(arm.feedback_requests)
+        assert arm.fresh_reads == fresh_before
+        assert arm.cached_reads == cached_before + 1
     finally:
-        mode.shutdown()
+        mode.stop()
 
 
-def test_mode_supports_joint_scales_global_scale_and_damping() -> None:
+def test_mode_supports_positive_scale_and_damping() -> None:
     arm = FakeArm()
     mode = make_mode(
         arm,
@@ -233,108 +163,93 @@ def test_mode_supports_joint_scales_global_scale_and_damping() -> None:
     mode.start()
     try:
         np.testing.assert_allclose(arm.commands[-1]["torques"], [1.0, -0.5])
-        np.testing.assert_allclose(arm.commands[-1]["mit_kp"], [0.0, 0.0])
         np.testing.assert_allclose(arm.commands[-1]["mit_kd"], [0.3, 0.1])
     finally:
-        mode.shutdown()
+        mode.stop()
 
 
-def test_mode_refreshes_enabled_gripper_from_feedback() -> None:
-    arm = FakeArmWithGripper()
+def test_mode_rejects_negative_joint_scale() -> None:
+    with pytest.raises(ValueError, match="joint_scales"):
+        make_mode(FakeArm(), joint_scales=(1.0, -1.0))
+
+
+def test_mode_rejects_update_rate_too_close_to_watchdog_timeout() -> None:
+    with pytest.raises(ValueError, match="hz 过低"):
+        make_mode(FakeArm(), hz=5.0)
+
+
+def test_mode_reports_urdf_effort_limiting() -> None:
+    arm = FakeArm(effort_limit=1.5)
+    mode = GravityCompensationMode(
+        arm,
+        transition_seconds=0.0,
+        gravity_provider=lambda _positions: np.array([3.0, -1.0]),
+    )
+
+    sample = mode.start()
+    try:
+        assert sample.commanded_torques == pytest.approx((1.5, -1.0))
+        assert sample.limited_joints == ("joint1",)
+    finally:
+        mode.stop()
+
+
+def test_mode_requires_mit_selected_at_construction() -> None:
+    arm = FakeArm(mode="pv")
+    mode = make_mode(arm)
+
+    with pytest.raises(RuntimeError, match="control_mode='mit'"):
+        mode.start()
+
+    assert not arm.connected
+    assert not arm.enabled
+
+
+def test_mode_rejects_out_of_limit_feedback_before_enable() -> None:
+    arm = FakeArm()
+    arm.positions = (2.1, 0.0)
+    mode = make_mode(arm)
+
+    with pytest.raises(RuntimeError, match="joint1"):
+        mode.start()
+
+    assert not arm.enabled
+    assert not arm.connected
+
+
+def test_mode_does_not_send_python_gripper_commands() -> None:
+    arm = FakeArm()
+    arm.enable_gripper = True
     mode = make_mode(arm)
 
     mode.start()
     try:
-        assert arm.gripper_commands
-        assert arm.gripper_commands[0] == pytest.approx(0.3)
-        enable_index = arm.calls.index(("enable", None))
-        first_gripper_index = arm.calls.index(("gripper", 0.3))
-        assert first_gripper_index == enable_index + 1
-
-        arm.gripper_position = 0.45
         mode.step()
-
-        assert arm.gripper_commands[-1] == pytest.approx(0.45)
-        assert all(len(command["positions"]) == 2 for command in arm.commands)
     finally:
-        mode.shutdown()
+        mode.stop()
+
+    assert not hasattr(arm, "set_gripper_motor_value")
 
 
-def test_mode_refreshes_enabled_gripper_during_transition(monkeypatch) -> None:
-    arm = FakeArmWithGripper()
-    mode = GravityCompensationMode(
-        arm,
-        hz=10.0,
-        transition_seconds=0.1,
-        settle_seconds=0.0,
-        gravity_provider=lambda _positions: np.array([1.0, -2.0]),
-    )
-    monkeypatch.setattr("arx_d_can.controllers.gravity_compensation.time.sleep", lambda _: None)
-
-    mode.start()
-    try:
-        assert len(arm.gripper_commands) >= 4
-        assert arm.gripper_commands == pytest.approx(
-            [arm.gripper_position] * len(arm.gripper_commands)
-        )
-    finally:
-        mode.shutdown()
-
-
-def test_mode_supports_negative_joint_scale_for_direction_calibration() -> None:
-    arm = FakeArm()
-    mode = make_mode(arm, joint_scales=(1.0, -0.25))
-
-    mode.start()
-    try:
-        np.testing.assert_allclose(arm.commands[-1]["torques"], [1.0, 0.5])
-    finally:
-        mode.shutdown()
-
-
-def test_mode_does_not_apply_motion_threshold_checks() -> None:
-    arm = FakeArm()
-    mode = GravityCompensationMode(
-        arm,
-        transition_seconds=0.0,
-        settle_seconds=0.0,
-        gravity_provider=lambda _positions: np.array([50.0, -50.0]),
-    )
-    arm.positions = (3.0, -3.0)
-    arm.velocities = (math.radians(100.0), -math.radians(100.0))
-
-    mode.start()
-    try:
-        sample = mode.step()
-        assert sample.commanded_torques == pytest.approx((50.0, -50.0))
-        assert sample.velocities == pytest.approx(arm.velocities)
-    finally:
-        mode.shutdown()
-
-
-def test_example_parser_defaults_to_pure_torque_mode() -> None:
+def test_example_parser_only_exposes_connection_options() -> None:
     args = gravity_compensation_cli.build_parser().parse_args([])
 
-    assert args.seconds == 0.0
-    assert args.hz == 100.0
-    assert args.report_hz == 1.0
-    assert args.transition_seconds == 0.0
-    assert args.settle_seconds == 0.0
-    assert args.damping == 0.0
-    assert args.gravity_scale == 1.0
-    assert args.joint_scales is None
+    assert args.arm_model == "yunyi_v1_0_right"
+    assert args.port is None
+    assert args.transport is None
+    assert not hasattr(args, "joint_scales")
+    assert not hasattr(args, "damping")
 
 
-def test_example_parses_per_joint_scales() -> None:
-    assert gravity_compensation_cli.parse_joint_values(
-        "1,1.55,1.55,1,1,1,1",
-        expected_count=7,
-        name="joint scale",
-    ) == pytest.approx((1.0, 1.55, 1.55, 1.0, 1.0, 1.0, 1.0))
+def test_mode_stops_immediately_when_runtime_faults() -> None:
+    arm = FakeArm()
+    mode = make_mode(arm)
+    mode.start()
+    arm.faulted = True
+    arm.fault_reason = "feedback timeout"
 
-    assert gravity_compensation_cli.parse_joint_values(
-        "1,1,1,-0.25,1,1,1",
-        expected_count=7,
-        name="joint scale",
-        allow_negative=True,
-    ) == pytest.approx((1.0, 1.0, 1.0, -0.25, 1.0, 1.0, 1.0))
+    with pytest.raises(RuntimeError, match="feedback timeout"):
+        mode.step()
+
+    mode.stop()
+    assert not arm.enabled

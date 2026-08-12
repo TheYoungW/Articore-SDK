@@ -202,14 +202,15 @@ def replay(
         remaining = started + timestamp - first_timestamp - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        robot.send_joint_positions(
+        robot._submit_joint_positions(
             left=sample.left_positions,
             right=sample.right_positions,
         )
-        if sample.left_gripper is not None:
-            robot.left.set_gripper(sample.left_gripper)
-        if sample.right_gripper is not None:
-            robot.right.set_gripper(sample.right_gripper)
+        if sample.left_gripper is not None or sample.right_gripper is not None:
+            robot.set_gripper_openings(
+                left=0.0 if sample.left_gripper is None else sample.left_gripper,
+                right=0.0 if sample.right_gripper is None else sample.right_gripper,
+            )
 
 
 __all__ = [

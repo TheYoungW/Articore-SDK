@@ -45,6 +45,10 @@ from ..driver import (
     Controller,
     MotorMitCommand,
     Mode,
+    NativeFeedbackMotorFaultError,
+    NativeFeedbackTimeoutError,
+    NativeFeedbackTransportError,
+    NativeIncompleteFeedbackError,
     PosVelCommand,
     create_controller,
     resolve_transport,
@@ -91,19 +95,84 @@ def _complete_feedback_error(
     *,
     attempts: int,
     motor_names: tuple[str, ...],
-) -> FeedbackTimeoutError | IncompleteFeedbackError:
+    motor_names_by_id: dict[int, str],
+    transport: str,
+    channel: str,
+) -> Exception:
     detail = "; ".join(str(error) for error in errors)
+    attempt_label = "attempt" if attempts == 1 else "attempts"
+    missing_ids = tuple(
+        sorted(
+            {
+                int(motor_id)
+                for error in errors
+                for motor_id in getattr(error, "missing_motor_ids", ())
+            }
+        )
+    )
+    missing_detail = ""
+    if missing_ids:
+        labels = ", ".join(
+            f"ID {motor_id} ({motor_names_by_id.get(motor_id, 'unknown')})"
+            for motor_id in missing_ids
+        )
+        missing_detail = f"; channel {channel} missing {labels}"
+    if any(isinstance(error, NativeFeedbackTransportError) for error in errors):
+        return TransportError(
+            f"fresh feedback failed after {attempts} {attempt_label}: "
+            f"{detail}{missing_detail}",
+            operation="request_feedback",
+            transport=transport,
+            channel=channel,
+            motor_names=motor_names,
+            retryable=True,
+        )
+    if any(isinstance(error, NativeFeedbackMotorFaultError) for error in errors):
+        return MotorFaultError(
+            f"fresh feedback failed after {attempts} {attempt_label}: {detail}"
+        )
+    # 0.8.2 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
+    # 基础 CallError；这种情况保守地按“不完整”处理，而不是猜测成超时。
     error_type = (
-        IncompleteFeedbackError
-        if any("missing motor" in str(error).lower() for error in errors)
-        else FeedbackTimeoutError
+        FeedbackTimeoutError
+        if errors
+        and all(isinstance(error, NativeFeedbackTimeoutError) for error in errors)
+        else IncompleteFeedbackError
     )
     return error_type(
-        f"fresh feedback failed after {attempts} attempts: {detail}",
+        f"fresh feedback failed after {attempts} {attempt_label}: "
+        f"{detail}{missing_detail}",
         operation="request_feedback",
+        transport=transport,
+        channel=channel,
         motor_names=motor_names,
         retryable=True,
     )
+
+
+def _feedback_request_error(
+    exc: CallError,
+    *,
+    motor_names: tuple[str, ...],
+) -> Exception:
+    """把 motor 0.8.2 的稳定反馈分类映射为 SDK 公共异常。"""
+    context = {
+        "operation": "request_feedback",
+        "motor_names": motor_names,
+        "retryable": True,
+    }
+    if isinstance(exc, NativeFeedbackTimeoutError):
+        return FeedbackTimeoutError(f"fresh feedback timed out: {exc}", **context)
+    if isinstance(exc, NativeIncompleteFeedbackError):
+        return IncompleteFeedbackError(
+            f"fresh feedback is incomplete: {exc}",
+            **context,
+        )
+    if isinstance(exc, NativeFeedbackTransportError):
+        return TransportError(f"fresh feedback transport failed: {exc}", **context)
+    if isinstance(exc, NativeFeedbackMotorFaultError):
+        return MotorFaultError(f"motor fault reported during feedback: {exc}")
+    return TransportError(f"fresh feedback request failed: {exc}", **context)
 
 
 def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
@@ -219,12 +288,6 @@ class JointCfg:
     direction: float = 1.0
     torque_range: float | None = None
     effort_limit: float | None = None
-    coupled_effort_limit: float | None = None
-    coupled_motor_kd: float = 0.0
-    coupled_velocity_filter_s: float = 0.0
-    coupled_torque_rise_rate: float | None = None
-    coupled_hold_torque_rise_rate: float | None = None
-    coupled_torque_brake_rate: float | None = None
     velocity_range: float | None = None
     kp: float = 0.0
     kd: float = 0.0
@@ -413,14 +476,9 @@ def load_cfg(
             raise ValueError(f"joints[{index}] must be a mapping")
         mc = j.get("MIT", {})
         pc = j.get("POS_VEL", {})
-        cc = j.get("COUPLED", {})
-        if (
-            not isinstance(mc, dict)
-            or not isinstance(pc, dict)
-            or not isinstance(cc, dict)
-        ):
+        if not isinstance(mc, dict) or not isinstance(pc, dict):
             raise ValueError(
-                f"joints[{index}] MIT, POS_VEL, and COUPLED must be mappings"
+                f"joints[{index}] MIT and POS_VEL must be mappings"
             )
         name = str(j.get("name", "")).strip()
         if not name:
@@ -451,42 +509,6 @@ def load_cfg(
             if raw_effort_limit is None
             else _finite(raw_effort_limit, field=f"{name}.effort_limit")
         )
-        raw_coupled_effort_limit = cc.get("effort_limit")
-        coupled_effort_limit = (
-            None
-            if raw_coupled_effort_limit is None
-            else _finite(
-                raw_coupled_effort_limit,
-                field=f"{name}.COUPLED.effort_limit",
-            )
-        )
-        raw_coupled_rise_rate = cc.get("torque_rise_rate")
-        coupled_rise_rate = (
-            None
-            if raw_coupled_rise_rate is None
-            else _finite(
-                raw_coupled_rise_rate,
-                field=f"{name}.COUPLED.torque_rise_rate",
-            )
-        )
-        raw_coupled_brake_rate = cc.get("torque_brake_rate")
-        coupled_brake_rate = (
-            None
-            if raw_coupled_brake_rate is None
-            else _finite(
-                raw_coupled_brake_rate,
-                field=f"{name}.COUPLED.torque_brake_rate",
-            )
-        )
-        raw_coupled_hold_rise_rate = cc.get("hold_torque_rise_rate")
-        coupled_hold_rise_rate = (
-            None
-            if raw_coupled_hold_rise_rate is None
-            else _finite(
-                raw_coupled_hold_rise_rate,
-                field=f"{name}.COUPLED.hold_torque_rise_rate",
-            )
-        )
         raw_velocity_range = j.get("velocity_range")
         velocity_range = (
             None
@@ -504,18 +526,6 @@ def load_cfg(
             ),
             torque_range=torque_range,
             effort_limit=effort_limit,
-            coupled_effort_limit=coupled_effort_limit,
-            coupled_motor_kd=_finite(
-                cc.get("motor_kd", 0.0),
-                field=f"{name}.COUPLED.motor_kd",
-            ),
-            coupled_velocity_filter_s=_finite(
-                cc.get("velocity_filter_s", 0.0),
-                field=f"{name}.COUPLED.velocity_filter_s",
-            ),
-            coupled_torque_rise_rate=coupled_rise_rate,
-            coupled_hold_torque_rise_rate=coupled_hold_rise_rate,
-            coupled_torque_brake_rate=coupled_brake_rate,
             velocity_range=velocity_range,
             kp=_finite(mc.get("kp", 0.0), field=f"{name}.MIT.kp"),
             kd=_finite(mc.get("kd", 0.0), field=f"{name}.MIT.kd"),
@@ -533,34 +543,6 @@ def load_cfg(
             _torque_range_scales(joint)
         if joint.effort_limit is not None and joint.effort_limit <= 0.0:
             raise ValueError(f"{name}.effort_limit must be positive")
-        if (
-            joint.coupled_effort_limit is not None
-            and joint.coupled_effort_limit <= 0.0
-        ):
-            raise ValueError(f"{name}.COUPLED.effort_limit must be positive")
-        if joint.coupled_motor_kd < 0.0:
-            raise ValueError(f"{name}.COUPLED.motor_kd must not be negative")
-        if joint.coupled_velocity_filter_s < 0.0:
-            raise ValueError(
-                f"{name}.COUPLED.velocity_filter_s must not be negative"
-            )
-        if (
-            joint.coupled_torque_rise_rate is not None
-            and joint.coupled_torque_rise_rate <= 0.0
-        ):
-            raise ValueError(f"{name}.COUPLED.torque_rise_rate must be positive")
-        if (
-            joint.coupled_hold_torque_rise_rate is not None
-            and joint.coupled_hold_torque_rise_rate <= 0.0
-        ):
-            raise ValueError(
-                f"{name}.COUPLED.hold_torque_rise_rate must be positive"
-            )
-        if (
-            joint.coupled_torque_brake_rate is not None
-            and joint.coupled_torque_brake_rate <= 0.0
-        ):
-            raise ValueError(f"{name}.COUPLED.torque_brake_rate must be positive")
         if joint.velocity_range is not None:
             if joint.velocity_range <= 0.0:
                 raise ValueError(f"{name}.velocity_range must be positive")
@@ -571,11 +553,6 @@ def load_cfg(
 
     groups = _validate_groups(data.get("groups"), joints, path=hw_path)
     urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
-    joint_transform_path = _resolve_resource_path(
-        hw_path,
-        data.get("joint_transform_path"),
-        description="joint transform model",
-    )
     _apply_urdf_joint_limits(urdf_path, joints)
     end_effector_frame = str(
         data.get("end_effector_frame", "gripper_end")
@@ -601,9 +578,6 @@ def load_cfg(
         "model": selected_model or str(data.get("name", hw_path.stem)),
         "hardware_path": str(hw_path),
         "urdf_path": None if urdf_path is None else str(urdf_path),
-        "joint_transform_path": (
-            None if joint_transform_path is None else str(joint_transform_path)
-        ),
         "end_effector_frame": end_effector_frame,
         "channel": channel,
         "transport": transport,
@@ -611,8 +585,9 @@ def load_cfg(
         "rate": rate,
         "groups": groups,
         "joints": joints,
+        "motion": _optional_mapping(data, "motion"),
         "gripper_mapping": _optional_mapping(data, "gripper_mapping"),
-        "gripper_force_control": _optional_mapping(data, "gripper_force_control"),
+        "gripper_protection": _optional_mapping(data, "gripper_protection"),
         "safety": _optional_mapping(data, "safety"),
     }
 
@@ -1163,11 +1138,9 @@ class JointGroup:
         try:
             self._cm["main"].request_feedback_all(timeout_ms=50)
         except CallError as exc:
-            raise FeedbackTimeoutError(
-                f"fresh feedback request failed: {exc}",
-                operation="request_feedback",
+            raise _feedback_request_error(
+                exc,
                 motor_names=tuple(joint.name for joint in self._jcfgs),
-                retryable=True,
             ) from exc
 
     def read_state(
@@ -1179,11 +1152,9 @@ class JointGroup:
             try:
                 self._cm["main"].request_feedback_all(timeout_ms=50)
             except CallError as exc:
-                raise FeedbackTimeoutError(
-                    f"fresh feedback request failed: {exc}",
-                    operation="request_feedback",
+                raise _feedback_request_error(
+                    exc,
                     motor_names=tuple(joint.name for joint in self._jcfgs),
-                    retryable=True,
                 ) from exc
 
         positions, velocities, torques = [], [], []
@@ -1570,7 +1541,10 @@ class ArxDCan:
         verify_velocity: float = 0.05,
         verify_samples: int = 3,
     ) -> tuple[str, ...]:
-        """将所选电机的当前位置设为零点，并通过新鲜反馈验证。"""
+        """将所选电机的当前位置设为零点，并通过新鲜反馈验证。
+
+        ``joint_names`` 为空时处理当前启用的全部电机，包括已启用的夹爪。
+        """
         if verify_samples < 1:
             raise ValueError("verify_samples must be at least 1")
         if not np.isfinite(verify_tolerance) or verify_tolerance < 0.0:
@@ -1710,6 +1684,11 @@ class ArxDCan:
                     feedback_errors,
                     attempts=attempts,
                     motor_names=tuple(joint.name for joint in selected_joints),
+                    motor_names_by_id={
+                        joint.motor_id: joint.name for joint in selected_joints
+                    },
+                    transport=getattr(self, "_transport", "unknown"),
+                    channel=getattr(self, "_channel", "unknown"),
                 )
                 raise error from feedback_errors[-1]
         pos, vel, torq = [], [], []

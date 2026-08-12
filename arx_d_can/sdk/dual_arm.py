@@ -4,37 +4,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-import time
 from typing import Sequence
 
 from ..driver import CallError, ControllerGroup
 from ..errors import TransportError
 from .arm import ArxDCanArm
 from .native_safety import (
+    CommandLifetime,
+    EnableReport,
     GripperSafetyHealth,
     NativeMotorDescriptor,
     NativeSafetyRuntime,
     SafetyHealth,
     SafetyState,
+    TrajectoryStatus,
     TransportHealth,
 )
 from .state import ArxDCanState
-
-
-def _positions(
-    values: Sequence[float],
-    *,
-    expected_count: int,
-    name: str,
-) -> tuple[float, ...]:
-    positions = tuple(float(value) for value in values)
-    if len(positions) != expected_count:
-        raise ValueError(
-            f"{name} must contain exactly {expected_count} joint positions"
-        )
-    if any(not math.isfinite(value) for value in positions):
-        raise ValueError(f"{name} must contain only finite values")
-    return positions
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,7 +37,9 @@ class ArxDCanDualArm:
     """组合两台独立的 :class:`ArxDCanArm`。
 
     当前默认机型是 Yunyi V1.0 左右臂，以后其他双臂产品可以分别传入自己的
-    ``left_model`` 和 ``right_model``，无需新增产品专用 Python 类。
+    ``left_model`` 和 ``right_model``，无需新增产品专用 Python 类。连接参数默认
+    来自产品配置；Yunyi 左臂使用 CH0、右臂使用 CH1。控制模式默认使用 MIT，
+    构造参数仅用于显式覆盖。
     """
 
     def __init__(
@@ -63,17 +51,13 @@ class ArxDCanDualArm:
         left_channel: str | None = None,
         right_channel: str | None = None,
         baud: int | None = None,
-        control_mode: str = "pv",
+        control_mode: str = "mit",
         left_gripper: bool | None = None,
         right_gripper: bool | None = None,
     ) -> None:
         normalized_mode = str(control_mode).strip().lower()
         if normalized_mode not in ("pv", "mit"):
             raise ValueError("control_mode must be 'pv' or 'mit'")
-        if transport == "dm-device":
-            left_channel = "0" if left_channel is None else left_channel
-            right_channel = "1" if right_channel is None else right_channel
-
         self.left = ArxDCanArm(
             model=left_model,
             channel=left_channel,
@@ -144,54 +128,23 @@ class ArxDCanDualArm:
             disable_confirmed=not self.enabled,
         )
 
+    @property
+    def last_enable_report(self) -> EnableReport | None:
+        """返回最近一次双臂原子使能报告。"""
+        runtime = self._safety_runtime
+        return None if runtime is None else runtime.last_enable_report
+
     def _native_motor_descriptors(self) -> tuple[NativeMotorDescriptor, ...]:
-        descriptors = []
-        for side, label, arm in ((0, "left", self.left), (1, "right", self.right)):
-            for joint in arm.config.arm_joints:
-                descriptors.append(
-                    NativeMotorDescriptor(
-                        motor=arm.robot._motor_map[joint.name],
-                        side=side,
-                        name=f"{label}/{joint.name}",
-                        safe_kp=arm.config.safe_hold_mit_kp,
-                        safe_kd=arm.config.safe_hold_mit_kd,
-                    )
-                )
-            if arm.enable_gripper and arm.config.gripper is not None:
-                gripper = arm.config.gripper
-                force = arm.config.gripper_force_control
-                closed = arm.config.gripper_closed_value
-                opened = arm.config.gripper_open_value
-                descriptors.append(
-                    NativeMotorDescriptor(
-                        motor=arm.robot._motor_map[gripper.name],
-                        side=side,
-                        name=f"{label}/{gripper.name}",
-                        is_gripper=True,
-                        safe_kp=force.hold_kp,
-                        safe_kd=force.hold_kd,
-                        overload_torque=force.overload_torque,
-                        retreat_distance=force.retreat_distance,
-                        contact_torque=force.contact_torque,
-                        motion_window_s=force.motion_window_s,
-                        stall_movement=force.stall_movement,
-                        min_position_error=force.min_position_error,
-                        contact_hold_s=force.contact_hold_s,
-                        overload_hold_s=force.overload_hold_s,
-                        hold_offset=force.hold_offset,
-                        retreat_retry_s=force.overload_retreat_interval_s,
-                        open_position=opened,
-                        closed_position=closed,
-                        normal_kp=gripper.mit_kp,
-                        normal_kd=gripper.mit_kd,
-                        close_speed=force.close_speed,
-                        max_step_interval_s=force.max_step_interval_s,
-                        closing_direction=1.0 if closed > opened else -1.0,
-                        lower_position=min(closed, opened),
-                        upper_position=max(closed, opened),
-                    )
-                )
-        return tuple(descriptors)
+        return (
+            *self.left._native_motor_descriptors(side=0, label="left"),
+            *self.right._native_motor_descriptors(side=1, label="right"),
+        )
+
+    def _native_joint_control_configs(self):
+        return (
+            *self.left._native_joint_control_configs(),
+            *self.right._native_joint_control_configs(),
+        )
 
     def _create_safety_runtime(
         self,
@@ -199,13 +152,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # Test doubles and third-party ControllerGroup-compatible objects do
-        # not expose native handles. Real motor-drive-layer objects always do.
-        if not (
-            self.left._supports_parallel_joint_batch()
-            and self.right._supports_parallel_joint_batch()
-        ):
-            return None
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.2 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -218,6 +165,7 @@ class ArxDCanDualArm:
             left_controller=left_controller,
             right_controller=right_controller,
             motors=self._native_motor_descriptors(),
+            joints=self._native_joint_control_configs(),
             control_hz=min(left.control_hz, right.control_hz),
             command_timeout_s=min(left.command_timeout_s, right.command_timeout_s),
             enable_grace_s=min(left.enable_grace_s, right.enable_grace_s),
@@ -238,9 +186,8 @@ class ArxDCanDualArm:
                 left.safe_hold_pv_velocity_limit,
                 right.safe_hold_pv_velocity_limit,
             ),
-            gripper_control_hz=min(
-                left.gripper_control_hz, right.gripper_control_hz
-            ),
+            # ABI 字段为兼容保留；1.5 正常运行时夹爪跟随机械臂控制频率。
+            gripper_control_hz=min(left.control_hz, right.control_hz),
             gripper_fault_action=(
                 "disable"
                 if "disable" in {
@@ -268,15 +215,15 @@ class ArxDCanDualArm:
                     SafetyState.FAULT,
                 }
                 arm._fault_reason = health.fault_reason
-                if not active:
-                    arm._watchdog_deadline = None
 
     def connect(self) -> None:
         """连接左右臂，并为两条通道创建常驻并行发送线程。"""
         if self.connected and self._controller_group is not None:
             return
-        self.left.connect()
+        self.left._set_dual_runtime_managed(True)
+        self.right._set_dual_runtime_managed(True)
         try:
+            self.left.connect()
             self.right.connect()
             left_controller = self.left._controller_for_parallel_batch()
             right_controller = self.right._controller_for_parallel_batch()
@@ -285,9 +232,10 @@ class ArxDCanDualArm:
             self._safety_runtime = self._create_safety_runtime(
                 group, left_controller, right_controller
             )
-            if self._safety_runtime is not None:
-                self.left._set_dual_runtime_managed(True)
-                self.right._set_dual_runtime_managed(True)
+            if self._safety_runtime is None:
+                raise RuntimeError(
+                    "motor-drive-layer 0.8.2 dual-arm safety runtime is unavailable"
+                )
         except Exception:
             if self._safety_runtime is not None:
                 self._safety_runtime.close()
@@ -298,59 +246,113 @@ class ArxDCanDualArm:
             if self.right.connected:
                 self.right.close(disable=False)
             self.left.close(disable=False)
+            self.left._set_dual_runtime_managed(False)
+            self.right._set_dual_runtime_managed(False)
             raise
 
-    def enable(self) -> None:
-        """按构造时确定的模式配置并使能双臂。"""
-        self.left.enable()
+    def enable(
+        self,
+        *,
+        left_initial_positions: Sequence[float] | None = None,
+        right_initial_positions: Sequence[float] | None = None,
+    ) -> None:
+        """按构造时确定的模式，通过一个原生原子事务使能双臂。
+
+        Python 只在调用前配置左右臂控制模式和电机参数；Runtime 负责并行刷新
+        CH0/CH1 反馈、生成当前位置保持目标、物理使能、确认和失败回滚。普通用户
+        无需传入参数。MIT 控制器仍可同时提供左右臂后续初始目标。
+        """
+        if (left_initial_positions is None) != (right_initial_positions is None):
+            raise ValueError("left/right initial positions must be provided together")
+        if left_initial_positions is not None:
+            if self.left._mode != "mit" or self.right._mode != "mit":
+                raise ValueError("initial positions are only supported in MIT mode")
+            left_initial_positions, right_initial_positions = self._targets(
+                left_initial_positions,
+                right_initial_positions,
+            )
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        if not self.left._configured:
+            self.left.configure()
+        if not self.right._configured:
+            self.right.configure()
         try:
-            self.right.enable()
-            runtime = self._safety_runtime
-            if runtime is not None:
-                self.left._stop_watchdog()
-                self.right._stop_watchdog()
-                runtime.enable(self.left._mode)
+            runtime.enable(self.left._mode)
+            self._sync_python_safety_flags(runtime.health)
+            if left_initial_positions is not None:
+                self._submit_joint_positions(
+                    left=left_initial_positions,
+                    right=right_initial_positions,
+                    lifetime=CommandLifetime.HOLD_UNTIL_REPLACED,
+                )
         except Exception:
-            runtime = self._safety_runtime
-            if runtime is not None:
-                try:
-                    runtime.estop("dual-arm enable failed")
-                except Exception:
-                    pass
-            else:
-                self.left.disable()
+            # 健康快照只是补充状态，不能覆盖携带 EnableReport 的原始异常。
+            try:
+                self._sync_python_safety_flags(runtime.health)
+            except Exception:
+                pass
             raise
+
+    def configure_mode(self, mode: str) -> None:
+        """在双臂失能时将左右机械臂切换到同一种 PV 或 MIT 模式。"""
+        normalized = str(mode).strip().lower().replace("_", "")
+        if normalized in {"pv", "posvel"}:
+            normalized = "pv"
+        elif normalized != "mit":
+            raise ValueError("mode must be 'pv' or 'mit'")
+        runtime = self._safety_runtime
+        if runtime is None or not self.connected:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        self._sync_python_safety_flags(runtime.health)
+        if self.enabled:
+            raise RuntimeError(
+                "cannot switch control mode while the dual arm is enabled; "
+                "call disable() first"
+            )
+
+        previous = (self.left._mode, self.right._mode)
+        try:
+            self.left.configure_mode(normalized)
+            self.right.configure_mode(normalized)
+        except Exception as exc:
+            rollback_errors = []
+            for arm, previous_mode in zip((self.left, self.right), previous):
+                try:
+                    arm.configure_mode(previous_mode)
+                except Exception as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if rollback_errors:
+                try:
+                    runtime.estop("dual-arm mode switch rollback failed")
+                finally:
+                    self._sync_python_safety_flags(runtime.health)
+            raise RuntimeError("dual-arm control mode switch failed") from exc
+
+        self.left._configured = False
+        self.right._configured = False
 
     def disable(self) -> None:
         """失能左右臂；一侧失败时仍继续处理另一侧。"""
         runtime = self._safety_runtime
-        if runtime is not None:
-            for arm in (self.left, self.right):
-                arm._stop_coupled_control()
-                arm._stop_watchdog()
-            try:
-                runtime.disable()
-            finally:
-                self._sync_python_safety_flags(runtime.health)
-            return
-        errors: list[Exception] = []
-        for arm in (self.left, self.right):
-            if not arm.connected:
-                continue
-            try:
-                arm.disable()
-            except Exception as exc:
-                errors.append(exc)
-        if errors:
-            raise RuntimeError("failed to disable one or more arms") from errors[0]
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        try:
+            runtime.disable()
+        finally:
+            self._sync_python_safety_flags(runtime.health)
 
     def close(self, *, disable: bool = True) -> None:
         """释放并行发送线程后关闭左右通道。"""
         errors: list[Exception] = []
         runtime = self._safety_runtime
         self._safety_runtime = None
-        self.left._set_gripper_command_sink(None)
-        self.right._set_gripper_command_sink(None)
+        if disable and runtime is not None:
+            try:
+                runtime.disable()
+            except Exception as exc:
+                errors.append(exc)
         self.left._set_dual_runtime_managed(False)
         self.right._set_dual_runtime_managed(False)
         if runtime is not None:
@@ -369,7 +371,7 @@ class ArxDCanDualArm:
             if not arm.connected:
                 continue
             try:
-                arm.close(disable=disable)
+                arm.close(disable=False)
             except Exception as exc:
                 errors.append(exc)
         if errors:
@@ -411,47 +413,61 @@ class ArxDCanDualArm:
         left: Sequence[float],
         right: Sequence[float],
     ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-        """在发送前同时校验左右臂命令，避免长度错误造成部分发送。"""
+        """发送前校验左右臂数量、数值和 URDF 限位，避免部分发送。"""
         return (
-            _positions(left, expected_count=len(self.left.joint_names), name="left"),
-            _positions(
-                right,
-                expected_count=len(self.right.joint_names),
-                name="right",
-            ),
+            self.left._validated_joint_positions(left, name="left"),
+            self.right._validated_joint_positions(right, name="right"),
         )
 
-    def send_joint_positions(
+    def _submit_joint_positions(
         self,
         *,
         left: Sequence[float],
         right: Sequence[float],
+        left_velocities: Sequence[float] | None = None,
+        right_velocities: Sequence[float] | None = None,
+        left_velocity_limits: Sequence[float] | None = None,
+        right_velocity_limits: Sequence[float] | None = None,
+        left_torques: Sequence[float] | None = None,
+        right_torques: Sequence[float] | None = None,
+        left_mit_kp: float | Sequence[float] | None = None,
+        right_mit_kp: float | Sequence[float] | None = None,
+        left_mit_kd: float | Sequence[float] | None = None,
+        right_mit_kd: float | Sequence[float] | None = None,
+        lifetime: CommandLifetime = CommandLifetime.STREAMING,
     ) -> None:
-        """在同一批次内并行发送左右臂完整关节目标。"""
-        if self._safety_runtime is not None:
-            self._sync_python_safety_flags(self._safety_runtime.health)
-        left_target, right_target = self._targets(left, right)
-        if not (
-            self.left._supports_parallel_joint_batch()
-            and self.right._supports_parallel_joint_batch()
-        ):
-            # 带耦合关节变换的 MIT 机型使用独立内环，不能绕过其
-            # 反馈与力矩变换直接交给 ControllerGroup。
-            self.left.send_joint_positions(left_target)
-            self.right.send_joint_positions(right_target)
-            return
+        """在 SDK 内部原子更新左右臂容量为一的最新关节目标。
 
+        PV 模式可分别指定左右臂逐关节速度上限；省略时使用 SDK 默认值。MIT 模式
+        可分别指定左右臂目标速度、前馈力矩和逐关节 Kp/Kd。
+        """
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        self._sync_python_safety_flags(runtime.health)
+        left_target, right_target = self._targets(left, right)
         group = self._controller_group
         if group is None:
-            # 未连接时保持单臂接口原有的错误语义。
-            self.left.send_joint_positions(left_target)
-            self.right.send_joint_positions(right_target)
-            return
+            raise RuntimeError("dual-arm controller group is not connected")
 
-        left_batch = self.left._prepare_parallel_joint_positions(left_target)
+        left_batch = self.left._prepare_parallel_joint_positions(
+            left_target,
+            velocities=left_velocities,
+            velocity_limits=left_velocity_limits,
+            torques=left_torques,
+            mit_kp=left_mit_kp,
+            mit_kd=left_mit_kd,
+        )
         if left_batch is None:
             return
-        right_batch = self.right._prepare_parallel_joint_positions(right_target)
+        right_batch = self.right._prepare_parallel_joint_positions(
+            right_target,
+            velocities=right_velocities,
+            velocity_limits=right_velocity_limits,
+            torques=right_torques,
+            mit_kp=right_mit_kp,
+            mit_kd=right_mit_kd,
+        )
         if right_batch is None:
             return
         if left_batch.mode != right_batch.mode:
@@ -460,17 +476,10 @@ class ArxDCanDualArm:
         commands = left_batch.commands + right_batch.commands
         try:
             with self.left._io_lock, self.right._io_lock:
-                runtime = self._safety_runtime
                 if left_batch.mode == "pv":
-                    if runtime is None:
-                        group.send_pos_vel(commands)
-                    else:
-                        runtime.submit_pos_vel(commands)
+                    runtime.submit_pos_vel(commands, lifetime=lifetime)
                 else:
-                    if runtime is None:
-                        group.send_mit(commands)
-                    else:
-                        runtime.submit_mit(commands)
+                    runtime.submit_mit(commands, lifetime=lifetime)
         except Exception as exc:
             error: Exception = exc
             if isinstance(exc, CallError):
@@ -480,36 +489,42 @@ class ArxDCanDualArm:
                     motor_names=self.left.joint_names + self.right.joint_names,
                     retryable=True,
                 )
-            if self._safety_runtime is not None:
-                self._sync_python_safety_flags(self._safety_runtime.health)
-                handled = (False, False)
-            else:
-                handled = (
-                    self.left._handle_joint_command_failure(error),
-                    self.right._handle_joint_command_failure(error),
-                )
-            if all(handled):
-                return
+            self._sync_python_safety_flags(runtime.health)
             if error is exc:
                 raise
             raise error from exc
 
-        self.left._complete_parallel_joint_positions(left_batch)
-        self.right._complete_parallel_joint_positions(right_batch)
+    def stream_joint_positions(
+        self,
+        *,
+        left: Sequence[float],
+        right: Sequence[float],
+        left_velocity_limits: Sequence[float] | None = None,
+        right_velocity_limits: Sequence[float] | None = None,
+    ) -> None:
+        """在 PV 模式下原子更新左右臂实时目标，不生成点到点轨迹。
+
+        该接口面向已经连续生成目标的上层控制器。普通双臂点到点运动应使用
+        :meth:`move_joint_positions`，由 C++ runtime 生成同步平滑轨迹。
+        """
+        if self.left._mode not in ("posvel", "pv"):
+            raise RuntimeError(
+                "stream_joint_positions() is only available in PV mode; "
+                "use move_joint_positions() for normal MIT motion"
+            )
+        self._submit_joint_positions(
+            left=left,
+            right=right,
+            left_velocity_limits=left_velocity_limits,
+            right_velocity_limits=right_velocity_limits,
+            lifetime=CommandLifetime.STREAMING,
+        )
 
     def estop(self, reason: str = "emergency stop") -> None:
         """锁存双臂故障并尝试失能所有关节和夹爪。"""
         runtime = self._safety_runtime
         if runtime is None:
-            errors = []
-            for arm in (self.left, self.right):
-                try:
-                    arm.disable()
-                except Exception as exc:
-                    errors.append(exc)
-            if errors:
-                raise RuntimeError("dual-arm emergency stop failed") from errors[0]
-            return
+            raise RuntimeError("dual-arm safety runtime is not connected")
         runtime.estop(reason)
         self._sync_python_safety_flags(runtime.health)
 
@@ -517,10 +532,15 @@ class ArxDCanDualArm:
         """验证双通道、反馈、故障码和物理失能后只恢复到 READY。"""
         runtime = self._safety_runtime
         if runtime is None:
-            self.left.clear_fault()
-            self.right.clear_fault()
-            return
-        runtime.recover()
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        state = runtime.health.state
+        if state is SafetyState.SAFE_HOLD:
+            runtime.disable()
+        elif state is SafetyState.FAULT:
+            runtime.disable()
+            runtime.recover()
+        elif state is not SafetyState.READY:
+            raise RuntimeError("dual arm can only recover from SAFE_HOLD or FAULT")
         self._sync_python_safety_flags(runtime.health)
 
     def move_joint_positions(
@@ -528,94 +548,39 @@ class ArxDCanDualArm:
         *,
         left: Sequence[float],
         right: Sequence[float],
-        seconds: float = 3.0,
+        velocity: float | Sequence[float] | None = None,
         profile: str = "min_jerk",
     ) -> ArxDCanDualArmState:
-        """使用同一时间轴对左右臂进行关节空间插值。"""
-        from ..trajectory import plan_joint_position_trajectory
+        """由 C++ runtime 同步移动双臂，并阻塞到轨迹进入终态。
 
+        ``velocity`` 是实际轨迹速度，单位为 rad/s；标量应用到全部关节，序列按
+        单侧关节顺序同时应用到左右臂。留空时使用 SDK 默认轨迹速度。
+        """
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
         left_target, right_target = self._targets(left, right)
-        duration = float(seconds)
-        if not math.isfinite(duration) or duration <= 0.0:
-            raise ValueError("seconds must be finite and positive")
-        command_hz = min(self.left.config.control_hz, self.right.config.control_hz)
-        initial = self.read_state()
-        left_points = plan_joint_position_trajectory(
-            initial.left.arm.positions,
+        left_native = self.left._prepare_joint_trajectory_targets(
             left_target,
-            duration=duration,
-            hz=command_hz,
-            profile=profile,
+            velocity=velocity,
         )
-        right_points = plan_joint_position_trajectory(
-            initial.right.arm.positions,
+        right_native = self.right._prepare_joint_trajectory_targets(
             right_target,
-            duration=duration,
-            hz=command_hz,
+            velocity=velocity,
+        )
+        trajectory_id = runtime.start_joint_trajectory(
+            left_native + right_native,
             profile=profile,
         )
-        started = time.monotonic()
-        for left_point, right_point in zip(left_points, right_points):
-            remaining = started + left_point.time - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-            self.send_joint_positions(
-                left=left_point.positions,
-                right=right_point.positions,
+        result = runtime.wait_trajectory(trajectory_id)
+        if result.status is not TrajectoryStatus.COMPLETED:
+            detail = f": {result.error}" if result.error else ""
+            raise RuntimeError(
+                f"joint trajectory {trajectory_id} {result.status.value}{detail}"
             )
         return self.read_state()
 
-    def hold_joint_positions(
-        self,
-        *,
-        left: Sequence[float],
-        right: Sequence[float],
-        seconds: float | None = None,
-    ) -> ArxDCanDualArmState:
-        """按照机型控制频率持续保持左右臂目标。"""
-        left_target, right_target = self._targets(left, right)
-        if seconds is not None and (
-            not math.isfinite(seconds) or seconds < 0.0
-        ):
-            raise ValueError("seconds must be finite and non-negative or None")
-        command_hz = min(self.left.config.control_hz, self.right.config.control_hz)
-        period = 1.0 / command_hz
-        started = time.monotonic()
-        cycle = 0
-        while seconds is None or time.monotonic() - started < seconds:
-            self.send_joint_positions(left=left_target, right=right_target)
-            cycle += 1
-            remaining = started + cycle * period - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-        return self.read_state()
-
-    def move_grippers(
-        self,
-        *,
-        left: float,
-        right: float,
-        seconds: float = 2.0,
-    ) -> ArxDCanDualArmState:
-        """按同一节拍控制左右夹爪，并返回最终双臂状态。"""
-        if not self.left.has_gripper or not self.right.has_gripper:
-            raise RuntimeError("both arms must configure an active gripper")
-        duration = float(seconds)
-        if not math.isfinite(duration) or duration <= 0.0:
-            raise ValueError("seconds must be finite and positive")
-        command_hz = min(self.left.config.control_hz, self.right.config.control_hz)
-        period = 1.0 / command_hz
-        started = time.monotonic()
-        cycle = 0
-        while time.monotonic() - started < duration:
-            self.set_grippers(left=left, right=right)
-            cycle += 1
-            remaining = started + cycle * period - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-        return self.read_state()
-
-    def set_grippers(self, *, left: float, right: float) -> None:
+    def set_gripper_openings(self, *, left: float, right: float) -> None:
         """原子提交左右夹爪的 0～1000 开合度目标。"""
         values = (float(left), float(right))
         if any(not math.isfinite(value) for value in values):
@@ -630,22 +595,12 @@ class ArxDCanDualArm:
             raise RuntimeError("no active product gripper is configured")
         runtime = self._safety_runtime
         if runtime is None:
-            for arm, value in active:
-                arm.set_gripper(value)
-            return
+            raise RuntimeError("dual-arm safety runtime is not connected")
         targets = tuple(
             (arm.robot._motor_map[arm.config.gripper.name], value)
             for arm, value in active
         )
         runtime.set_gripper_openings(targets)
-
-    def open_grippers(self) -> None:
-        """完全张开所有已启用的产品夹爪。"""
-        self.set_grippers(left=1000.0, right=1000.0)
-
-    def close_grippers(self) -> None:
-        """完全闭合所有已启用的产品夹爪。"""
-        self.set_grippers(left=0.0, right=0.0)
 
     def record_trajectory(
         self,

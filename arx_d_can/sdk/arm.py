@@ -13,14 +13,13 @@ from typing import Sequence
 import numpy as np
 
 from ..actuator import ArxDCan
-from ..driver import build_scan_command, parse_scan_ids
-from ..errors import (
-    CommunicationError,
-    MotorFaultError,
-    StaleFeedbackError,
-    UnexpectedMotorStateError,
+from ..driver import (
+    ControllerGroup,
+    build_scan_command,
+    damiao_model_limits,
+    parse_scan_ids,
 )
-from ..kinematics.coupled_joint_transform import CoupledJointTransform
+from ..errors import UnexpectedMotorStateError
 from .config import (
     ArxDCanConfig,
     _actuator_config_from_sdk,
@@ -28,19 +27,29 @@ from .config import (
     _connection_channel,
     _mit_gain_vector,
 )
-from .coupled_control import _CoupledControlMixin
-from .gripper_force_control import GripperForceController
+from .joint_commands import _JointCommandMixin
+from .native_safety import (
+    CommandLifetime,
+    EnableReport,
+    GripperSafetyHealth,
+    NativeJointControlConfig,
+    NativeMotorDescriptor,
+    NativeSafetyRuntime,
+    SafetyHealth,
+    SafetyState,
+    TrajectoryStatus,
+    TransportHealth,
+)
 from .safety import _SafetyMixin
 from .state import (
     ArxDCanState,
-    CommunicationHealth,
-    CoupledControlStats,
-    CoupledTorqueSaturation,
-    CoupledTorqueTelemetry,
     GripperState,
     JointState,
-    MitCommand,
 )
+
+
+_DEFAULT_SPEED_LEVEL = 200.0
+_MAX_SPEED_LEVEL = 400.0
 
 
 def _load_profile(config_path: str | Path | None, *, model: str | None) -> dict:
@@ -54,12 +63,10 @@ class _PreparedJointPositionBatch:
     """一侧机械臂已完成验证和坐标换算的批量命令。"""
 
     mode: str
-    joint_positions: tuple[float, ...]
     commands: tuple[object, ...]
-    mit_command: MitCommand | None = None
 
 
-class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
+class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
     """通过 DM Device、dm-serial 或 Linux SocketCAN 控制机械臂。"""
 
     def __init__(
@@ -110,29 +117,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 transport=config.transport if transport is None else transport,
             )
             loaded_config = _actuator_config_from_sdk(self.config)
-        self._joint_transform = (
-            None
-            if self.config.joint_transform_path is None
-            else CoupledJointTransform.load(
-                self.config.joint_transform_path,
-                joint_names=self.config.joint_names,
-            )
-        )
-        if self._joint_transform is not None:
-            transformed_indices = self._joint_transform.transformed_indices
-            loaded_config = dict(loaded_config)
-            loaded_config["joints"] = [
-                replace(
-                    joint,
-                    kp=0.0,
-                    kd=0.0,
-                    lower_limit=None,
-                    upper_limit=None,
-                )
-                if index in transformed_indices
-                else joint
-                for index, joint in enumerate(loaded_config["joints"])
-            ]
         self._validate_safety_config()
         has_configured_gripper = self.config.gripper is not None
         if enable_gripper is True and not has_configured_gripper:
@@ -157,85 +141,11 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         self._safe_holding = False
         self._state_lock = threading.RLock()
         self._io_lock = threading.RLock()
-        self._watchdog_stop = threading.Event()
-        self._watchdog_thread: threading.Thread | None = None
-        self._watchdog_deadline: float | None = None
-        self._feedback_error_count = 0
-        self._last_communication_error: CommunicationError | None = None
-        self._using_fallback_state = False
-        self._last_fresh_feedback_at: float | None = None
-        self._last_joint_command: tuple[float, ...] | None = None
-        self._last_mit_command: MitCommand | None = None
-        self._last_gripper_command: float | None = None
         self._dual_runtime_managed = False
+        self._single_controller_group: ControllerGroup | None = None
+        self._single_safety_runtime: NativeSafetyRuntime | None = None
         self._last_state: ArxDCanState | None = None
-        self._coupled_control_stop = threading.Event()
-        self._coupled_control_wakeup = threading.Event()
-        self._coupled_control_thread: threading.Thread | None = None
-        self._coupled_torque_saturation = CoupledTorqueSaturation(
-            active=False,
-            motor_names=(),
-            requested_torques=(),
-            limited_torques=(),
-            applied_torques=(),
-            saturation_scale=1.0,
-            timestamp=time.monotonic(),
-        )
-        self._coupled_torque_telemetry = CoupledTorqueTelemetry(
-            motor_names=(),
-            motor_positions=(),
-            motor_velocities=(),
-            transformed_torques=(),
-            motor_kd_gains=(),
-            damping_torques=(),
-            requested_torques=(),
-            limited_torques=(),
-            applied_torques=(),
-            estimated_total_torques=(),
-            saturation_scale=1.0,
-            timestamp=time.monotonic(),
-        )
-        self._coupled_control_stats = CoupledControlStats(
-            target_hz=self.config.control_hz,
-            achieved_hz=0.0,
-            cycle_count=0,
-            overrun_count=0,
-            feedback_stall_cycles=0,
-            stale_feedback_faults=0,
-            maximum_feedback_age_s=0.0,
-            torque_command_count=0,
-            torque_saturation_count=0,
-        )
-        self._coupled_feedback_update_counts: dict[str, int] = {}
-        self._coupled_previous_motor_tau = np.zeros(
-            len(self.config.arm_joints),
-            dtype=np.float64,
-        )
-        self._coupled_filtered_virtual_velocity = np.zeros(
-            len(self.config.arm_joints),
-            dtype=np.float64,
-        )
-        self._coupled_velocity_filter_initialized = np.zeros(
-            len(self.config.arm_joints),
-            dtype=bool,
-        )
-        self._coupled_hold_candidate_since: dict[tuple[int, int], float] = {}
         self._mode = self.config.arm_control_mode.strip().lower().replace("_", "")
-        self._gripper_command_lock = threading.RLock()
-        self._gripper_command_sink = None
-        self._gripper_force_controller: GripperForceController | None = None
-        if (
-            self.enable_gripper
-            and self.config.gripper is not None
-            and self.config.gripper_force_control_enabled
-        ):
-            self._gripper_force_controller = GripperForceController(
-                self.config.gripper_force_control,
-                open_value=self.config.gripper_open_value,
-                closed_value=self.config.gripper_closed_value,
-                normal_kp=self.config.gripper.mit_kp,
-                normal_kd=self.config.gripper.mit_kd,
-            )
 
     @property
     def joint_names(self) -> tuple[str, ...]:
@@ -250,6 +160,9 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     @property
     def enabled(self) -> bool:
         """返回 SDK 是否认为当前活动电机已使能。"""
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            self._sync_native_safety_flags(runtime.health)
         return self._enabled
 
     @property
@@ -260,52 +173,274 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     @property
     def faulted(self) -> bool:
         """返回故障是否已锁存，以及普通命令是否已被阻止。"""
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            self._sync_native_safety_flags(runtime.health)
         return self._faulted
 
     @property
     def fault_reason(self) -> str | None:
         """返回锁存的故障说明；状态正常时返回 ``None``。"""
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            self._sync_native_safety_flags(runtime.health)
         return self._fault_reason
 
     @property
     def safe_holding(self) -> bool:
         """返回看门狗是否正在重复发送最后一条安全命令。"""
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            self._sync_native_safety_flags(runtime.health)
         return self._safe_holding
 
     @property
-    def coupled_torque_saturation(self) -> CoupledTorqueSaturation:
-        """返回最近一次耦合电机力矩饱和状态。"""
-        with self._state_lock:
-            return self._coupled_torque_saturation
+    def safety_health(self) -> SafetyHealth:
+        """返回 motor 原生安全状态机快照。"""
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            health = runtime.health
+            self._sync_native_safety_flags(health)
+            return health
+        connected = self.connected
+        state = (
+            SafetyState.RUNNING
+            if self.enabled
+            else SafetyState.READY
+            if connected
+            else SafetyState.DISCONNECTED
+        )
+        transport = TransportHealth(
+            connected=connected,
+            healthy=connected,
+            consecutive_send_failures=0,
+            consecutive_feedback_failures=0,
+            last_feedback_age_s=None,
+            last_error=None,
+        )
+        inactive = TransportHealth(
+            connected=False,
+            healthy=False,
+            consecutive_send_failures=0,
+            consecutive_feedback_failures=0,
+            last_feedback_age_s=None,
+            last_error=None,
+        )
+        return SafetyHealth(
+            state=state,
+            fault_reason=self.fault_reason,
+            last_successful_command_age_s=None,
+            last_fresh_feedback_age_s=None,
+            consecutive_send_failures=0,
+            consecutive_feedback_failures=0,
+            left_transport=transport,
+            right_transport=inactive,
+            motor_faults=(),
+            unconfirmed_disable_motors=(),
+            safe_holding=self.safe_holding,
+            disable_confirmed=not self.enabled,
+        )
 
     @property
-    def coupled_torque_telemetry(self) -> CoupledTorqueTelemetry:
-        """返回最新的耦合电机反馈和各阶段力矩命令。"""
-        with self._state_lock:
-            return self._coupled_torque_telemetry
+    def last_enable_report(self) -> EnableReport | None:
+        """返回最近一次原子使能报告；未创建原生 Runtime 时返回 ``None``。"""
+        runtime = self._single_safety_runtime
+        return None if runtime is None else runtime.last_enable_report
 
     @property
-    def coupled_control_stats(self) -> CoupledControlStats:
-        """返回耦合控制循环的实测时序和缓存反馈健康状态。"""
-        with self._state_lock:
-            return self._coupled_control_stats
+    def gripper_safety_health(self) -> GripperSafetyHealth | None:
+        """返回产品夹爪的原生防堵转状态；无原生夹爪时返回 ``None``。"""
+        return self.safety_health.left_gripper
 
     @property
-    def communication_health(self) -> CommunicationHealth:
-        """返回反馈回退状态和最近一次通信错误详情。"""
-        with self._state_lock:
-            last_fresh_feedback_at = self._last_fresh_feedback_at
-            return CommunicationHealth(
-                consecutive_feedback_failures=self._feedback_error_count,
-                has_fresh_feedback=last_fresh_feedback_at is not None,
-                using_fallback_state=self._using_fallback_state,
-                last_error=self._last_communication_error,
-                last_fresh_feedback_age_s=(
-                    None
-                    if last_fresh_feedback_at is None
-                    else max(0.0, time.monotonic() - last_fresh_feedback_at)
-                ),
+    def communication_health(self) -> TransportHealth:
+        """直接返回 motor 提供的结构化通信健康状态。"""
+        return self.safety_health.left_transport
+
+    def _native_motor_descriptors(
+        self,
+        *,
+        side: int = 0,
+        label: str | None = None,
+    ) -> tuple[NativeMotorDescriptor, ...]:
+        """生成供 Articore C++ runtime 使用的通用电机描述。"""
+        prefix = "" if label is None else f"{label}/"
+        descriptors = []
+        for joint in self.config.arm_joints:
+            position_range, _, _ = damiao_model_limits(joint.model)
+            logical_lower = (
+                -position_range if joint.lower_limit is None else joint.lower_limit
             )
+            logical_upper = (
+                position_range if joint.upper_limit is None else joint.upper_limit
+            )
+            motor_limits = (
+                joint.direction * logical_lower,
+                joint.direction * logical_upper,
+            )
+            descriptors.append(
+                NativeMotorDescriptor(
+                    motor=self.robot._motor_map[joint.name],
+                    side=side,
+                    name=f"{prefix}{joint.name}",
+                    safe_kp=self.config.safe_hold_mit_kp,
+                    safe_kd=self.config.safe_hold_mit_kd,
+                    lower_position=min(motor_limits),
+                    upper_position=max(motor_limits),
+                )
+            )
+        if self.enable_gripper and self.config.gripper is not None:
+            gripper = self.config.gripper
+            protection = self.config.gripper_protection
+            closed = self.config.gripper_closed_value
+            opened = self.config.gripper_open_value
+            descriptors.append(
+                NativeMotorDescriptor(
+                    motor=self.robot._motor_map[gripper.name],
+                    side=side,
+                    name=f"{prefix}{gripper.name}",
+                    is_gripper=True,
+                    safe_kp=protection.hold_kp,
+                    safe_kd=protection.hold_kd,
+                    overload_torque=protection.overload_torque,
+                    retreat_distance=protection.retreat_distance,
+                    contact_torque=protection.contact_torque,
+                    motion_window_s=protection.motion_window_s,
+                    stall_movement=protection.stall_movement,
+                    min_position_error=protection.min_position_error,
+                    contact_hold_s=protection.contact_hold_s,
+                    overload_hold_s=protection.overload_hold_s,
+                    hold_offset=protection.hold_offset,
+                    retreat_retry_s=protection.overload_retreat_interval_s,
+                    open_position=opened,
+                    closed_position=closed,
+                    normal_kp=gripper.mit_kp,
+                    normal_kd=gripper.mit_kd,
+                    close_speed=protection.close_speed,
+                    max_step_interval_s=protection.max_step_interval_s,
+                    closing_direction=1.0 if closed > opened else -1.0,
+                    lower_position=min(closed, opened),
+                    upper_position=max(closed, opened),
+                )
+            )
+        return tuple(descriptors)
+
+    def _native_joint_control_configs(self) -> tuple[NativeJointControlConfig, ...]:
+        """生成 runtime 使用的原生坐标限位和 MIT 默认参数。"""
+        configs = []
+        for joint in self.config.arm_joints:
+            position_range, native_velocity, native_torque = damiao_model_limits(
+                joint.model
+            )
+            logical_lower = (
+                -position_range if joint.lower_limit is None else joint.lower_limit
+            )
+            logical_upper = (
+                position_range if joint.upper_limit is None else joint.upper_limit
+            )
+            motor_limits = (
+                joint.direction * logical_lower,
+                joint.direction * logical_upper,
+            )
+            configured_velocity_range = (
+                native_velocity
+                if joint.velocity_range is None
+                else joint.velocity_range
+            )
+            velocity_scale = native_velocity / configured_velocity_range
+            raw_velocity_limit = joint.pv_vlim * max(1.0, velocity_scale)
+            configured_torque_range = (
+                native_torque if joint.torque_range is None else joint.torque_range
+            )
+            torque_scale = native_torque / configured_torque_range
+            logical_torque_limit = (
+                configured_torque_range
+                if joint.effort_limit is None
+                else joint.effort_limit
+            )
+            raw_torque_limit = min(
+                native_torque,
+                logical_torque_limit * torque_scale,
+            )
+            configs.append(
+                NativeJointControlConfig(
+                    motor=self.robot._motor_map[joint.name],
+                    lower_position=min(motor_limits),
+                    upper_position=max(motor_limits),
+                    velocity_limit=raw_velocity_limit,
+                    torque_limit=raw_torque_limit,
+                    mit_kp=joint.mit_kp,
+                    mit_kd=joint.mit_kd,
+                )
+            )
+        return tuple(configs)
+
+    def _default_joint_velocity_limits(self) -> np.ndarray:
+        """返回 SDK 默认的逐关节速度上限。"""
+        configured = np.asarray(
+            self.config.product_velocity_at_400
+            or tuple(joint.pv_vlim for joint in self.config.arm_joints),
+            dtype=np.float64,
+        )
+        return configured * (_DEFAULT_SPEED_LEVEL / _MAX_SPEED_LEVEL)
+
+    def _create_single_safety_runtime(self) -> None:
+        """在底层对象提供原生句柄时创建单通道常驻安全运行时。"""
+        if self._dual_runtime_managed:
+            return
+        if not hasattr(self.robot.arm, "_controller_for_batch"):
+            return
+        controller = self._controller_for_parallel_batch()
+        if not getattr(controller, "_ptr", None):
+            return
+        descriptors = self._native_motor_descriptors()
+        if not all(getattr(item.motor, "_ptr", None) for item in descriptors):
+            return
+        group = ControllerGroup([controller])
+        if not getattr(group, "_ptr", None):
+            group.close()
+            return
+        try:
+            runtime = NativeSafetyRuntime(
+                controller_group=group,
+                left_controller=controller,
+                right_controller=None,
+                motors=descriptors,
+                joints=self._native_joint_control_configs(),
+                control_hz=self.config.control_hz,
+                command_timeout_s=self.config.command_timeout_s,
+                enable_grace_s=self.config.enable_grace_s,
+                safe_hold_hz=self.config.safe_hold_hz,
+                feedback_check_hz=self.config.feedback_check_hz,
+                feedback_failure_threshold=self.config.feedback_fault_threshold,
+                feedback_max_age_s=self.config.max_cached_feedback_age_s,
+                safe_hold_failure_threshold=self.config.safe_hold_failure_threshold,
+                safe_pv_velocity_limit=self.config.safe_hold_pv_velocity_limit,
+                # ABI 字段为兼容保留；1.5 正常运行时夹爪跟随机械臂控制频率。
+                gripper_control_hz=self.config.control_hz,
+                gripper_fault_action=self.config.gripper_fault_action,
+            )
+            runtime.connect()
+        except Exception:
+            group.close()
+            raise
+        self._single_controller_group = group
+        self._single_safety_runtime = runtime
+
+    def _sync_native_safety_flags(self, health: SafetyHealth) -> None:
+        active = health.state in {
+            SafetyState.ENABLED,
+            SafetyState.RUNNING,
+            SafetyState.SAFE_HOLD,
+        } or (health.state is SafetyState.FAULT and not health.disable_confirmed)
+        with self._state_lock:
+            self._enabled = active
+            self._safe_holding = health.state is SafetyState.SAFE_HOLD
+            self._faulted = health.state in {
+                SafetyState.SAFE_HOLD,
+                SafetyState.FAULT,
+            }
+            self._fault_reason = health.fault_reason
 
     def connect(self) -> None:
         """打开配置的总线并重置 SDK 临时状态。
@@ -323,14 +458,24 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             self._faulted = False
             self._fault_reason = None
             self._safe_holding = False
-            self._feedback_error_count = 0
-            self._last_communication_error = None
-            self._using_fallback_state = False
-            self._last_fresh_feedback_at = None
-            self._last_joint_command = None
-            self._last_mit_command = None
-            self._last_gripper_command = None
             self._last_state = None
+        try:
+            self._create_single_safety_runtime()
+            if (
+                not self._dual_runtime_managed
+                and self.config.model != "custom"
+                and self._single_safety_runtime is None
+            ):
+                raise RuntimeError(
+                    "motor-drive-layer 0.8.2 native safety runtime is unavailable"
+                )
+        except Exception:
+            try:
+                self.robot.disconnect(disable=False)
+            finally:
+                with self._state_lock:
+                    self._connected = False
+            raise
 
     def configure(self, mode: str | None = None) -> None:
         """显式配置机械臂模式和可选夹爪，供高级控制与维护流程使用。
@@ -365,31 +510,53 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         默认先失能所有电机。``disable=False`` 仅供从未配置、使能或控制机器人的
         只读客户端使用，以避免退出时发送电机控制帧。
         """
-        self._stop_coupled_control()
-        self._stop_watchdog()
-        error: Exception | None = None
+        errors: list[Exception] = []
+        runtime = self._single_safety_runtime
+        self._single_safety_runtime = None
+        group = self._single_controller_group
+        self._single_controller_group = None
         if self._connected:
             try:
-                if disable:
+                if disable and runtime is not None:
+                    health = runtime.health
+                    if health.state not in {
+                        SafetyState.DISCONNECTED,
+                        SafetyState.READY,
+                    }:
+                        runtime.disable()
+            except Exception as exc:
+                errors.append(exc)
+        if runtime is not None:
+            try:
+                runtime.close()
+            except Exception as exc:
+                errors.append(exc)
+        if group is not None:
+            try:
+                group.close()
+            except Exception as exc:
+                errors.append(exc)
+        if self._connected:
+            try:
+                if disable and runtime is None:
                     self.robot.disconnect()
                 else:
                     self.robot.disconnect(disable=False)
             except Exception as exc:
-                error = exc
+                errors.append(exc)
         with self._state_lock:
             self._connected = False
             self._configured = False
             self._safe_holding = False
-            self._watchdog_deadline = None
-            if error is None:
+            if not errors:
                 self._enabled = False
             else:
                 # 总线虽已关闭，但尚未确认电机已在物理层失能。
                 self._enabled = True
                 self._faulted = True
-                self._fault_reason = f"close failed: {error}"
-        if error is not None:
-            raise RuntimeError(f"ARX-D-CAN close failed: {error}") from error
+                self._fault_reason = f"close failed: {errors[0]}"
+        if errors:
+            raise RuntimeError(f"ARX-D-CAN close failed: {errors[0]}") from errors[0]
 
     def enable(
         self,
@@ -400,19 +567,18 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         mit_kp: float | Sequence[float] | None = None,
         mit_kd: float | Sequence[float] | None = None,
     ) -> None:
-        """使能活动电机并启动命令安全监控。
+        """通过原生原子事务使能活动电机并启动命令安全监控。
 
-        机械臂必须已连接；首次使能时会自动配置构造机械臂时选择的控制模式。在 MIT
-        模式下，可在使能时发送一条完整的初始命令，避免电机短暂采用无关目标。初始
-        向量顺序与 :attr:`joint_names` 一致；未提供的速度和力矩默认为零，未提供的
-        增益使用机型配置。操作失败会锁存故障，并尝试失能机器人。
+        机械臂必须已连接；首次使能时，Python 只配置构造时选择的控制模式和电机
+        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.5 Runtime
+        完成。在 MIT 模式下仍可提供一条完整的后续初始命令。操作失败时抛出的
+        :class:`NativeEnableError` 携带结构化使能报告。
         """
         self._require_operational()
         if not self._configured:
             self.configure()
         if initial_positions is not None and self._mode != "mit":
             raise ValueError("initial position seeding is only supported in MIT mode")
-        self._reset_coupled_motor_torque_state()
         joint_count = len(self.config.arm_joints)
         initial_position_vector = None
         initial_velocity_vector = None
@@ -452,45 +618,45 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 kd_vector,
                 parsed["initial_torques"],
             )
-            if self._joint_transform is None:
-                initial_position_vector = np.asarray(initial_command.positions)
-                initial_velocity_vector = np.asarray(initial_command.velocities)
-                initial_torque_vector = np.asarray(initial_command.feedforward_torques)
-            else:
-                # 使能时不得把虚拟关节增益直接写入耦合电机。在内环取得已使能的新鲜
-                # 反馈前，只施加变换后的前馈力矩，不从拟合正逆模型的残差推断 PD 误差。
-                initial_position_vector = (
-                    self._joint_transform.virtual_positions_to_motor(
-                        initial_command.positions
+            initial_position_vector = np.asarray(initial_command.positions)
+            initial_velocity_vector = np.asarray(initial_command.velocities)
+            initial_torque_vector = np.asarray(initial_command.feedforward_torques)
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            try:
+                runtime.enable(self._mode)
+                if initial_position_vector is not None:
+                    commands = self.robot.arm._make_mit_batch_commands(
+                        initial_position_vector,
+                        vel=initial_velocity_vector,
+                        kp=kp_vector,
+                        kd=kd_vector,
+                        tau=initial_torque_vector,
                     )
-                )
-                initial_velocity_vector = (
-                    self._joint_transform.virtual_velocities_to_motor(
-                        initial_command.positions,
-                        initial_command.velocities,
+                    persistent = bool(
+                        np.all(initial_velocity_vector == 0.0)
+                        and np.all(initial_torque_vector == 0.0)
                     )
-                )
-                initial_torque_vector = (
-                    self._joint_transform.virtual_torques_to_motor(
-                        initial_command.positions,
-                        initial_command.feedforward_torques,
+                    runtime.submit_mit(
+                        commands,
+                        lifetime=(
+                            CommandLifetime.HOLD_UNTIL_REPLACED
+                            if persistent
+                            else CommandLifetime.STREAMING
+                        ),
                     )
-                )
-                transformed_indices = sorted(
-                    self._joint_transform.transformed_indices
-                )
-                initial_velocity_vector[transformed_indices] = 0.0
-                kp_vector[transformed_indices] = 0.0
-                kd_vector[transformed_indices] = np.asarray(
-                    [
-                        self.config.arm_joints[index].coupled_motor_kd
-                        for index in transformed_indices
-                    ],
-                    dtype=np.float64,
-                )
-                initial_torque_vector = self._limit_coupled_motor_torques(
-                    initial_torque_vector
-                )
+            except Exception:
+                # 健康快照只是补充状态，不能覆盖携带 EnableReport 的原始异常。
+                try:
+                    self._sync_native_safety_flags(runtime.health)
+                except Exception:
+                    pass
+                raise
+            self._sync_native_safety_flags(runtime.health)
+            return
+
+        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.5
+        # Runtime 独占物理使能事务，不能在 Python 中提前逐组使能。
         try:
             if initial_position_vector is None:
                 self.robot.arm.enable()
@@ -502,25 +668,13 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                     mit_kd=kd_vector,
                     mit_tau=initial_torque_vector,
                 )
-            with self._gripper_command_lock:
-                if self.enable_gripper and self.config.gripper is not None:
-                    self.robot.gripper.enable()
-                    if self._gripper_force_controller is not None:
-                        self._gripper_force_controller.reset()
+            if self.enable_gripper and self.config.gripper is not None:
+                self.robot.gripper.enable()
         except Exception as exc:
             self._trip_fault(f"enable failed: {exc}")
             raise
         with self._state_lock:
             self._enabled = True
-            if initial_positions is not None:
-                self._last_joint_command = tuple(float(value) for value in initial_positions)
-                self._last_mit_command = initial_command
-            self._watchdog_deadline = time.monotonic() + max(
-                self.config.enable_grace_s,
-                self.config.command_timeout_s,
-            )
-        self._start_watchdog()
-        self._start_coupled_control()
 
     def disable(self) -> None:
         """停止后台控制，并向所有电机发送紧急失能命令。
@@ -529,32 +683,26 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         保持故障状态并将电机报告为已使能，避免呈现不安全的虚假状态。
         """
         self._require_connected()
-        self._stop_coupled_control()
-        self._stop_watchdog()
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            try:
+                runtime.disable()
+            finally:
+                self._sync_native_safety_flags(runtime.health)
+            return
         try:
             self.robot.estop()
         except Exception as exc:
-            with self._gripper_command_lock:
-                if self._gripper_force_controller is not None:
-                    self._gripper_force_controller.reset()
             with self._state_lock:
                 # 尚未确认物理失能，因此保留保守的软件状态，不假定电机已经安全。
                 self._enabled = True
                 self._faulted = True
                 self._fault_reason = f"disable failed: {exc}"
                 self._safe_holding = False
-                self._watchdog_deadline = None
             raise
-        with self._gripper_command_lock:
-            if self._gripper_force_controller is not None:
-                self._gripper_force_controller.reset()
         with self._state_lock:
             self._enabled = False
             self._safe_holding = False
-            self._watchdog_deadline = None
-            self._last_joint_command = None
-            self._last_mit_command = None
-        self._reset_coupled_motor_torque_state()
 
     def clear_fault(self) -> None:
         """确认反馈可用后，清除 SDK 的故障锁存。
@@ -563,13 +711,25 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         保留当前控制模式；其他情况由下一次 :meth:`enable` 自动重新配置并使能。
         """
         self._require_connected()
-        was_safe_holding = self._safe_holding
-        self._stop_watchdog()
-        if not was_safe_holding:
-            try:
-                self.robot.estop()
-            except Exception:
-                pass
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            health = runtime.health
+            if health.state is SafetyState.SAFE_HOLD:
+                runtime.disable()
+            elif health.state is SafetyState.FAULT:
+                runtime.disable()
+                runtime.recover()
+            elif health.state is not SafetyState.READY:
+                raise RuntimeError(
+                    "native safety runtime can only clear SAFE_HOLD or FAULT"
+                )
+            self._configured = False
+            self._sync_native_safety_flags(runtime.health)
+            return
+        try:
+            self.robot.estop()
+        except Exception:
+            pass
         self.robot.get_state(
             request_feedback=True,
             require_complete=True,
@@ -579,12 +739,8 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             self._faulted = False
             self._fault_reason = None
             self._safe_holding = False
-            self._enabled = was_safe_holding
-            self._configured = was_safe_holding
-            self._feedback_error_count = 0
-            self._last_communication_error = None
-            self._using_fallback_state = False
-            self._watchdog_deadline = None
+            self._enabled = False
+            self._configured = False
 
     def clear_motor_faults(self) -> tuple[str, ...]:
         """清除活动电机故障，并返回成功清除故障的电机名称。
@@ -593,7 +749,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         未使能状态。清除失败仍会作为 SDK 故障锁存。
         """
         self._require_connected()
-        self._stop_watchdog()
         try:
             completed = self.robot.clear_errors(
                 joint_names=self._active_joint_names(),
@@ -605,10 +760,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 self._faulted = True
                 self._fault_reason = f"motor fault clear failed: {exc}"
                 self._safe_holding = False
-                self._feedback_error_count = 0
-                self._last_communication_error = None
-                self._using_fallback_state = False
-                self._watchdog_deadline = None
             raise
 
         with self._state_lock:
@@ -617,32 +768,20 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             self._faulted = False
             self._fault_reason = None
             self._safe_holding = False
-            self._feedback_error_count = 0
-            self._last_communication_error = None
-            self._using_fallback_state = False
-            self._watchdog_deadline = None
         return completed
 
     def recover(self) -> None:
-        """清除锁存故障，并安全地恢复使能状态。
+        """清除锁存故障，并在全部安全条件确认后恢复到 ``READY``。
 
-        已失能时，:meth:`enable` 会自动恢复配置的控制模式；从 ``SAFE_HOLD`` 恢复时
-        保留原模式，避免在电机使能期间重新写入模式。如果恢复失败，机械臂会保持
-        故障状态，不会进入部分恢复状态。
+        此方法不会自动重新使能电机。恢复成功后可显式调用 :meth:`enable`；恢复失败
+        时机械臂继续保持故障锁存，不会进入部分恢复状态。
         """
         self.clear_fault()
-        try:
-            self.enable()
-        except Exception:
-            if not self._faulted:
-                self._trip_fault("fault recovery failed")
-            raise
 
     def configure_mode(self, mode: str = "posvel") -> None:
         """在 ``posvel``（PV）与 ``mit`` 两种控制模式之间切换机械臂组。
 
-        总线必须已连接、没有锁存故障且电机已经失能。切换到 POS_VEL 前，会先停止
-        耦合 MIT 工作线程，再修改电机模式。
+        总线必须已连接、没有锁存故障且电机已经失能。
         """
         self._require_operational()
         if self._enabled:
@@ -652,7 +791,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             )
         normalized = mode.strip().lower().replace("_", "")
         if normalized in ("posvel", "pv"):
-            self._stop_coupled_control()
             with self._io_lock:
                 if not self.robot.arm.mode_pos_vel():
                     raise RuntimeError("ARX-D-CAN arm did not enter POS_VEL mode")
@@ -672,23 +810,26 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         通信失败、反馈不完整或电机报告故障时直接抛出对应异常，不会把历史缓存伪装成
         当前状态。只需读取最近一次成功状态时，请显式调用 :meth:`read_cached_state`。
         """
-        return self._read_fresh_state(
-            serialize_io=True,
-            allow_fallback=False,
-        )
+        return self._read_fresh_state(serialize_io=True)
 
     def read_cached_state(self) -> ArxDCanState:
-        """返回最近一次成功读取的状态，不发送任何通信帧。
+        """从 motor 原生反馈缓存返回状态，不主动请求通信帧。
 
-        缓存不存在时抛出异常。数据年龄及最近通信错误可通过
-        :attr:`communication_health` 查看。
+        原生 Runtime 会在后台刷新各电机缓存，因此该方法可供控制循环读取最新快照，
+        无需再创建 Python 反馈线程。缓存的新鲜度和通信故障由
+        :attr:`safety_health` 中的状态机统一判断。
         """
         self._require_connected()
-        with self._state_lock:
-            state = self._last_state
-        if state is None:
-            raise RuntimeError("ARX-D-CAN has no cached state; call read_state() first")
-        return state
+        active_joint_names = self._active_joint_names()
+        pos, vel, tau = self.robot.get_state(
+            request_feedback=False,
+            require_complete=True,
+            joint_names=active_joint_names,
+        )
+        status_codes = self.robot.get_status_codes(
+            joint_names=active_joint_names,
+        )
+        return self._build_state(pos, vel, tau, status_codes)
 
     def refresh_feedback_background(self) -> ArxDCanState:
         """在不占用 SDK 命令锁的情况下请求完整反馈。
@@ -696,23 +837,14 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         此方法供专用的低频监控线程使用。motor-drive-layer 串口传输与节拍发送总线会
         自行串行化 I/O，因此这里的反馈超时不会通过 ``_io_lock`` 阻塞主命令循环。
         """
-        return self._read_fresh_state(
-            serialize_io=False,
-            allow_fallback=True,
-        )
+        return self._read_fresh_state(serialize_io=False)
 
     def _read_fresh_state(
         self,
         *,
         serialize_io: bool,
-        allow_fallback: bool,
     ) -> ArxDCanState:
-        """执行新鲜状态采集、内部回退处理和故障状态转换。
-
-        ``serialize_io`` 决定读取过程是否由 SDK 命令锁保护；由于通信层会自行串行化
-        I/O，后台监控可关闭此保护。``allow_fallback`` 只供内部后台监控使用。
-        新鲜读取会更新健康计数；连续失败或电机状态异常可能进入安全保持或触发硬故障。
-        """
+        """读取一组新鲜反馈；安全判断由 motor 原生运行时执行。"""
         self._require_connected()
         active_joint_names = self._active_joint_names()
 
@@ -733,38 +865,21 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                     pos, vel, tau, status_codes = read_raw_state()
             else:
                 pos, vel, tau, status_codes = read_raw_state()
-        except CommunicationError as exc:
-            self._record_communication_error(
-                exc,
-                using_fallback=allow_fallback,
-            )
-            with self._state_lock:
-                self._feedback_error_count += 1
-                feedback_error_count = self._feedback_error_count
-            if self._enabled and feedback_error_count >= max(
-                1, self.config.feedback_fault_threshold
-            ):
-                self._begin_safe_hold(
-                    f"feedback failed {feedback_error_count} consecutive times: "
-                    f"{exc}"
-                )
-            with self._state_lock:
-                last_state = self._last_state
-            if allow_fallback and self._enabled and last_state is not None:
-                return last_state
-            raise
-        except MotorFaultError as exc:
-            self._trip_fault(str(exc))
-            raise
         except Exception as exc:
-            if self._enabled:
-                self._trip_fault(f"unexpected state-read failure: {exc}")
+            runtime = self._single_safety_runtime
+            if runtime is not None:
+                runtime.report_feedback_failure(0, str(exc))
             raise
-        with self._state_lock:
-            self._feedback_error_count = 0
-            self._last_communication_error = None
-            self._using_fallback_state = False
-            self._last_fresh_feedback_at = time.monotonic()
+        return self._build_state(pos, vel, tau, status_codes)
+
+    def _build_state(
+        self,
+        pos,
+        vel,
+        tau,
+        status_codes: dict[str, int],
+    ) -> ArxDCanState:
+        """把 motor 缓存中的原始向量组装为公开状态对象。"""
         disabled_motors = [
             name for name, status in status_codes.items() if status == 0
         ]
@@ -774,15 +889,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                 + ", ".join(disabled_motors),
                 status_codes={name: status_codes[name] for name in disabled_motors},
             )
-            if not self._safe_holding:
-                self._begin_safe_hold(str(error))
-            else:
-                with self._state_lock:
-                    self._fault_reason = (
-                        f"{error}; holding last successful command"
-                    )
-        elif self._safe_holding:
-            self._resume_from_safe_hold()
+            raise error
         arm_count = len(self.config.arm_joints)
         arm_pos = pos[:arm_count]
         arm_vel = vel[:arm_count]
@@ -853,50 +960,128 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         return parse_scan_ids(result.stdout, model=model)
 
     def read_motor_diagnostics(self, *, timeout_ms: int = 100):
-        """读取所有活动电机的状态、控制模式和温度，不发送控制命令。"""
-        from ..diagnostics import read_motor_diagnostics
+        """读取所有活动电机的状态、控制模式和温度，不发送控制命令。
+
+        ``timeout_ms`` 是每次整臂反馈请求和每台电机寄存器请求各自的超时，不是
+        整次诊断的总超时。普通用户使用默认的 100 ms 即可；该参数主要用于高级
+        故障诊断。
+        """
+        from .diagnostics import read_motor_diagnostics
 
         return read_motor_diagnostics(self, timeout_ms=timeout_ms)
-
-    def _supports_parallel_joint_batch(self) -> bool:
-        """返回当前模式能否由多 Controller 批量接口直接发送。"""
-        return not (self._mode == "mit" and self._joint_transform is not None)
 
     def _controller_for_parallel_batch(self):
         """返回机械臂组的底层 Controller。"""
         self._require_connected()
         return self.robot.arm._controller_for_batch()
 
+    def _validated_joint_positions(
+        self,
+        positions: Sequence[float],
+        *,
+        name: str | None = None,
+    ) -> tuple[float, ...]:
+        """校验逻辑关节目标，任何关节超出 URDF 限位时拒绝整条命令。"""
+        values = tuple(float(value) for value in positions)
+        joint_count = len(self.config.arm_joints)
+        prefix = "" if name is None else f"{name} "
+        if len(values) != joint_count:
+            raise ValueError(
+                f"{prefix}expected {joint_count} joint positions, got {len(values)}"
+            )
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError(f"{prefix}joint positions must be finite")
+
+        violations = []
+        for joint, value in zip(self.config.arm_joints, values):
+            below = joint.lower_limit is not None and value < joint.lower_limit
+            above = joint.upper_limit is not None and value > joint.upper_limit
+            if not (below or above):
+                continue
+            lower = "-inf" if joint.lower_limit is None else f"{joint.lower_limit:.6g}"
+            upper = "inf" if joint.upper_limit is None else f"{joint.upper_limit:.6g}"
+            violations.append(
+                f"{joint.name}={value:.6g} rad ({math.degrees(value):.3f} deg), "
+                f"allowed [{lower}, {upper}] rad"
+            )
+        if violations:
+            raise ValueError(
+                f"{prefix}joint positions exceed URDF limits: "
+                + "; ".join(violations)
+            )
+        return values
+
     def _prepare_parallel_joint_positions(
         self,
         positions: Sequence[float],
+        *,
+        velocities: Sequence[float] | None = None,
+        velocity_limits: Sequence[float] | None = None,
+        torques: Sequence[float] | None = None,
+        mit_kp: float | Sequence[float] | None = None,
+        mit_kd: float | Sequence[float] | None = None,
     ) -> _PreparedJointPositionBatch | None:
         """校验一侧关节目标，并生成可交给 ControllerGroup 的命令。"""
         self._require_connected()
-        if self._safe_holding:
-            return None
         self._require_operational()
         if not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
-        if not self._supports_parallel_joint_batch():
-            raise RuntimeError(
-                "coupled MIT control uses its dedicated inner loop and cannot "
-                "join a direct controller batch"
-            )
-
         joint_count = len(self.config.arm_joints)
-        values = tuple(float(value) for value in positions)
-        if len(values) != joint_count:
-            raise ValueError(
-                f"expected {joint_count} joint positions, got {len(values)}"
-            )
-        if any(not math.isfinite(value) for value in values):
-            raise ValueError("joint positions must be finite")
+        values = self._validated_joint_positions(positions)
         logical_position = np.asarray(values, dtype=np.float64)
 
+        def optional_vector(
+            vector: Sequence[float] | None,
+            *,
+            name: str,
+        ) -> np.ndarray | None:
+            if vector is None:
+                return None
+            result = np.asarray(vector, dtype=np.float64).reshape(-1)
+            if len(result) != joint_count:
+                raise ValueError(
+                    f"expected {joint_count} joint {name}, got {len(result)}"
+                )
+            if not np.all(np.isfinite(result)):
+                raise ValueError(f"joint {name} must be finite")
+            return result
+
+        velocity_target = optional_vector(velocities, name="velocities")
+        velocity_limit_target = optional_vector(
+            velocity_limits,
+            name="velocity limits",
+        )
+        if velocity_limit_target is not None and np.any(velocity_limit_target <= 0.0):
+            raise ValueError("joint velocity limits must be positive")
+        torque_target = optional_vector(torques, name="torques")
+        kp_target = _mit_gain_vector(mit_kp, joint_count=joint_count, name="Kp")
+        kd_target = _mit_gain_vector(mit_kd, joint_count=joint_count, name="Kd")
+        configured_velocity_limits = np.asarray(
+            [joint.pv_vlim for joint in self.config.arm_joints],
+            dtype=np.float64,
+        )
+        if velocity_target is not None and np.any(
+            np.abs(velocity_target) > configured_velocity_limits
+        ):
+            raise ValueError("joint velocities exceed YAML vlim")
+        if velocity_limit_target is not None and np.any(
+            velocity_limit_target > configured_velocity_limits
+        ):
+            raise ValueError("joint velocity limits exceed YAML vlim")
+
         if self._mode in ("posvel", "pv"):
+            if velocity_limit_target is None:
+                velocity_limit_target = self._default_joint_velocity_limits()
+            if any(
+                value is not None
+                for value in (velocity_target, torque_target, kp_target, kd_target)
+            ):
+                raise ValueError(
+                    "velocities, torques and MIT gains are only supported in MIT mode"
+                )
             motor_position, _, _, velocity_limit = self._transform_command_vectors(
-                logical_position
+                logical_position,
+                velocity_limits=velocity_limit_target,
             )
             commands = self.robot.arm._make_pos_vel_batch_commands(
                 motor_position,
@@ -904,17 +1089,18 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             )
             return _PreparedJointPositionBatch(
                 mode="pv",
-                joint_positions=values,
                 commands=commands,
             )
 
         if self._mode == "mit":
+            if velocity_limit_target is not None:
+                raise ValueError("velocity limits are only supported in PV mode")
             command = self._make_mit_command(
                 logical_position,
-                np.zeros(joint_count),
-                self._resolved_mit_gains(None, gain="kp"),
-                self._resolved_mit_gains(None, gain="kd"),
-                np.zeros(joint_count),
+                np.zeros(joint_count) if velocity_target is None else velocity_target,
+                self._resolved_mit_gains(kp_target, gain="kp"),
+                self._resolved_mit_gains(kd_target, gain="kd"),
+                np.zeros(joint_count) if torque_target is None else torque_target,
             )
             position, velocity, kp, kd, torque = self._compose_mit_motor_command(
                 command
@@ -928,44 +1114,83 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             )
             return _PreparedJointPositionBatch(
                 mode="mit",
-                joint_positions=command.positions,
                 commands=commands,
-                mit_command=command,
             )
 
         raise ValueError("mode must be 'posvel' or 'mit'")
 
-    def _complete_parallel_joint_positions(
+    def _prepare_joint_trajectory_targets(
         self,
-        prepared: _PreparedJointPositionBatch,
-    ) -> None:
-        """在底层批量发送成功后刷新安全监控所需的状态。"""
-        self._record_successful_command(
-            joint_positions=prepared.joint_positions,
-            mit_command=prepared.mit_command,
+        positions: Sequence[float],
+        *,
+        velocity: float | Sequence[float] | None,
+    ) -> tuple[tuple[object, float, float], ...]:
+        """把逻辑目标转换为 runtime 轨迹使用的原生坐标。"""
+        self._require_connected()
+        self._require_operational()
+        if not self._enabled:
+            raise RuntimeError("ARX-D-CAN arm is not enabled")
+        joint_count = len(self.config.arm_joints)
+        target = np.asarray(
+            self._validated_joint_positions(positions),
+            dtype=np.float64,
         )
-        if prepared.mode == "mit":
-            self._start_coupled_control()
-            self._coupled_control_wakeup.set()
 
-    def _handle_joint_command_failure(self, exc: Exception) -> bool:
-        """处理发送失败；返回是否已进入安全保持并吸收本次异常。"""
-        if isinstance(exc, CommunicationError):
-            self._record_communication_error(
-                exc,
-                using_fallback=(
-                    False if isinstance(exc, StaleFeedbackError) else None
-                ),
+        configured_limits = np.asarray(
+            [joint.pv_vlim for joint in self.config.arm_joints],
+            dtype=np.float64,
+        )
+        if velocity is None:
+            velocities = self._default_joint_velocity_limits()
+        else:
+            velocities = np.asarray(velocity, dtype=np.float64)
+            if velocities.ndim == 0:
+                velocities = np.full(
+                    joint_count,
+                    float(velocities),
+                    dtype=np.float64,
+                )
+            else:
+                velocities = velocities.reshape(-1)
+        if len(velocities) != joint_count:
+            raise ValueError(
+                f"expected {joint_count} trajectory velocities, got {len(velocities)}"
             )
-        if isinstance(exc, StaleFeedbackError):
-            self._trip_fault(str(exc))
-            return False
-        holding = self._begin_safe_hold(f"joint command failed: {exc}")
-        with self._state_lock:
-            has_hold_target = self._last_joint_command is not None
-        return holding and has_hold_target
+        if (
+            np.any(~np.isfinite(velocities))
+            or np.any(velocities <= 0.0)
+            or np.any(velocities > configured_limits)
+        ):
+            raise ValueError(
+                "trajectory velocities must be finite, positive, and no greater "
+                "than each joint's YAML vlim"
+            )
 
-    def send_joint_positions(
+        targets = []
+        for joint, position, velocity_limit in zip(
+            self.config.arm_joints,
+            target,
+            velocities,
+        ):
+            raw_velocity_limit = float(velocity_limit)
+            if self._mode == "mit":
+                _, native_velocity, _ = damiao_model_limits(joint.model)
+                configured_velocity_range = (
+                    native_velocity
+                    if joint.velocity_range is None
+                    else joint.velocity_range
+                )
+                raw_velocity_limit *= native_velocity / configured_velocity_range
+            targets.append(
+                (
+                    self.robot._motor_map[joint.name],
+                    joint.direction * float(position),
+                    raw_velocity_limit,
+                )
+            )
+        return tuple(targets)
+
+    def _submit_joint_positions(
         self,
         positions: Sequence[float],
         *,
@@ -975,37 +1200,27 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         mit_kp: float | Sequence[float] | None = None,
         mit_kd: float | Sequence[float] | None = None,
         require_enabled: bool = True,
+        lifetime: CommandLifetime = CommandLifetime.STREAMING,
     ) -> None:
-        """校验并发送一条完整的逻辑关节命令。
+        """在 SDK 内部更新 runtime 的完整逻辑关节目标。
 
         ``positions`` 始终按 :attr:`joint_names` 排列。POS_VEL 接受逐关节
-        ``velocity_limits``；MIT 接受目标 ``velocities``、前馈 ``torques`` 以及
-        当前数据包使用的 Kp/Kd。发送格式由构造机械臂时的 ``control_mode`` 决定，
-        此方法不会切换控制模式。未提供的 MIT 增益使用机型配置。成功发送会刷新
-        看门狗；发送失败且已有安全目标时进入安全保持，否则将异常传递给调用者。
+        ``velocity_limits``；省略时使用 SDK 默认的逐关节速度上限。
+        MIT 接受目标 ``velocities``、前馈 ``torques`` 以及当前数据包使用的 Kp/Kd。
+        该调用只更新容量为一的最新目标邮箱；固定频率发送、抢占、看门狗和安全状态机
+        均由 motor 原生运行时处理。
         """
         if self._dual_runtime_managed:
             raise RuntimeError(
                 "this arm is managed by ArxDCanDualArm; submit a complete left/right "
-                "command through ArxDCanDualArm.send_joint_positions()"
+                "command through ArxDCanDualArm"
             )
         self._require_connected()
-        if self._safe_holding:
-            return
         self._require_operational()
         if require_enabled and not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
         joint_count = len(self.config.arm_joints)
-        if len(positions) != joint_count:
-            raise ValueError(
-                f"expected {joint_count} joint positions, got {len(positions)}"
-            )
-        if any(not math.isfinite(float(value)) for value in positions):
-            raise ValueError("joint positions must be finite")
-        target = {
-            joint.name: float(value)
-            for joint, value in zip(self.config.arm_joints, positions)
-        }
+        position_target = self._validated_joint_positions(positions)
         velocity_target: np.ndarray | None = None
         if velocities is not None:
             if len(velocities) != joint_count:
@@ -1049,8 +1264,22 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             joint_count=joint_count,
             name="Kd",
         )
+        configured_velocity_limits = np.asarray(
+            [joint.pv_vlim for joint in self.config.arm_joints],
+            dtype=np.float64,
+        )
+        if velocity_target is not None and np.any(
+            np.abs(velocity_target) > configured_velocity_limits
+        ):
+            raise ValueError("joint velocities exceed YAML vlim")
+        if velocity_limit_target is not None and np.any(
+            velocity_limit_target > configured_velocity_limits
+        ):
+            raise ValueError("joint velocity limits exceed YAML vlim")
         active_mode = self._mode
         if active_mode in ("posvel", "pv"):
+            if velocity_limit_target is None:
+                velocity_limit_target = self._default_joint_velocity_limits()
             if velocity_target is not None:
                 raise ValueError("target velocities are only supported in MIT mode")
             if torque_target is not None:
@@ -1060,7 +1289,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         if active_mode == "mit" and velocity_limit_target is not None:
             raise ValueError("velocity limits are only supported in PV mode")
         logical_position_target = np.array(
-            [target[joint.name] for joint in self.config.arm_joints],
+            position_target,
             dtype=np.float64,
         )
         try:
@@ -1071,17 +1300,21 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                         velocity_limits=velocity_limit_target,
                     )
                 )
-                with self._io_lock:
-                    self.robot.arm.send_pos_vel(
+                runtime = self._single_safety_runtime
+                if runtime is not None:
+                    commands = self.robot.arm._make_pos_vel_batch_commands(
                         motor_position_target,
                         vlim=velocity_limit_target,
-                        strict=True,
                     )
-                self._record_successful_command(
-                    joint_positions=tuple(
-                        target[joint.name] for joint in self.config.arm_joints
-                    )
-                )
+                    runtime.submit_pos_vel(commands, lifetime=lifetime)
+                    self._sync_native_safety_flags(runtime.health)
+                else:
+                    with self._io_lock:
+                        self.robot.arm.send_pos_vel(
+                            motor_position_target,
+                            vlim=velocity_limit_target,
+                            strict=True,
+                        )
                 return
             if active_mode == "mit":
                 command = self._make_mit_command(
@@ -1095,103 +1328,83 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
                     self._resolved_mit_gains(mit_kd_target, gain="kd"),
                     np.zeros(joint_count) if torque_target is None else torque_target,
                 )
-                thread = self._coupled_control_thread
-                background_running = (
-                    self._joint_transform is not None
-                    and thread is not None
-                    and thread.is_alive()
-                )
-                if self._enabled and not background_running:
+                runtime = self._single_safety_runtime
+                if runtime is not None:
+                    position, velocity, kp, kd, torque = (
+                        self._compose_mit_motor_command(command)
+                    )
+                    commands = self.robot.arm._make_mit_batch_commands(
+                        position,
+                        vel=velocity,
+                        kp=kp,
+                        kd=kd,
+                        tau=torque,
+                    )
+                    runtime.submit_mit(commands, lifetime=lifetime)
+                    self._sync_native_safety_flags(runtime.health)
+                elif self._enabled:
                     self._send_mit_command(command, strict=True)
-                self._record_successful_command(
-                    joint_positions=command.positions,
-                    mit_command=command,
-                )
-                self._start_coupled_control()
-                self._coupled_control_wakeup.set()
                 return
         except Exception as exc:
-            if self._handle_joint_command_failure(exc):
-                return
+            if self._single_safety_runtime is not None:
+                self._sync_native_safety_flags(self._single_safety_runtime.health)
             raise
         raise ValueError("mode must be 'posvel' or 'mit'")
 
-    def hold_current_position(self) -> ArxDCanState:
-        """读取新鲜状态，以当前位置为目标发送命令，并返回该状态样本。"""
-        state = self.read_state()
-        self.send_joint_positions(state.arm.positions)
-        return state
-
-    def hold_joint_positions(
+    def stream_joint_positions(
         self,
         positions: Sequence[float],
         *,
-        seconds: float | None = None,
-        hz: float | None = None,
-        gripper: float | None = None,
-    ) -> ArxDCanState:
-        """持续保持一组关节位置，并可同时保持夹爪开合度。
+        velocity_limits: Sequence[float] | None = None,
+    ) -> None:
+        """在 PV 模式下更新实时关节目标，不生成点到点轨迹。
 
-        ``seconds=None`` 表示持续运行到调用线程被中断。刷新频率默认使用机型配置值。
-        此方法负责重复发送命令，普通用户不需要自行编写控制循环。
+        该接口面向已经连续生成目标的 ROS、遥操作和视觉跟随程序。普通点到点
+        运动应使用 :meth:`move_joint_positions`，由 C++ runtime 完成平滑插值。
         """
-        if seconds is not None and (
-            not math.isfinite(seconds) or seconds < 0.0
-        ):
-            raise ValueError("seconds must be finite and non-negative or None")
-        command_hz = self.config.control_hz if hz is None else float(hz)
-        if not math.isfinite(command_hz) or command_hz <= 0.0:
-            raise ValueError("hz must be finite and positive")
-
-        period = 1.0 / command_hz
-        started = time.monotonic()
-        cycle = 0
-        while seconds is None or time.monotonic() - started < seconds:
-            self.send_joint_positions(positions)
-            if gripper is not None:
-                self.set_gripper(gripper)
-            cycle += 1
-            remaining = started + cycle * period - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-        return self.read_state()
+        if self._mode not in ("posvel", "pv"):
+            raise RuntimeError(
+                "stream_joint_positions() is only available in PV mode; "
+                "use move_joint_positions() for normal MIT motion"
+            )
+        self._submit_joint_positions(
+            positions,
+            velocity_limits=velocity_limits,
+            lifetime=CommandLifetime.STREAMING,
+        )
 
     def move_joint_positions(
         self,
         positions: Sequence[float],
         *,
-        seconds: float = 3.0,
-        hz: float | None = None,
+        velocity: float | Sequence[float] | None = None,
         profile: str = "min_jerk",
     ) -> ArxDCanState:
-        """从当前位置平滑移动到目标关节位置，并返回到位后的新鲜状态。
+        """由 C++ runtime 平滑移动到目标，并阻塞到轨迹进入终态。
 
-        轨迹插值和发送节拍由 SDK 内部处理。``profile`` 可选 ``min_jerk`` 或
-        ``linear``，普通用户通常只需传入目标位置和运动时间。
+        ``velocity`` 是实际轨迹速度，单位为 rad/s；标量会应用到全部关节，序列按
+        :attr:`joint_names` 排列。留空时使用 SDK 默认轨迹速度。``profile`` 可选
+        ``min_jerk``（默认）或 ``linear``。
         """
-        duration = float(seconds)
-        command_hz = self.config.control_hz if hz is None else float(hz)
-        if not math.isfinite(duration) or duration <= 0.0:
-            raise ValueError("seconds must be finite and positive")
-        if not math.isfinite(command_hz) or command_hz <= 0.0:
-            raise ValueError("hz must be finite and positive")
-
-        from ..trajectory import plan_joint_position_trajectory
-
-        initial = self.read_state().arm.positions
-        points = plan_joint_position_trajectory(
-            initial,
+        if self._dual_runtime_managed:
+            raise RuntimeError(
+                "this arm is managed by ArxDCanDualArm; call the dual-arm "
+                "move_joint_positions()"
+            )
+        runtime = self._single_safety_runtime
+        if runtime is None:
+            raise RuntimeError("native joint trajectory runtime is not connected")
+        targets = self._prepare_joint_trajectory_targets(
             positions,
-            duration=duration,
-            hz=command_hz,
-            profile=profile,
+            velocity=velocity,
         )
-        started = time.monotonic()
-        for point in points:
-            remaining = started + point.time - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-            self.send_joint_positions(point.positions)
+        trajectory_id = runtime.start_joint_trajectory(targets, profile=profile)
+        result = runtime.wait_trajectory(trajectory_id)
+        if result.status is not TrajectoryStatus.COMPLETED:
+            detail = f": {result.error}" if result.error else ""
+            raise RuntimeError(
+                f"joint trajectory {trajectory_id} {result.status.value}{detail}"
+            )
         return self.read_state()
 
     def record_trajectory(
@@ -1246,35 +1459,6 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         replay(self, timestamps=timestamps, positions=positions)
         return len(positions)
 
-    def move_gripper(
-        self,
-        value: float,
-        *,
-        seconds: float = 2.0,
-        hz: float | None = None,
-    ) -> GripperState:
-        """在指定时间内持续发送夹爪目标，并返回最终的新鲜夹爪状态。"""
-        duration = float(seconds)
-        command_hz = self.config.control_hz if hz is None else float(hz)
-        if not math.isfinite(duration) or duration <= 0.0:
-            raise ValueError("seconds must be finite and positive")
-        if not math.isfinite(command_hz) or command_hz <= 0.0:
-            raise ValueError("hz must be finite and positive")
-
-        period = 1.0 / command_hz
-        started = time.monotonic()
-        cycle = 0
-        while time.monotonic() - started < duration:
-            self.set_gripper(value)
-            cycle += 1
-            remaining = started + cycle * period - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-        state = self.read_state()
-        if state.gripper is None:
-            raise RuntimeError("ARX-D-CAN gripper feedback is unavailable")
-        return state.gripper
-
     def set_zero(
         self,
         *,
@@ -1285,29 +1469,14 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
     ) -> tuple[str, ...]:
         """将所选电机的当前位置写为零点，并通过反馈验证。
 
-        机械臂必须已连接、无故障且处于失能状态。验证要求连续 ``verify_samples``
-        个新鲜样本均满足位置和速度容差。机型定义的耦合电机不允许执行此操作，因为
-        其公开零点并非独立物理电机的零点。
+默认处理当前启用的全部电机；产品夹爪已启用时也会一起调零。更换末端并
+禁用夹爪后，默认只处理机械臂关节。``joint_names`` 仅用于显式选择部分电机。
+机械臂必须已连接、无故障且处于失能状态。验证要求连续 ``verify_samples``
+        个新鲜样本均满足位置和速度容差。
         """
         self._require_operational()
         if self._enabled:
             raise RuntimeError("disable the arm before writing motor zero positions")
-        if self._joint_transform is not None:
-            coupled_names = {
-                self.config.arm_joints[index].name
-                for index in self._joint_transform.transformed_indices
-            }
-            requested_names = (
-                set(self.config.joint_names)
-                if joint_names is None
-                else {str(name) for name in joint_names}
-            )
-            protected = sorted(coupled_names.intersection(requested_names))
-            if protected:
-                raise RuntimeError(
-                    "model-defined coupled joints cannot be motor-zeroed: "
-                    + ", ".join(protected)
-                )
         return self.robot.set_zero(
             joint_names=list(joint_names) if joint_names is not None else None,
             verify_tolerance=verify_tolerance,
@@ -1315,7 +1484,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             verify_samples=verify_samples,
         )
 
-    def set_gripper(self, value: float) -> None:
+    def set_gripper_opening(self, value: float) -> None:
         """使用简单的 ``0``～``1000`` 刻度设置夹爪开合度。
 
         ``0`` 表示完全闭合，``1000`` 表示完全张开，超出范围的值会自动限幅。
@@ -1324,26 +1493,34 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         self._require_connected()
         if self._dual_runtime_managed:
             raise RuntimeError(
-                "this gripper is managed by ArxDCanDualArm; use set_grippers()"
+                "this gripper is managed by ArxDCanDualArm; use "
+                "set_gripper_openings()"
             )
-        if self._safe_holding:
-            return
         self._require_operational()
         if self.config.gripper is None:
             return
+        if not self.enable_gripper:
+            raise RuntimeError(
+                "ARX-D-CAN gripper is disabled; create "
+                "ArxDCanArm(enable_gripper=True)"
+            )
         if not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
+        opening = float(value)
+        if not math.isfinite(opening):
+            raise ValueError("gripper opening must be finite")
+        opening = max(0.0, min(1000.0, opening))
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            motor = self.robot._motor_map[self.config.gripper.name]
+            try:
+                runtime.set_gripper_openings(((motor, opening),))
+            finally:
+                self._sync_native_safety_flags(runtime.health)
+            return
         self.set_gripper_motor_value(
-            self._gripper_motor_position_from_opening(value)
+            self._gripper_motor_position_from_opening(opening)
         )
-
-    def open_gripper(self) -> None:
-        """使用默认 MIT 增益完全张开夹爪。"""
-        self.set_gripper(1000.0)
-
-    def close_gripper(self) -> None:
-        """使用默认 MIT 增益完全闭合夹爪。"""
-        self.set_gripper(0.0)
 
     def _gripper_motor_position_from_opening(self, opening: float) -> float:
         value = float(opening)
@@ -1366,7 +1543,7 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         """直接使用电机位置单位发送夹爪目标。
 
         此兼容方法供已经使用电机坐标的控制器调用。大多数用户应使用
-        :meth:`set_gripper`、:meth:`open_gripper` 或 :meth:`close_gripper`。
+        :meth:`set_gripper_opening`。
         目标会限制在配置的行程范围内，并通过 MIT 模式发送。
         """
         self._require_connected()
@@ -1393,62 +1570,16 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
             self.config.gripper_open_value,
         )
         target = min(max(target, lower), upper)
-        with self._gripper_command_lock:
-            if not self._enabled:
-                raise RuntimeError("ARX-D-CAN arm is not enabled")
-            if self._gripper_force_controller is not None:
-                with self._io_lock:
-                    position, _, torque = self.robot.gripper.read_state(
-                        request_feedback=True
-                    )
-                if len(position) != 1 or len(torque) != 1:
-                    raise RuntimeError("gripper feedback must contain exactly one motor")
-                command = self._gripper_force_controller.update(
-                    requested_position=target,
-                    actual_position=float(position[0]),
-                    actual_torque=float(torque[0]),
-                    now=time.monotonic(),
-                )
-                try:
-                    with self._io_lock:
-                        self._send_gripper_mit(
-                            command.position, command.kp, command.kd
-                        )
-                except Exception as exc:
-                    if isinstance(exc, CommunicationError):
-                        self._record_communication_error(exc, using_fallback=None)
-                    self._gripper_force_controller.reset()
-                    if self._gripper_command_sink is not None:
-                        raise
-                    holding = self._begin_safe_hold(f"gripper command failed: {exc}")
-                    with self._state_lock:
-                        has_hold_target = self._last_gripper_command is not None
-                    if holding and has_hold_target:
-                        return
-                    raise
-                self._record_successful_command(
-                    gripper_position=float(command.position)
-                )
-                return
-            try:
-                with self._io_lock:
-                    self._send_gripper_mit(target)
-            except Exception as exc:
-                if isinstance(exc, CommunicationError):
-                    self._record_communication_error(exc, using_fallback=None)
-                if self._gripper_command_sink is not None:
-                    raise
-                holding = self._begin_safe_hold(f"gripper command failed: {exc}")
-                with self._state_lock:
-                    has_hold_target = self._last_gripper_command is not None
-                if holding and has_hold_target:
-                    return
-                raise
-            self._record_successful_command(gripper_position=target)
-
-    def _set_gripper_command_sink(self, sink) -> None:
-        """将夹爪底层 MIT 命令交给双臂原生安全运行时。"""
-        self._gripper_command_sink = sink
+        runtime = self._single_safety_runtime
+        if runtime is not None:
+            self.set_gripper_opening(
+                self._gripper_opening_from_motor_position(target)
+            )
+            return
+        if not self._enabled:
+            raise RuntimeError("ARX-D-CAN arm is not enabled")
+        with self._io_lock:
+            self._send_gripper_mit(target)
 
     def _set_dual_runtime_managed(self, managed: bool) -> None:
         """禁止绕过双臂原生状态机直接提交单侧关节命令。"""
@@ -1460,17 +1591,9 @@ class ArxDCanArm(_SafetyMixin, _CoupledControlMixin):
         kp: float | None = None,
         kd: float | None = None,
     ) -> None:
-        if self._gripper_command_sink is None:
-            self.robot.gripper.send_mit(
-                np.array([position]),
-                kp=None if kp is None else np.array([kp]),
-                kd=None if kd is None else np.array([kd]),
-                strict=True,
-            )
-            return
-        commands = self.robot.gripper._make_mit_batch_commands(
+        self.robot.gripper.send_mit(
             np.array([position]),
             kp=None if kp is None else np.array([kp]),
             kd=None if kd is None else np.array([kd]),
+            strict=True,
         )
-        self._gripper_command_sink(commands)

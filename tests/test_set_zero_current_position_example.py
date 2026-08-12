@@ -3,7 +3,9 @@ from types import SimpleNamespace
 from arx_d_can.examples.single_arm import example_10_set_zero_current_position as example
 
 
-def test_zero_example_connects_and_sets_arm_zero_without_enabling(monkeypatch) -> None:
+def test_zero_example_connects_and_zeros_all_active_motors_without_enabling(
+    monkeypatch,
+) -> None:
     captured = {"calls": []}
 
     class FakeArm:
@@ -12,10 +14,9 @@ def test_zero_example_connects_and_sets_arm_zero_without_enabling(monkeypatch) -
         def connect(self) -> None:
             captured["calls"].append("connect")
 
-        def set_zero(self, *, joint_names):
+        def set_zero(self):
             captured["calls"].append("set_zero")
-            captured["joint_names"] = joint_names
-            return joint_names
+            return ("joint1", "joint2", "gripper")
 
         def close(self) -> None:
             captured["calls"].append("close")
@@ -37,5 +38,4 @@ def test_zero_example_connects_and_sets_arm_zero_without_enabling(monkeypatch) -
 
     assert captured["port"] == "/dev/ttyACM0"
     assert captured["enable_gripper"] is True
-    assert captured["joint_names"] == ("joint1", "joint2")
     assert captured["calls"] == ["connect", "set_zero", "close"]

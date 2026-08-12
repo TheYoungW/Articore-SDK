@@ -8,6 +8,10 @@ from motor_drive_layer import (
     CallError,
     Controller,
     ControllerGroup,
+    FeedbackMotorFaultError as NativeFeedbackMotorFaultError,
+    FeedbackTimeoutError as NativeFeedbackTimeoutError,
+    FeedbackTransportError as NativeFeedbackTransportError,
+    IncompleteFeedbackError as NativeIncompleteFeedbackError,
     MitCommand as MotorMitCommand,
     Mode,
     PosVelCommand,
@@ -32,6 +36,14 @@ _DAMIAO_MODEL_LIMITS: dict[str, tuple[float, float, float]] = {
     "4340P": (12.5, 10.0, 28.0),
     "8009": (12.5, 45.0, 54.0),
 }
+
+
+def damiao_model_limits(model: str) -> tuple[float, float, float]:
+    """返回 motor ABI 使用的原生位置、速度和力矩范围。"""
+    try:
+        return _DAMIAO_MODEL_LIMITS[str(model)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported Damiao motor model: {model!r}") from exc
 
 
 def resolve_transport(transport: str | None, channel: str) -> str:
@@ -151,15 +163,17 @@ def _valid_scan_hit(line: str, *, model: str | None) -> int | None:
     motor_id = int(match.group(1), 0)
     expected_feedback_id = int(match.group(2), 0)
     state = match.group(3)
+    can_id_text = _state_field(state, "can_id")
     arbitration_text = _state_field(state, "arbitration_id")
     status_text = _state_field(state, "status_code")
     numeric_names = ("pos", "vel", "torq", "t_mos", "t_rotor")
     numeric_text = [_state_field(state, name) for name in numeric_names]
-    if arbitration_text is None or status_text is None or any(
+    if can_id_text is None or arbitration_text is None or status_text is None or any(
         value is None for value in numeric_text
     ):
         return None
     try:
+        can_id = int(can_id_text, 0)
         arbitration_id = int(arbitration_text, 0)
         status_code = int(status_text, 0)
         pos, vel, torq, t_mos, t_rotor = (
@@ -167,7 +181,18 @@ def _valid_scan_hit(line: str, *, model: str | None) -> int | None:
         )
     except ValueError:
         return None
-    if arbitration_id != expected_feedback_id or not 0 <= status_code <= 0xE:
+    expected_can_id = motor_id & 0x0F
+    configured_standard_feedback_id = 0x10 | expected_can_id
+    dm_device_feedback_id = 0x200 | expected_can_id
+    arbitration_id_matches = arbitration_id == expected_feedback_id or (
+        expected_feedback_id == configured_standard_feedback_id
+        and arbitration_id == dm_device_feedback_id
+    )
+    if (
+        can_id != expected_can_id
+        or not arbitration_id_matches
+        or not 0 <= status_code <= 0xE
+    ):
         return None
     values = (pos, vel, torq, t_mos, t_rotor)
     if not all(isfinite(value) for value in values):

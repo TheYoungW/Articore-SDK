@@ -84,7 +84,7 @@ def test_replay_sends_every_position_at_recorded_frequency(monkeypatch):
             self.arm_positions = []
             self.gripper_positions = []
 
-        def send_joint_positions(self, positions):
+        def stream_joint_positions(self, positions):
             self.arm_positions.append(positions)
 
         def set_gripper_motor_value(self, position):
@@ -110,7 +110,7 @@ def test_replay_uses_selected_model_joint_count(monkeypatch):
             self.arm_positions = []
             self.gripper_positions = []
 
-        def send_joint_positions(self, positions):
+        def stream_joint_positions(self, positions):
             self.arm_positions.append(positions)
 
         def set_gripper_motor_value(self, position):
@@ -224,7 +224,7 @@ def test_zero_stiffness_command_has_no_position_velocity_or_torque_gain():
         def __init__(self):
             self.commands = []
 
-        def send_joint_positions(self, positions, **kwargs):
+        def _submit_joint_positions(self, positions, **kwargs):
             self.commands.append((positions, kwargs))
 
     arm = FakeArm()

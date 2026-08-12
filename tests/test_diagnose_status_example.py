@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from arx_d_can.actuator import JointCfg
-from arx_d_can import diagnostics as example
+from arx_d_can.sdk import diagnostics as example
 
 
 class FakeController:
