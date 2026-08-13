@@ -70,7 +70,7 @@ def test_yunyi_joint_directions_match_verified_tf_convention() -> None:
     right = load_cfg(model="yunyi_v1_0_right")["joints"]
 
     assert [joint.direction for joint in left] == [1, 1, 1, -1, -1, 1, 1, 1]
-    assert [joint.direction for joint in right] == [-1, 1, 1, 1, -1, -1, -1, 1]
+    assert [joint.direction for joint in right] == [-1, 1, 1, 1, -1, -1, 1, 1]
 
 
 def test_yunyi_gripper_mappings_match_calibrated_ranges() -> None:
