@@ -18,6 +18,7 @@ from .native_safety import (
     NativeSafetyRuntime,
     SafetyHealth,
     SafetyState,
+    TrajectoryInfo,
     TrajectoryStatus,
     TransportHealth,
 )
@@ -159,7 +160,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.3 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.5 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -167,6 +168,13 @@ class ArxDCanDualArm:
             return None
         left = self.left.config
         right = self.right.config
+        left_trajectory_execution = self.left.config.trajectory_execution
+        right_trajectory_execution = self.right.config.trajectory_execution
+        if left_trajectory_execution != right_trajectory_execution:
+            raise ValueError(
+                "dual-arm trajectory_execution configuration must match"
+            )
+        trajectory_execution = left_trajectory_execution
         runtime = NativeSafetyRuntime(
             controller_group=group,
             left_controller=left_controller,
@@ -193,7 +201,7 @@ class ArxDCanDualArm:
                 left.safe_hold_pv_velocity_limit,
                 right.safe_hold_pv_velocity_limit,
             ),
-            # ABI 字段为兼容保留；1.6 正常运行时夹爪跟随机械臂控制频率。
+            # ABI 字段为兼容保留；1.8 正常运行时夹爪跟随机械臂控制频率。
             gripper_control_hz=min(left.control_hz, right.control_hz),
             gripper_fault_action=(
                 "disable"
@@ -203,6 +211,7 @@ class ArxDCanDualArm:
                 }
                 else "hold"
             ),
+            trajectory_execution=trajectory_execution,
         )
         runtime.connect()
         return runtime
@@ -241,7 +250,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.8.3 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.8.5 dual-arm safety runtime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -369,7 +378,7 @@ class ArxDCanDualArm:
     def close(self, *, disable: bool = True) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
-        ABI 1.6 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
+        ABI 1.8 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
         此方法保留全部底层句柄，以便调用方检查 ``last_disable_report`` 并重试。
         ``disable`` 仅为 API 兼容保留；原生 Runtime 始终执行受检关闭。
         """
@@ -545,6 +554,49 @@ class ArxDCanDualArm:
             lifetime=CommandLifetime.STREAMING,
         )
 
+    def stream_mit_joint_commands(
+        self,
+        *,
+        left_positions: Sequence[float],
+        right_positions: Sequence[float],
+        left_velocities: Sequence[float] | None = None,
+        right_velocities: Sequence[float] | None = None,
+        left_torques: Sequence[float] | None = None,
+        right_torques: Sequence[float] | None = None,
+        left_kp: float | Sequence[float] | None = None,
+        right_kp: float | Sequence[float] | None = None,
+        left_kd: float | Sequence[float] | None = None,
+        right_kd: float | Sequence[float] | None = None,
+    ) -> None:
+        """原子提交一帧双臂 MIT 实时命令，不生成轨迹。
+
+        这是面向力控、重力补偿和高级遥操作控制器的危险接口，不用于普通点到点
+        运动。调用方必须以稳定频率持续提交左右两侧的完整 7 轴命令；目标速度和
+        前馈力矩停止更新后不能被长期保持，因此该接口固定使用 ``STREAMING``
+        生命周期并受 Runtime 命令看门狗保护。省略 Kp/Kd 时使用产品 YAML 参数，
+        省略速度或前馈力矩时对应向量为零。所有位置、速度、力矩和增益仍会经过
+        SDK 限位校验，但调用方仍需自行保证动力学控制器的稳定性。
+
+        此高级接口不会加入 examples，避免被误当作普通位置控制示例。
+        """
+        if self.left._mode != "mit" or self.right._mode != "mit":
+            raise RuntimeError(
+                "stream_mit_joint_commands() requires dual-arm MIT mode"
+            )
+        self._submit_joint_positions(
+            left=left_positions,
+            right=right_positions,
+            left_velocities=left_velocities,
+            right_velocities=right_velocities,
+            left_torques=left_torques,
+            right_torques=right_torques,
+            left_mit_kp=left_kp,
+            right_mit_kp=right_kp,
+            left_mit_kd=left_kd,
+            right_mit_kd=right_kd,
+            lifetime=CommandLifetime.STREAMING,
+        )
+
     def estop(self, reason: str = "emergency stop") -> None:
         """锁存双臂故障并尝试失能所有关节和夹爪。"""
         runtime = self._safety_runtime
@@ -576,11 +628,54 @@ class ArxDCanDualArm:
         velocity: float | Sequence[float] | None = None,
         profile: str = "min_jerk",
     ) -> ArxDCanDualArmState:
-        """由 C++ runtime 同步移动双臂，并阻塞到轨迹进入终态。
+        """由 C++ runtime 同步移动双臂，并阻塞到反馈收敛或轨迹失败。
 
         ``velocity`` 是实际轨迹速度，单位为 rad/s；标量应用到全部关节，序列按
         单侧关节顺序同时应用到左右臂。留空时使用 SDK 默认轨迹速度。
         """
+        trajectory_id = self.start_joint_trajectory(
+            left=left,
+            right=right,
+            velocity=velocity,
+            profile=profile,
+        )
+        result = self.wait_trajectory(trajectory_id)
+        if result.status is not TrajectoryStatus.COMPLETED:
+            detail = f": {result.error}" if result.error else ""
+            raise RuntimeError(
+                f"joint trajectory {trajectory_id} {result.status.value}{detail}"
+            )
+        return self.read_state()
+
+    def start_joint_trajectory(
+        self,
+        *,
+        left: Sequence[float],
+        right: Sequence[float],
+        velocity: float | Sequence[float] | None = None,
+        profile: str = "min_jerk",
+        replace: bool = False,
+    ) -> int:
+        """非阻塞启动一条同步双臂点到点轨迹并立即返回轨迹 ID。
+
+        PV 和 MIT 模式均可使用。Runtime 在 500 Hz 原生线程内生成 reference；
+        reference 结束后还会等待反馈满足 ABI 1.8 的 settling 条件。调用方应通过
+        :meth:`get_trajectory` 查询、通过 :meth:`wait_trajectory` 阻塞等待，或通过
+        :meth:`cancel_trajectory` 主动取消。
+
+        默认 ``replace=False``：已有活动轨迹时拒绝新轨迹。``replace=True`` 会在
+        一个原生原子事务中把旧轨迹标记为 ``PREEMPTED``，并从旧轨迹当时的位置、
+        速度和加速度平滑生成新的 minimum-jerk 轨迹。平滑替换仅支持
+        ``profile="min_jerk"``。连续高频替换会改变运动动态，只应由具备限速和
+        故障处理的遥操作控制器使用；普通用户应调用 :meth:`move_joint_positions`。
+        """
+        if (
+            replace
+            and str(profile).strip().lower().replace("-", "_") != "min_jerk"
+        ):
+            raise ValueError(
+                "smooth trajectory replacement requires min_jerk profile"
+            )
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
@@ -593,17 +688,42 @@ class ArxDCanDualArm:
             right_target,
             velocity=velocity,
         )
-        trajectory_id = runtime.start_joint_trajectory(
+        return runtime.start_joint_trajectory(
             left_native + right_native,
             profile=profile,
+            replace=replace,
         )
-        result = runtime.wait_trajectory(trajectory_id)
-        if result.status is not TrajectoryStatus.COMPLETED:
-            detail = f": {result.error}" if result.error else ""
-            raise RuntimeError(
-                f"joint trajectory {trajectory_id} {result.status.value}{detail}"
-            )
-        return self.read_state()
+
+    def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+        """非阻塞返回轨迹状态；RUNNING 同时涵盖 reference 与 SETTLING。"""
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        return runtime.get_trajectory(trajectory_id)
+
+    def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+        """阻塞等待轨迹终态，返回 COMPLETED、FAILED、PREEMPTED 或 CANCELED。
+
+        ABI 1.8 的等待预算包含剩余 reference 时长、settling timeout 和调度余量。
+        本方法返回结构化终态但不自动抛出 ``FAILED``；调用方必须检查 ``status`` 和
+        ``error``。希望失败时直接抛出异常的普通点到点控制应使用
+        :meth:`move_joint_positions`。
+        """
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        return runtime.wait_trajectory(trajectory_id)
+
+    def cancel_trajectory(self, trajectory_id: int) -> None:
+        """原子取消指定活动轨迹，并让双臂完整关节布局进入当前位置内部保持。
+
+        取消不是失能：电机仍保持使能并持续产生保持力矩。取消仅接受当前活动轨迹
+        的 ID；传入历史轨迹或未知 ID 会失败。需要物理失能时应调用 :meth:`disable`。
+        """
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm safety runtime is not connected")
+        runtime.cancel_trajectory(trajectory_id)
 
     def set_gripper_openings(self, *, left: float, right: float) -> None:
         """原子提交左右夹爪的 0～1000 开合度目标。"""

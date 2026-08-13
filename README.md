@@ -18,7 +18,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时使用 `motor-drive-layer>=0.8.3,<0.9`。平台 wheel 已包含对应的
+底层通信与原生安全运行时使用 `motor-drive-layer>=0.8.5,<0.9`。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -63,15 +63,23 @@ state = arm.move_joint_positions(
 `move_joint_positions()` 不在 Python 中插值，轨迹完全由 C++ runtime 执行。
 `velocity` 表示实际轨迹速度，单位为 rad/s；省略时使用 SDK 默认轨迹速度。
 插值可选 `min_jerk` 或 `linear`。
-它是阻塞接口，因此同一线程连续调用 A、B 时一定先完成 A 再开始 B，不存在用户可见
-的轨迹队列或异步句柄。Runtime 同一时间只允许一条活动轨迹；轨迹运行期间提交新轨迹
-或普通实时命令会直接返回 busy/rejected，不会抢占，也不会进入等待队列。轨迹完成后
-底层持续发送终点保持，不会误触发用户命令看门狗。
+ABI 1.8 中，规划时长只负责生成位置/速度 reference。reference 到达终点后 Runtime
+进入 `SETTLING` 并继续发送终点目标；只有全部关节的位置误差和速度连续满足容差，
+轨迹才返回 `COMPLETED`。settling 超时或持续 following error 会返回 `FAILED`，因此
+SDK 的阻塞等待预算由“剩余 reference 时长 + settling timeout + 调度余量”组成。
+它是阻塞接口，因此同一线程连续调用 A、B 时一定先完成 A 再开始 B。双臂高级 API
+同时公开非阻塞的 `start_joint_trajectory()`，以及 `get_trajectory()`、
+`wait_trajectory()` 和 `cancel_trajectory()`。默认启动策略会在已有活动轨迹时拒绝；
+`replace=True` 可用 minimum-jerk 从旧轨迹当时的位置、速度和加速度平滑替换，旧轨迹
+进入 `PREEMPTED`。取消后双臂进入当前位置内部保持，并不等于物理失能。平滑替换和
+取消不会放入 examples，只供实现了限速、状态检查和故障处理的高级控制器使用。
+轨迹完成后底层持续发送终点保持，不会误触发用户命令看门狗。
 
 已经自行生成连续目标的 ROS、遥操作和视觉跟随程序，可以在 PV 模式下使用
-`stream_joint_positions()`。MIT 的原始位置、速度、Kp/Kd 和前馈力矩提交不属于
-普通用户接口；MIT 点到点运动同样使用 `move_joint_positions()`。流式目标使用
-`STREAMING` 生命周期，停止更新后仍受命令看门狗保护。
+`stream_joint_positions()`。双臂 MIT 的原始位置、速度、Kp/Kd 和前馈力矩通过高级
+`stream_mit_joint_commands()` 公开，但不会提供 examples；调用方必须稳定、持续地
+提交完整左右 7 轴命令。MIT 点到点运动仍优先使用 `move_joint_positions()`。所有流式
+目标使用 `STREAMING` 生命周期，停止更新后受命令看门狗保护。
 
 关节数量不由代码写死，而是来自所选机型配置。当前公开控制模式只有经过验证的
 `pv` 和 `mit`。模式在创建机械臂时确定，`enable()` 自动完成配置；使能期间禁止
@@ -204,7 +212,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.8.3 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.8.5 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -287,7 +295,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer>=0.8.3,<0.9` 的平台 wheel 会自动加载随包提供的运行库；
+厂商动态库。`motor-drive-layer>=0.8.5,<0.9` 的平台 wheel 会自动加载随包提供的运行库；
 `MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -311,8 +319,9 @@ SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.8.3 提供的 ABI 1.6 `libarticore_runtime`。SDK 初始化时同时要求
-`deterministic_disable` 能力。本仓库不再编译 C++；Python 只校验
+motor-drive-layer 0.8.5 提供的 ABI 1.8 `libarticore_runtime`。SDK 初始化时同时要求
+`deterministic_disable`、`trajectory_management` 和 `trajectory_settling` 能力。
+本仓库不再编译 C++；Python 只校验
 和提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
 `DISCONNECTED → READY → ENABLED → RUNNING → SAFE_HOLD / FAULT`，`FAULT` 只能通过
@@ -339,10 +348,10 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程以 500 Hz 发送，`SAFE_HOLD/FAULT` 下统一使用 100 Hz。相关职责由
-motor-drive-layer 0.8.3 承担。
+motor-drive-layer 0.8.5 承担。
 
 使能时，SDK 先完成控制模式和电机参数配置，然后只调用一次原生 `runtime.enable()`。
-ABI 1.6 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
+ABI 1.8 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
 目标，并行使能左右通道并确认所有电机均返回新鲜 `ENABLED` 反馈。失败时 Runtime 会
 回滚失能全部电机。SDK 不再提前调用左右臂或夹爪的物理使能接口。
 
@@ -370,7 +379,7 @@ except NativeEnableError as exc:
 状态下仍会尝试物理失能全部电机，但不会清除故障锁存；`recover()` 只有在物理失能、
 反馈新鲜且通信健康均得到确认后才会回到 `READY`。
 
-ABI 1.6 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
+ABI 1.8 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
 在途批次完成，建立 ControllerGroup 与 USB/CAN 队列屏障，并行失能 CH0/CH1 并确认
 所有电机的新鲜失能反馈；第一轮未确认的电机只会被定向重发一次。正常关闭不再依赖
 电机通信超时。失能确认失败时会抛出携带 `DisableReport` 的 `NativeDisableError`：
@@ -415,11 +424,27 @@ MIT 示例只接收左右臂目标角度，控制参数由机型配置统一管�
 conda run --no-capture-output -n at python -m \
   arx_d_can.examples.dual_arm.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
-  --right "0,0,0,90,0,0,0"
+  --right "0,0,0,90,0,0,0" \
+  --velocity 200
 ```
 
-MIT 示例发送标准的直接位置命令，不做轨迹插值，也不暴露速度参数。MIT 目标速度和
-前馈力矩均为零，Kp/Kd 读取机型 YAML。需要平滑插值时使用 example 10。
+MIT 示例使用原生平滑轨迹，Kp/Kd 读取机型 YAML，前馈力矩使用关节控制配置。
+`--velocity` 是 0～400 的产品速度档位；需要选择 `min_jerk` 或 `linear` 时使用
+example 10。
+
+产品需要覆盖 ABI 1.8 的原生轨迹执行默认值时，可以在 YAML 中增加：
+
+```yaml
+trajectory_execution:
+  position_tolerance: 0.02       # rad
+  velocity_tolerance: 0.05       # rad/s
+  following_error_limit: 0.5     # rad，必须大于位置容差
+  settling_stable_ms: 100
+  settling_timeout_ms: 3000
+  following_error_timeout_ms: 100
+```
+
+未配置该段时使用 motor Runtime 的保守默认值，不由 SDK 重写。
 
 普通 `conda run -n ...` 会缓存子进程输出，并可能在 Ctrl+C 时由 Conda 自己截获
 中断，使 Python 的 `finally` 清理逻辑没有机会完成。运动控制不能依赖这种运行方式。

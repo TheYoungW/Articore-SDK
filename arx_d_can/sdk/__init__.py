@@ -22,6 +22,9 @@ from .native_safety import (
     NativeEnableError,
     SafetyHealth,
     SafetyState,
+    TrajectoryExecutionConfig,
+    TrajectoryInfo,
+    TrajectoryStatus,
     TransportHealth,
 )
 from .state import (
@@ -57,6 +60,9 @@ for _public_type in (
     NativeEnableError,
     SafetyHealth,
     SafetyState,
+    TrajectoryExecutionConfig,
+    TrajectoryInfo,
+    TrajectoryStatus,
     TransportHealth,
 ):
     _public_type.__module__ = __name__
@@ -87,6 +93,9 @@ __all__ = [
     "NativeEnableError",
     "SafetyHealth",
     "SafetyState",
+    "TrajectoryExecutionConfig",
+    "TrajectoryInfo",
+    "TrajectoryStatus",
     "TransportHealth",
     "default_config",
 ]

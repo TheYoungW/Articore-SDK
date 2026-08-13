@@ -13,11 +13,13 @@ from motor_drive_layer.abi import get_abi
 
 _UINT64_MAX = (1 << 64) - 1
 _ARTICORE_ABI_MAJOR = 1
-_ARTICORE_ABI_MINOR = 6
+_ARTICORE_ABI_MINOR = 8
 ARTICORE_CAP_COMMAND_LIFETIME = 1 << 11
 ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY = 1 << 12
 ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1 << 13
 ARTICORE_CAP_DETERMINISTIC_DISABLE = 1 << 14
+ARTICORE_CAP_TRAJECTORY_MANAGEMENT = 1 << 15
+ARTICORE_CAP_TRAJECTORY_SETTLING = 1 << 16
 _REQUIRED_CAPABILITIES = (
     (1 << 0)  # 命令看门狗
     | (1 << 1)  # 安全保持
@@ -32,7 +34,12 @@ _REQUIRED_CAPABILITIES = (
     | ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY
     | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
     | ARTICORE_CAP_DETERMINISTIC_DISABLE
+    | ARTICORE_CAP_TRAJECTORY_MANAGEMENT
+    | ARTICORE_CAP_TRAJECTORY_SETTLING
 )
+
+_NATIVE_DEFAULT_SETTLING_TIMEOUT_S = 3.0
+_TRAJECTORY_WAIT_SCHEDULING_MARGIN_S = 1.0
 
 
 class CommandLifetime(IntEnum):
@@ -203,6 +210,47 @@ class TrajectoryInfo:
     duration_s: float
     elapsed_s: float
     error: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class TrajectoryExecutionConfig:
+    """轨迹 reference 结束后的反馈收敛与跟踪误差策略。"""
+
+    position_tolerance: float = 0.02
+    velocity_tolerance: float = 0.05
+    following_error_limit: float = 0.5
+    settling_stable_ms: int = 100
+    settling_timeout_ms: int = 3000
+    following_error_timeout_ms: int = 100
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.position_tolerance)
+            or self.position_tolerance <= 0
+        ):
+            raise ValueError("trajectory position_tolerance must be positive")
+        if (
+            not math.isfinite(self.velocity_tolerance)
+            or self.velocity_tolerance <= 0
+        ):
+            raise ValueError("trajectory velocity_tolerance must be positive")
+        if (
+            not math.isfinite(self.following_error_limit)
+            or self.following_error_limit <= self.position_tolerance
+        ):
+            raise ValueError(
+                "trajectory following_error_limit must exceed position_tolerance"
+            )
+        if self.settling_stable_ms <= 0:
+            raise ValueError("trajectory settling_stable_ms must be positive")
+        if self.settling_timeout_ms < self.settling_stable_ms:
+            raise ValueError(
+                "trajectory settling_timeout_ms must be at least settling_stable_ms"
+            )
+        if self.following_error_timeout_ms <= 0:
+            raise ValueError(
+                "trajectory following_error_timeout_ms must be positive"
+            )
 
 
 @dataclass(slots=True, frozen=True)
@@ -407,6 +455,18 @@ class _JointTrajectoryTarget(ctypes.Structure):
     ]
 
 
+class _TrajectoryExecutionConfig(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("position_tolerance", ctypes.c_float),
+        ("velocity_tolerance", ctypes.c_float),
+        ("following_error_limit", ctypes.c_float),
+        ("settling_stable_ms", ctypes.c_uint32),
+        ("settling_timeout_ms", ctypes.c_uint32),
+        ("following_error_timeout_ms", ctypes.c_uint32),
+    ]
+
+
 class _TrajectoryInfo(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
@@ -583,10 +643,11 @@ class NativeSafetyRuntime:
         safe_pv_velocity_limit: float = 0.2,
         gripper_control_hz: float = 500.0,
         gripper_fault_action: str = "hold",
+        trajectory_execution: TrajectoryExecutionConfig | None = None,
     ) -> None:
         self._lib = ctypes.CDLL(articore_runtime_library_path())
         # 先读取旧 ABI 也具备的版本与能力符号。误装旧版运行库时应给出明确的版本
-        # 错误，而不是因 ABI 1.6 新符号不存在而抛出晦涩的 AttributeError。
+        # 错误，而不是因 ABI 1.8 新符号不存在而抛出晦涩的 AttributeError。
         self._lib.articore_runtime_abi_version.restype = ctypes.c_uint32
         self._lib.articore_runtime_capabilities.restype = ctypes.c_uint64
         version = int(self._lib.articore_runtime_abi_version())
@@ -610,11 +671,11 @@ class NativeSafetyRuntime:
         motor_lib = self._motor_abi.lib
         if not getattr(self._motor_abi, "has_transport_health", False):
             raise RuntimeError(
-                "motor-drive-layer 0.8.3 must expose structured transport health"
+                "motor-drive-layer 0.8.5 must expose structured transport health"
             )
         if not getattr(self._motor_abi, "has_structured_feedback_report", False):
             raise RuntimeError(
-                "motor-drive-layer 0.8.3 must expose structured feedback reports"
+                "motor-drive-layer 0.8.5 must expose structured feedback reports"
             )
         transport_health_pointer = _function_pointer(
             motor_lib.motor_controller_get_transport_health
@@ -704,6 +765,8 @@ class NativeSafetyRuntime:
             raise RuntimeError(f"native safety runtime creation failed: {self._error()}")
         try:
             self._configure_joints(joints)
+            if trajectory_execution is not None:
+                self.configure_trajectory_execution(trajectory_execution)
         except Exception:
             self._lib.articore_runtime_free(self._ptr)
             self._ptr = None
@@ -713,6 +776,11 @@ class NativeSafetyRuntime:
         self._gripper_mit_array = None
         self._gripper_target_array = None
         self._trajectory_target_array = None
+        self._trajectory_settling_timeout_s = (
+            _NATIVE_DEFAULT_SETTLING_TIMEOUT_S
+            if trajectory_execution is None
+            else trajectory_execution.settling_timeout_ms / 1000.0
+        )
 
     def _bind(self) -> None:
         lib = self._lib
@@ -739,6 +807,10 @@ class NativeSafetyRuntime:
             ctypes.c_void_p,
             ctypes.POINTER(_JointControlConfig),
             ctypes.c_uint32,
+        ]
+        lib.articore_runtime_configure_trajectory_execution.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_TrajectoryExecutionConfig),
         ]
         lib.articore_runtime_submit_pos_vel.argtypes = [
             ctypes.c_void_p, ctypes.POINTER(_PosVelCommand), ctypes.c_uint32,
@@ -771,6 +843,14 @@ class NativeSafetyRuntime:
             ctypes.c_int32,
         ]
         lib.articore_runtime_start_joint_trajectory.restype = ctypes.c_uint64
+        lib.articore_runtime_start_joint_trajectory_ex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_JointTrajectoryTarget),
+            ctypes.c_uint32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+        ]
+        lib.articore_runtime_start_joint_trajectory_ex.restype = ctypes.c_uint64
         lib.articore_runtime_get_trajectory.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint64,
@@ -781,6 +861,10 @@ class NativeSafetyRuntime:
             ctypes.c_uint64,
             ctypes.c_uint32,
             ctypes.POINTER(_TrajectoryInfo),
+        ]
+        lib.articore_runtime_cancel_trajectory.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint64,
         ]
         lib.articore_runtime_report_feedback_failure.argtypes = [
             ctypes.c_void_p, ctypes.c_uint8, ctypes.c_char_p,
@@ -798,6 +882,7 @@ class NativeSafetyRuntime:
             "articore_runtime_get_last_enable_report",
             "articore_runtime_get_last_disable_report",
             "articore_runtime_configure_joints",
+            "articore_runtime_configure_trajectory_execution",
             "articore_runtime_submit_pos_vel", "articore_runtime_submit_mit",
             "articore_runtime_submit_pos_vel_ex",
             "articore_runtime_submit_mit_ex",
@@ -805,6 +890,7 @@ class NativeSafetyRuntime:
             "articore_runtime_set_gripper_openings",
             "articore_runtime_get_trajectory",
             "articore_runtime_wait_trajectory",
+            "articore_runtime_cancel_trajectory",
             "articore_runtime_report_feedback_failure", "articore_runtime_disable",
             "articore_runtime_estop", "articore_runtime_recover",
             "articore_runtime_get_health", "articore_runtime_close",
@@ -850,6 +936,30 @@ class NativeSafetyRuntime:
             "runtime joint configuration",
         )
         self._native_joint_configs = native
+
+    def configure_trajectory_execution(
+        self,
+        config: TrajectoryExecutionConfig,
+    ) -> None:
+        """在 connect 前覆盖 ABI 1.8 的轨迹收敛与 following-error 策略。"""
+        native = _TrajectoryExecutionConfig(
+            ctypes.sizeof(_TrajectoryExecutionConfig),
+            float(config.position_tolerance),
+            float(config.velocity_tolerance),
+            float(config.following_error_limit),
+            int(config.settling_stable_ms),
+            int(config.settling_timeout_ms),
+            int(config.following_error_timeout_ms),
+        )
+        self._ok(
+            self._lib.articore_runtime_configure_trajectory_execution(
+                self._ptr,
+                ctypes.byref(native),
+            ),
+            "runtime trajectory execution configuration",
+        )
+        self._trajectory_execution_config = native
+        self._trajectory_settling_timeout_s = config.settling_timeout_ms / 1000.0
 
     def enable(self, mode: str) -> None:
         normalized = mode.strip().lower().replace("_", "")
@@ -1020,7 +1130,9 @@ class NativeSafetyRuntime:
         targets: Sequence[tuple[object, float, float]],
         *,
         profile: str = "min_jerk",
+        replace: bool = False,
     ) -> int:
+        """非阻塞启动完整关节轨迹；可选择平滑替换当前轨迹。"""
         normalized = str(profile).strip().lower().replace("-", "_")
         try:
             profile_id = _TRAJECTORY_PROFILE_BY_NAME[normalized]
@@ -1030,7 +1142,10 @@ class NativeSafetyRuntime:
         if not values:
             raise ValueError("joint trajectory targets must not be empty")
         count = len(values)
-        if self._trajectory_target_array is None or len(self._trajectory_target_array) != count:
+        if (
+            self._trajectory_target_array is None
+            or len(self._trajectory_target_array) != count
+        ):
             self._trajectory_target_array = (_JointTrajectoryTarget * count)()
         for index, (motor, position, velocity_limit) in enumerate(values):
             self._trajectory_target_array[index] = _JointTrajectoryTarget(
@@ -1038,14 +1153,25 @@ class NativeSafetyRuntime:
                 float(position),
                 float(velocity_limit),
             )
-        trajectory_id = int(
-            self._lib.articore_runtime_start_joint_trajectory(
-                self._ptr,
-                self._trajectory_target_array,
-                count,
-                profile_id,
+        if replace:
+            trajectory_id = int(
+                self._lib.articore_runtime_start_joint_trajectory_ex(
+                    self._ptr,
+                    self._trajectory_target_array,
+                    count,
+                    profile_id,
+                    1,  # ARTICORE_TRAJECTORY_SMOOTH_REPLACE
+                )
             )
-        )
+        else:
+            trajectory_id = int(
+                self._lib.articore_runtime_start_joint_trajectory(
+                    self._ptr,
+                    self._trajectory_target_array,
+                    count,
+                    profile_id,
+                )
+            )
         if trajectory_id == 0:
             raise RuntimeError(f"runtime trajectory start failed: {self._error()}")
         return trajectory_id
@@ -1065,10 +1191,29 @@ class NativeSafetyRuntime:
 
     def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
         initial = self.get_trajectory(trajectory_id)
+        if initial.status is not TrajectoryStatus.RUNNING:
+            return initial
+        # duration/elapsed 只描述 reference 生成阶段。ABI 1.8 在 reference 结束后
+        # 还会进入 SETTLING，因此等待预算必须显式包含 settling timeout。
         remaining = max(0.0, initial.duration_s - initial.elapsed_s)
+        settling_timeout = getattr(
+            self,
+            "_trajectory_settling_timeout_s",
+            _NATIVE_DEFAULT_SETTLING_TIMEOUT_S,
+        )
         timeout_ms = min(
             0xFFFFFFFF,
-            max(1, math.ceil((remaining + 5.0) * 1000.0)),
+            max(
+                1,
+                math.ceil(
+                    (
+                        remaining
+                        + settling_timeout
+                        + _TRAJECTORY_WAIT_SCHEDULING_MARGIN_S
+                    )
+                    * 1000.0
+                ),
+            ),
         )
         native = _TrajectoryInfo()
         native.struct_size = ctypes.sizeof(_TrajectoryInfo)
@@ -1082,6 +1227,16 @@ class NativeSafetyRuntime:
             "runtime trajectory wait",
         )
         return self._trajectory_info(native)
+
+    def cancel_trajectory(self, trajectory_id: int) -> None:
+        """原子取消活动轨迹，并让完整机械臂进入当前位置内部保持。"""
+        self._ok(
+            self._lib.articore_runtime_cancel_trajectory(
+                self._ptr,
+                int(trajectory_id),
+            ),
+            "runtime trajectory cancel",
+        )
 
     def report_feedback_failure(self, side: int, reason: str) -> None:
         self._ok(
@@ -1224,7 +1379,7 @@ class NativeSafetyRuntime:
     def close(self) -> None:
         if self._ptr:
             if self._lib.articore_runtime_close(self._ptr) != 0:
-                # ABI 1.6 要求关闭失败时保留 Runtime。它仍拥有
+                # ABI 1.8 要求关闭失败时保留 Runtime。它仍拥有
                 # ControllerGroup、Controller 和 Transport 的生命周期前置条件。
                 raise NativeDisableError(
                     self.last_disable_report,
@@ -1242,6 +1397,8 @@ class NativeSafetyRuntime:
 
 __all__ = [
     "ARTICORE_CAP_DETERMINISTIC_DISABLE",
+    "ARTICORE_CAP_TRAJECTORY_MANAGEMENT",
+    "ARTICORE_CAP_TRAJECTORY_SETTLING",
     "DisableMotorResult",
     "DisableReport",
     "EnableMotorResult",
@@ -1258,6 +1415,7 @@ __all__ = [
     "SafetyHealth",
     "SafetyState",
     "TrajectoryInfo",
+    "TrajectoryExecutionConfig",
     "TrajectoryStatus",
     "TransportHealth",
 ]

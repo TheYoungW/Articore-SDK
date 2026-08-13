@@ -551,8 +551,14 @@ def test_dual_move_runs_one_blocking_native_trajectory() -> None:
     right_targets = ((object(), -0.1, 0.5),)
 
     class Runtime:
-        def start_joint_trajectory(self, targets, *, profile: str) -> int:
-            calls.append(("start", tuple(targets), profile))
+        def start_joint_trajectory(
+            self,
+            targets,
+            *,
+            profile: str,
+            replace: bool,
+        ) -> int:
+            calls.append(("start", tuple(targets), profile, replace))
             return 23
 
         def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
@@ -579,9 +585,132 @@ def test_dual_move_runs_one_blocking_native_trajectory() -> None:
 
     assert result is final_state
     assert calls == [
-        ("start", left_targets + right_targets, "min_jerk"),
+        ("start", left_targets + right_targets, "min_jerk", False),
         ("wait", 23),
     ]
+
+
+def test_dual_nonblocking_trajectory_exposes_replace_query_wait_and_cancel() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    calls: list[tuple[object, ...]] = []
+    left_targets = ((object(), 0.1, 0.5),)
+    right_targets = ((object(), -0.1, 0.5),)
+    running = TrajectoryInfo(
+        31,
+        TrajectoryStatus.RUNNING,
+        "min_jerk",
+        1.0,
+        0.2,
+        None,
+    )
+    completed = TrajectoryInfo(
+        31,
+        TrajectoryStatus.COMPLETED,
+        "min_jerk",
+        1.0,
+        1.0,
+        None,
+    )
+
+    class Runtime:
+        def start_joint_trajectory(
+            self,
+            targets,
+            *,
+            profile: str,
+            replace: bool,
+        ) -> int:
+            calls.append(("start", tuple(targets), profile, replace))
+            return 31
+
+        def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+            calls.append(("get", trajectory_id))
+            return running
+
+        def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+            calls.append(("wait", trajectory_id))
+            return completed
+
+        def cancel_trajectory(self, trajectory_id: int) -> None:
+            calls.append(("cancel", trajectory_id))
+
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    robot.left._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: left_targets  # type: ignore[method-assign]
+    robot.right._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: right_targets  # type: ignore[method-assign]
+
+    trajectory_id = robot.start_joint_trajectory(
+        left=VALID_POSITIONS,
+        right=VALID_POSITIONS,
+        velocity=0.5,
+        replace=True,
+    )
+    assert robot.get_trajectory(trajectory_id) is running
+    assert robot.wait_trajectory(trajectory_id) is completed
+    robot.cancel_trajectory(trajectory_id)
+
+    assert calls == [
+        ("start", left_targets + right_targets, "min_jerk", True),
+        ("get", 31),
+        ("wait", 31),
+        ("cancel", 31),
+    ]
+
+
+def test_dual_mit_stream_exposes_complete_advanced_command_without_example() -> None:
+    robot = ArxDCanDualArm(control_mode="mit")
+    calls: list[dict[str, object]] = []
+    robot._submit_joint_positions = lambda **kwargs: calls.append(kwargs)  # type: ignore[method-assign]
+
+    robot.stream_mit_joint_commands(
+        left_positions=VALID_POSITIONS,
+        right_positions=VALID_POSITIONS,
+        left_velocities=(0.1,) * 7,
+        right_velocities=(-0.1,) * 7,
+        left_torques=(0.2,) * 7,
+        right_torques=(-0.2,) * 7,
+        left_kp=20.0,
+        right_kp=21.0,
+        left_kd=1.0,
+        right_kd=1.1,
+    )
+
+    assert calls == [
+        {
+            "left": VALID_POSITIONS,
+            "right": VALID_POSITIONS,
+            "left_velocities": (0.1,) * 7,
+            "right_velocities": (-0.1,) * 7,
+            "left_torques": (0.2,) * 7,
+            "right_torques": (-0.2,) * 7,
+            "left_mit_kp": 20.0,
+            "right_mit_kp": 21.0,
+            "left_mit_kd": 1.0,
+            "right_mit_kd": 1.1,
+            "lifetime": CommandLifetime.STREAMING,
+        }
+    ]
+
+
+def test_dual_rejects_mit_stream_in_pv_mode() -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+
+    with pytest.raises(RuntimeError, match="requires dual-arm MIT mode"):
+        robot.stream_mit_joint_commands(
+            left_positions=VALID_POSITIONS,
+            right_positions=VALID_POSITIONS,
+        )
+
+
+def test_dual_smooth_replace_requires_minimum_jerk() -> None:
+    robot = ArxDCanDualArm()
+
+    with pytest.raises(ValueError, match="requires min_jerk"):
+        robot.start_joint_trajectory(
+            left=VALID_POSITIONS,
+            right=VALID_POSITIONS,
+            profile="linear",
+            replace=True,
+        )
 
 
 def test_dual_gripper_openings_are_one_native_atomic_submission() -> None:

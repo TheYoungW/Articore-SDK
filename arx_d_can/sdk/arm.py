@@ -423,9 +423,10 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                 feedback_max_age_s=self.config.max_cached_feedback_age_s,
                 safe_hold_failure_threshold=self.config.safe_hold_failure_threshold,
                 safe_pv_velocity_limit=self.config.safe_hold_pv_velocity_limit,
-                # ABI 字段为兼容保留；1.6 正常运行时夹爪跟随机械臂控制频率。
+                # ABI 字段为兼容保留；1.8 正常运行时夹爪跟随机械臂控制频率。
                 gripper_control_hz=self.config.control_hz,
                 gripper_fault_action=self.config.gripper_fault_action,
+                trajectory_execution=self.config.trajectory_execution,
             )
             runtime.connect()
         except Exception:
@@ -474,7 +475,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                 and self._single_safety_runtime is None
             ):
                 raise RuntimeError(
-                    "motor-drive-layer 0.8.3 native safety runtime is unavailable"
+                    "motor-drive-layer 0.8.5 native safety runtime is unavailable"
                 )
         except Exception:
             try:
@@ -514,7 +515,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
     def close(self, *, disable: bool = True) -> None:
         """停止生成控制命令并关闭总线。
 
-        原生 Runtime 的关闭包含 ABI 1.6 确定性失能事务；失败时保留 Runtime、
+        原生 Runtime 的关闭包含 ABI 1.8 确定性失能事务；失败时保留 Runtime、
         ControllerGroup 和 Transport，供调用方读取结构化报告并重试。``disable=False``
         仅影响没有原生 Runtime 的自定义后端。
         """
@@ -530,7 +531,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                     self._faulted = True
                     self._fault_reason = f"close failed: {exc}"
                     self._safe_holding = False
-                # ABI 1.6：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
+                # ABI 1.8：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
                 raise
             self._single_safety_runtime = None
             with self._state_lock:
@@ -576,7 +577,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接；首次使能时，Python 只配置构造时选择的控制模式和电机
-        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.6 Runtime
+        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.8 Runtime
         完成。在 MIT 模式下仍可提供一条完整的后续初始命令。操作失败时抛出的
         :class:`NativeEnableError` 携带结构化使能报告。
         """
@@ -661,7 +662,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             self._sync_native_safety_flags(runtime.health)
             return
 
-        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.6
+        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.8
         # Runtime 独占物理使能事务，不能在 Python 中提前逐组使能。
         try:
             if initial_position_vector is None:
@@ -1399,7 +1400,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         velocity: float | Sequence[float] | None = None,
         profile: str = "min_jerk",
     ) -> ArxDCanState:
-        """由 C++ runtime 平滑移动到目标，并阻塞到轨迹进入终态。
+        """由 C++ runtime 平滑移动到目标，并阻塞到反馈收敛或轨迹失败。
 
         ``velocity`` 是实际轨迹速度，单位为 rad/s；标量会应用到全部关节，序列按
         :attr:`joint_names` 排列。留空时使用 SDK 默认轨迹速度。``profile`` 可选

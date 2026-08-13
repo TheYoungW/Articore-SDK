@@ -33,7 +33,7 @@ gripper_mapping:
 
 # 夹爪始终使用 MIT 模式，默认 Kp=4.0；保护逻辑由 motor 原生运行时执行。
 gripper_protection:
-  # ABI 兼容字段；Runtime 1.6 正常运行时实际跟随整机 500 Hz。
+  # ABI 兼容字段；Runtime 1.8 正常运行时实际跟随整机 500 Hz。
   control_hz: 500.0
   close_speed: 1.0
   contact_torque: 0.8

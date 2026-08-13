@@ -9,6 +9,7 @@ from typing import Sequence
 import numpy as np
 
 from ..actuator import JointCfg, load_cfg
+from .native_safety import TrajectoryExecutionConfig
 
 
 @dataclass(slots=True, frozen=True)
@@ -104,6 +105,7 @@ class ArxDCanConfig:
     feedback_fault_threshold: int = 3
     max_cached_feedback_age_s: float = 0.02
     motor_communication_timeout_ms: int = 500
+    trajectory_execution: TrajectoryExecutionConfig | None = None
     name: str = "ARX-D-CAN"
     model: str = "custom"
     hardware_config_path: str | None = None
@@ -189,6 +191,9 @@ def _config_from_loaded(
     motion = data.get("motion", {}) or {}
     protection = data.get("gripper_protection", {}) or {}
     safety = data.get("safety", {}) or {}
+    trajectory = data.get("trajectory_execution")
+    if trajectory is not None and not isinstance(trajectory, dict):
+        raise ValueError("trajectory_execution must be a mapping")
     gripper_control_hz = float(
         protection.get("control_hz", data.get("rate", 500.0))
     )
@@ -293,6 +298,30 @@ def _config_from_loaded(
         motor_communication_timeout_ms=int(
             safety.get("motor_communication_timeout_ms", 500)
         ),
+        trajectory_execution=(
+            None
+            if trajectory is None
+            else TrajectoryExecutionConfig(
+                position_tolerance=float(
+                    trajectory.get("position_tolerance", 0.02)
+                ),
+                velocity_tolerance=float(
+                    trajectory.get("velocity_tolerance", 0.05)
+                ),
+                following_error_limit=float(
+                    trajectory.get("following_error_limit", 0.5)
+                ),
+                settling_stable_ms=int(
+                    trajectory.get("settling_stable_ms", 100)
+                ),
+                settling_timeout_ms=int(
+                    trajectory.get("settling_timeout_ms", 3000)
+                ),
+                following_error_timeout_ms=int(
+                    trajectory.get("following_error_timeout_ms", 100)
+                ),
+            )
+        ),
     )
 
 
@@ -351,7 +380,7 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
         joints.append(_actuator_joint_from_sdk(config.gripper))
         groups["gripper"] = {"joints": [config.gripper.name]}
     protection = config.gripper_protection
-    return {
+    result = {
         "name": config.name,
         "model": config.model,
         "hardware_path": config.hardware_config_path,
@@ -403,6 +432,22 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             "gripper_fault_action": config.gripper_fault_action,
         },
     }
+    trajectory = config.trajectory_execution
+    if trajectory is not None:
+        result["trajectory_execution"] = {
+            "position_tolerance": trajectory.position_tolerance,
+            "velocity_tolerance": trajectory.velocity_tolerance,
+            "following_error_limit": trajectory.following_error_limit,
+            "settling_stable_ms": trajectory.settling_stable_ms,
+            "settling_timeout_ms": trajectory.settling_timeout_ms,
+            "following_error_timeout_ms": trajectory.following_error_timeout_ms,
+        }
+    return result
 
 
-__all__ = ["ArxDCanConfig", "JointMotorConfig", "default_config"]
+__all__ = [
+    "ArxDCanConfig",
+    "JointMotorConfig",
+    "TrajectoryExecutionConfig",
+    "default_config",
+]
