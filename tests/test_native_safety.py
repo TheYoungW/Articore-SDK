@@ -9,36 +9,48 @@ from motor_drive_layer import articore_runtime_library_path
 from arx_d_can.sdk.native_safety import (
     ARTICORE_CAP_COMMAND_LIFETIME,
     ARTICORE_CAP_DETERMINISTIC_DISABLE,
+    ARTICORE_CAP_GRIPPER_COMMAND_PROFILES,
+    ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS,
+    ARTICORE_CAP_LAYERED_JOINT_LIMITS,
     ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY,
     ARTICORE_CAP_PROTECTIVE_FAULT_HOLD,
     ARTICORE_CAP_TRAJECTORY_MANAGEMENT,
+    ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD,
     ARTICORE_CAP_TRAJECTORY_SETTLING,
     CommandLifetime,
     DisableReport,
     EnableReport,
     GripperControlState,
+    GripperForceLevel,
+    NativeGripperForceProfile,
     NativeDisableError,
     NativeJointControlConfig,
+    NativeJointSafetyLimits,
     NativeMotorDescriptor,
     NativeEnableError,
     NativeSafetyRuntime,
     SafetyState,
     TrajectoryExecutionConfig,
+    TrajectoryStartOutcome,
     TrajectoryStatus,
     _DisableReport,
     _EnableReport,
     _SafetyHealth,
+    _GripperCommand,
+    _GripperForceProfile,
+    _JointSafetyLimits,
     _TrajectoryExecutionConfig,
     _TrajectoryInfo,
+    _TrajectoryStartReport,
 )
 
 
-def test_packaged_runtime_exposes_required_abi_1_8_capabilities() -> None:
+def test_packaged_runtime_exposes_required_abi_1_11_capabilities() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
     library.articore_runtime_abi_version.restype = ctypes.c_uint32
     library.articore_runtime_capabilities.restype = ctypes.c_uint64
 
-    assert int(library.articore_runtime_abi_version()) >= (1 << 16) | 8
+    assert int(library.articore_runtime_abi_version()) >= (1 << 16) | 11
     required = (
         ARTICORE_CAP_COMMAND_LIFETIME
         | ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY
@@ -46,6 +58,10 @@ def test_packaged_runtime_exposes_required_abi_1_8_capabilities() -> None:
         | ARTICORE_CAP_DETERMINISTIC_DISABLE
         | ARTICORE_CAP_TRAJECTORY_MANAGEMENT
         | ARTICORE_CAP_TRAJECTORY_SETTLING
+        | ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD
+        | ARTICORE_CAP_LAYERED_JOINT_LIMITS
+        | ARTICORE_CAP_GRIPPER_COMMAND_PROFILES
+        | ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS
     )
     assert int(library.articore_runtime_capabilities()) & required == required
 
@@ -208,17 +224,24 @@ def test_native_trajectory_supports_smooth_replace_and_cancel() -> None:
 
     class Library:
         @staticmethod
-        def articore_runtime_start_joint_trajectory_ex(
+        def articore_runtime_start_joint_trajectory_report(
             _runtime,
             _targets,
             count,
             profile,
             replace_policy,
+            output,
         ) -> int:
             calls.append(
-                ("start-ex", int(count), int(profile), int(replace_policy))
+                ("start-report", int(count), int(profile), int(replace_policy))
             )
-            return 41
+            report = ctypes.cast(
+                output, ctypes.POINTER(_TrajectoryStartReport)
+            ).contents
+            report.outcome = 2
+            report.old_trajectory_id = 40
+            report.new_trajectory_id = 41
+            return 0
 
         @staticmethod
         def articore_runtime_cancel_trajectory(_runtime, trajectory_id) -> int:
@@ -235,15 +258,162 @@ def test_native_trajectory_supports_smooth_replace_and_cancel() -> None:
     runtime._trajectory_target_array = None
     motor = SimpleNamespace(_ptr=0x123)
 
-    trajectory_id = runtime.start_joint_trajectory(
+    report = runtime.start_joint_trajectory(
         ((motor, 0.5, 1.0),),
         profile="min_jerk",
         replace=True,
     )
-    runtime.cancel_trajectory(trajectory_id)
+    runtime.cancel_trajectory(report.trajectory_id)
 
-    assert trajectory_id == 41
-    assert calls == [("start-ex", 1, 1, 1), ("cancel", 41)]
+    assert report.outcome is TrajectoryStartOutcome.REPLACED
+    assert report.old_trajectory_id == 40
+    assert report.trajectory_id == 41
+    assert calls == [("start-report", 1, 1, 2), ("cancel", 41)]
+
+
+def test_replacement_rejected_held_is_returned_without_exception() -> None:
+    class Library:
+        @staticmethod
+        def articore_runtime_start_joint_trajectory_report(
+            _runtime, _targets, _count, _profile, replace_policy, output
+        ) -> int:
+            assert int(replace_policy) == 2
+            report = ctypes.cast(
+                output, ctypes.POINTER(_TrajectoryStartReport)
+            ).contents
+            report.outcome = 3
+            report.old_trajectory_id = 77
+            report.hold_installed = 1
+            report.limiting_channel = 1
+            report.limiting_can_id = 6
+            report.feedback_fresh = 1
+            report.limiting_joint = b"right/r-joint6"
+            report.reason = b"trajectory target exceeds a soft position limit"
+            report.position = 0.77
+            report.soft_upper = 0.7675
+            report.hard_upper = 0.785
+            return 0
+
+        @staticmethod
+        def articore_runtime_last_error():
+            return b"ok"
+
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = Library()
+    runtime._ptr = 1
+    runtime._trajectory_target_array = None
+    motor = SimpleNamespace(_ptr=0x123)
+
+    report = runtime.start_joint_trajectory(
+        ((motor, 0.8, 1.0),),
+        replace=True,
+    )
+
+    assert report.outcome is TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD
+    assert report.new_trajectory_id is None
+    assert report.hold_installed
+    assert report.limiting_channel == 1
+    assert report.limiting_can_id == 6
+    assert report.limiting_joint == "right/r-joint6"
+    assert report.feedback_fresh
+    with pytest.raises(RuntimeError, match="REPLACEMENT_REJECTED_HELD"):
+        _ = report.trajectory_id
+
+
+def test_abi_1_11_joint_and_gripper_configuration_structures() -> None:
+    captured: dict[str, list[ctypes.Structure]] = {"limits": [], "profiles": []}
+
+    class Library:
+        @staticmethod
+        def articore_runtime_configure_joint_safety_limits(
+            _runtime, values, count
+        ) -> int:
+            for index in range(int(count)):
+                captured["limits"].append(values[index])
+            return 0
+
+        @staticmethod
+        def articore_runtime_configure_gripper_force_profiles(
+            _runtime, values, count
+        ) -> int:
+            for index in range(int(count)):
+                captured["profiles"].append(values[index])
+            return 0
+
+        @staticmethod
+        def articore_runtime_last_error():
+            return b"ok"
+
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = Library()
+    runtime._ptr = 1
+    joint = SimpleNamespace(_ptr=0x101)
+    gripper = SimpleNamespace(_ptr=0x102)
+    runtime._configure_joint_safety_limits(
+        (
+            NativeJointSafetyLimits(
+                joint, -1.0, 1.0, -0.9, 0.9, 0.1, 2.0
+            ),
+        ),
+    )
+    runtime._configure_gripper_force_profiles(
+        tuple(
+            NativeGripperForceProfile(
+                gripper,
+                level,
+                0.3 + 0.2 * int(level),
+                1.2 + 0.2 * int(level),
+                4.0,
+                0.5,
+                2.0,
+                0.5,
+            )
+            for level in GripperForceLevel
+        ),
+    )
+
+    assert captured["limits"][0].struct_size == ctypes.sizeof(_JointSafetyLimits)
+    assert captured["limits"][0].soft_upper_position == pytest.approx(0.9)
+    assert [value.force_level for value in captured["profiles"]] == list(
+        range(1, 11)
+    )
+    assert all(
+        value.struct_size == ctypes.sizeof(_GripperForceProfile)
+        for value in captured["profiles"]
+    )
+
+
+def test_abi_1_11_gripper_command_is_atomic_profiled_submission() -> None:
+    captured: list[_GripperCommand] = []
+
+    class Library:
+        @staticmethod
+        def articore_runtime_set_gripper_commands(_runtime, values, count) -> int:
+            captured.extend(values[index] for index in range(int(count)))
+            return 0
+
+        @staticmethod
+        def articore_runtime_last_error():
+            return b"ok"
+
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = Library()
+    runtime._ptr = 1
+    runtime._gripper_command_array = None
+    runtime.set_gripper_commands(
+        (
+            (SimpleNamespace(_ptr=0x201), 0.0, 250.0, GripperForceLevel.LEVEL_2),
+            (SimpleNamespace(_ptr=0x202), 800.0, 900.0, GripperForceLevel.LEVEL_9),
+        )
+    )
+
+    assert [value.struct_size for value in captured] == [
+        ctypes.sizeof(_GripperCommand),
+        ctypes.sizeof(_GripperCommand),
+    ]
+    assert [value.opening for value in captured] == pytest.approx([0.0, 800.0])
+    assert [value.speed for value in captured] == pytest.approx([250.0, 900.0])
+    assert [value.force_level for value in captured] == [2, 9]
 
 
 class FakeRuntimeLibrary:
@@ -504,6 +674,17 @@ def test_packaged_runtime_creates_a_single_channel_without_python_extension() ->
                 torque_limit=5.0,
                 mit_kp=20.0,
                 mit_kd=1.0,
+            ),
+        ),
+        joint_safety_limits=(
+            NativeJointSafetyLimits(
+                motor=motor,
+                hard_lower_position=-1.0,
+                hard_upper_position=1.0,
+                soft_lower_position=-0.9,
+                soft_upper_position=0.9,
+                soft_limit_braking_zone=0.1,
+                braking_acceleration=2.0,
             ),
         ),
     )

@@ -43,8 +43,8 @@ class DualArmGravityCompensationMode:
     ) -> None:
         update_hz = (
             min(
-                robot.left.config.feedback_check_hz,
-                robot.right.config.feedback_check_hz,
+                robot.left.config.control_hz,
+                robot.right.config.control_hz,
             )
             if hz is None
             else float(hz)
@@ -113,7 +113,6 @@ class DualArmGravityCompensationMode:
                 raise RuntimeError("双臂反馈关节数量发生变化")
             if np.any(~np.isfinite(positions)) or np.any(~np.isfinite(velocities)):
                 raise RuntimeError("双臂反馈包含非有限值")
-            calculator.validate_positions(positions)
             values.append((positions, velocities))
         return values[0], values[1]
 
@@ -153,6 +152,7 @@ class DualArmGravityCompensationMode:
             right_mit_kp=right_kp,
             left_mit_kd=left_kd,
             right_mit_kd=right_kd,
+            enforce_position_limits=False,
         )
         elapsed = max(0.0, time.monotonic() - self._active_started)
         sample = DualArmGravityCompensationSample(
@@ -225,10 +225,9 @@ class DualArmGravityCompensationMode:
             right_position = right_state[0]
             self._left.compute(left_position)
             self._right.compute(right_position)
-            self.robot.enable(
-                left_initial_positions=left_position,
-                right_initial_positions=right_position,
-            )
+            # 原生 Runtime 会以最新反馈生成原子使能保持目标；重力补偿随后通过
+            # 专用提交路径原样接受可能超出 URDF 标称范围的真实当前位置。
+            self.robot.enable()
             self._active = True
             self._active_started = time.monotonic()
             self._transition(left_position, right_position, entering=True)

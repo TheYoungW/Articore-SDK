@@ -13,12 +13,15 @@ from .native_safety import (
     CommandLifetime,
     DisableReport,
     EnableReport,
+    GripperForceLevel,
     GripperSafetyHealth,
     NativeMotorDescriptor,
     NativeSafetyRuntime,
     SafetyHealth,
     SafetyState,
     TrajectoryInfo,
+    TrajectoryStartOutcome,
+    TrajectoryStartReport,
     TrajectoryStatus,
     TransportHealth,
 )
@@ -154,13 +157,25 @@ class ArxDCanDualArm:
             *self.right._native_joint_control_configs(),
         )
 
+    def _native_joint_safety_limits(self):
+        return (
+            *self.left._native_joint_safety_limits(),
+            *self.right._native_joint_safety_limits(),
+        )
+
+    def _native_gripper_force_profiles(self):
+        return (
+            *self.left._native_gripper_force_profiles(),
+            *self.right._native_gripper_force_profiles(),
+        )
+
     def _create_safety_runtime(
         self,
         group: ControllerGroup,
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.5 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.8 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -181,6 +196,8 @@ class ArxDCanDualArm:
             right_controller=right_controller,
             motors=self._native_motor_descriptors(),
             joints=self._native_joint_control_configs(),
+            joint_safety_limits=self._native_joint_safety_limits(),
+            gripper_force_profiles=self._native_gripper_force_profiles(),
             control_hz=min(left.control_hz, right.control_hz),
             command_timeout_s=min(left.command_timeout_s, right.command_timeout_s),
             enable_grace_s=min(left.enable_grace_s, right.enable_grace_s),
@@ -250,7 +267,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.8.5 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.8.8 dual-arm safety runtime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -378,7 +395,7 @@ class ArxDCanDualArm:
     def close(self, *, disable: bool = True) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
-        ABI 1.8 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
+        ABI 1.11 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
         此方法保留全部底层句柄，以便调用方检查 ``last_disable_report`` 并重试。
         ``disable`` 仅为 API 兼容保留；原生 Runtime 始终执行受检关闭。
         """
@@ -446,11 +463,21 @@ class ArxDCanDualArm:
         self,
         left: Sequence[float],
         right: Sequence[float],
+        *,
+        enforce_position_limits: bool = True,
     ) -> tuple[tuple[float, ...], tuple[float, ...]]:
         """发送前校验左右臂数量、数值和 URDF 限位，避免部分发送。"""
         return (
-            self.left._validated_joint_positions(left, name="left"),
-            self.right._validated_joint_positions(right, name="right"),
+            self.left._validated_joint_positions(
+                left,
+                name="left",
+                enforce_limits=enforce_position_limits,
+            ),
+            self.right._validated_joint_positions(
+                right,
+                name="right",
+                enforce_limits=enforce_position_limits,
+            ),
         )
 
     def _submit_joint_positions(
@@ -469,6 +496,7 @@ class ArxDCanDualArm:
         left_mit_kd: float | Sequence[float] | None = None,
         right_mit_kd: float | Sequence[float] | None = None,
         lifetime: CommandLifetime = CommandLifetime.STREAMING,
+        enforce_position_limits: bool = True,
     ) -> None:
         """在 SDK 内部原子更新左右臂容量为一的最新关节目标。
 
@@ -479,7 +507,11 @@ class ArxDCanDualArm:
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
         self._sync_python_safety_flags(runtime.health)
-        left_target, right_target = self._targets(left, right)
+        left_target, right_target = self._targets(
+            left,
+            right,
+            enforce_position_limits=enforce_position_limits,
+        )
         group = self._controller_group
         if group is None:
             raise RuntimeError("dual-arm controller group is not connected")
@@ -491,6 +523,7 @@ class ArxDCanDualArm:
             torques=left_torques,
             mit_kp=left_mit_kp,
             mit_kd=left_mit_kd,
+            enforce_position_limits=enforce_position_limits,
         )
         if left_batch is None:
             return
@@ -501,6 +534,7 @@ class ArxDCanDualArm:
             torques=right_torques,
             mit_kp=right_mit_kp,
             mit_kd=right_mit_kd,
+            enforce_position_limits=enforce_position_limits,
         )
         if right_batch is None:
             return
@@ -633,12 +667,16 @@ class ArxDCanDualArm:
         ``velocity`` 是实际轨迹速度，单位为 rad/s；标量应用到全部关节，序列按
         单侧关节顺序同时应用到左右臂。留空时使用 SDK 默认轨迹速度。
         """
-        trajectory_id = self.start_joint_trajectory(
+        start = self.start_joint_trajectory(
             left=left,
             right=right,
             velocity=velocity,
             profile=profile,
         )
+        if start.outcome is not TrajectoryStartOutcome.STARTED:
+            detail = f": {start.reason}" if start.reason else ""
+            raise RuntimeError(f"joint trajectory {start.outcome.value}{detail}")
+        trajectory_id = start.trajectory_id
         result = self.wait_trajectory(trajectory_id)
         if result.status is not TrajectoryStatus.COMPLETED:
             detail = f": {result.error}" if result.error else ""
@@ -655,19 +693,19 @@ class ArxDCanDualArm:
         velocity: float | Sequence[float] | None = None,
         profile: str = "min_jerk",
         replace: bool = False,
-    ) -> int:
-        """非阻塞启动一条同步双臂点到点轨迹并立即返回轨迹 ID。
+    ) -> TrajectoryStartReport:
+        """非阻塞启动或安全替换同步双臂轨迹，并返回结构化事务报告。
 
         PV 和 MIT 模式均可使用。Runtime 在 500 Hz 原生线程内生成 reference；
-        reference 结束后还会等待反馈满足 ABI 1.8 的 settling 条件。调用方应通过
+        reference 结束后还会等待反馈满足 ABI 1.11 的 settling 条件。调用方应通过
         :meth:`get_trajectory` 查询、通过 :meth:`wait_trajectory` 阻塞等待，或通过
         :meth:`cancel_trajectory` 主动取消。
 
-        默认 ``replace=False``：已有活动轨迹时拒绝新轨迹。``replace=True`` 会在
-        一个原生原子事务中把旧轨迹标记为 ``PREEMPTED``，并从旧轨迹当时的位置、
-        速度和加速度平滑生成新的 minimum-jerk 轨迹。平滑替换仅支持
-        ``profile="min_jerk"``。连续高频替换会改变运动动态，只应由具备限速和
-        故障处理的遥操作控制器使用；普通用户应调用 :meth:`move_joint_positions`。
+        默认 ``replace=False``：已有活动轨迹时返回 ``REJECTED``。``replace=True``
+        使用 ABI 1.11 的 ``SMOOTH_REPLACE_OR_HOLD``。无法安全平滑替换时，Runtime
+        原子停止旧轨迹、发送完整双臂当前位置保持并返回
+        ``REPLACEMENT_REJECTED_HELD``；这是正常安全结果，不会抛出异常或让控制流程
+        退出。只有 ``STARTED``/``REPLACED`` 报告包含可供查询和等待的新轨迹 ID。
         """
         if (
             replace
@@ -679,14 +717,22 @@ class ArxDCanDualArm:
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        left_target, right_target = self._targets(left, right)
+        # 替换请求必须到达 Runtime 的原子事务。若 Python 先因硬限位抛错，旧轨迹会
+        # 继续运行，无法触发 SMOOTH_REPLACE_OR_HOLD 的全臂当前位置保持。
+        left_target, right_target = self._targets(
+            left,
+            right,
+            enforce_position_limits=not replace,
+        )
         left_native = self.left._prepare_joint_trajectory_targets(
             left_target,
             velocity=velocity,
+            enforce_position_limits=not replace,
         )
         right_native = self.right._prepare_joint_trajectory_targets(
             right_target,
             velocity=velocity,
+            enforce_position_limits=not replace,
         )
         return runtime.start_joint_trajectory(
             left_native + right_native,
@@ -694,17 +740,33 @@ class ArxDCanDualArm:
             replace=replace,
         )
 
-    def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+    @staticmethod
+    def _resolved_trajectory_id(
+        trajectory: int | TrajectoryStartReport,
+    ) -> int:
+        return (
+            trajectory.trajectory_id
+            if isinstance(trajectory, TrajectoryStartReport)
+            else int(trajectory)
+        )
+
+    def get_trajectory(
+        self,
+        trajectory_id: int | TrajectoryStartReport,
+    ) -> TrajectoryInfo:
         """非阻塞返回轨迹状态；RUNNING 同时涵盖 reference 与 SETTLING。"""
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        return runtime.get_trajectory(trajectory_id)
+        return runtime.get_trajectory(self._resolved_trajectory_id(trajectory_id))
 
-    def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
+    def wait_trajectory(
+        self,
+        trajectory_id: int | TrajectoryStartReport,
+    ) -> TrajectoryInfo:
         """阻塞等待轨迹终态，返回 COMPLETED、FAILED、PREEMPTED 或 CANCELED。
 
-        ABI 1.8 的等待预算包含剩余 reference 时长、settling timeout 和调度余量。
+        ABI 1.11 的等待预算包含剩余 reference 时长、settling timeout 和调度余量。
         本方法返回结构化终态但不自动抛出 ``FAILED``；调用方必须检查 ``status`` 和
         ``error``。希望失败时直接抛出异常的普通点到点控制应使用
         :meth:`move_joint_positions`。
@@ -712,9 +774,12 @@ class ArxDCanDualArm:
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        return runtime.wait_trajectory(trajectory_id)
+        return runtime.wait_trajectory(self._resolved_trajectory_id(trajectory_id))
 
-    def cancel_trajectory(self, trajectory_id: int) -> None:
+    def cancel_trajectory(
+        self,
+        trajectory_id: int | TrajectoryStartReport,
+    ) -> None:
         """原子取消指定活动轨迹，并让双臂完整关节布局进入当前位置内部保持。
 
         取消不是失能：电机仍保持使能并持续产生保持力矩。取消仅接受当前活动轨迹
@@ -723,14 +788,25 @@ class ArxDCanDualArm:
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        runtime.cancel_trajectory(trajectory_id)
+        runtime.cancel_trajectory(self._resolved_trajectory_id(trajectory_id))
 
-    def set_gripper_openings(self, *, left: float, right: float) -> None:
-        """原子提交左右夹爪的 0～1000 开合度目标。"""
+    def set_gripper_openings(
+        self,
+        *,
+        left: float,
+        right: float,
+        speed: float = 1000.0,
+        force_level: GripperForceLevel = GripperForceLevel.LEVEL_5,
+    ) -> None:
+        """原子提交全部已安装夹爪的开合度、归一化速度和夹持力等级。"""
         values = (float(left), float(right))
         if any(not math.isfinite(value) for value in values):
             raise ValueError("gripper openings must be finite")
         values = tuple(max(0.0, min(1000.0, value)) for value in values)
+        normalized_speed = float(speed)
+        if not math.isfinite(normalized_speed) or not 0.0 < normalized_speed <= 1000.0:
+            raise ValueError("gripper speed must be finite and in (0, 1000]")
+        level = GripperForceLevel(force_level)
         active = tuple(
             (arm, value)
             for arm, value in zip((self.left, self.right), values)
@@ -741,11 +817,16 @@ class ArxDCanDualArm:
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        targets = tuple(
-            (arm.robot._motor_map[arm.config.gripper.name], value)
+        commands = tuple(
+            (
+                arm.robot._motor_map[arm.config.gripper.name],
+                value,
+                normalized_speed,
+                level,
+            )
             for arm, value in active
         )
-        runtime.set_gripper_openings(targets)
+        runtime.set_gripper_commands(commands)
 
     def record_trajectory(
         self,

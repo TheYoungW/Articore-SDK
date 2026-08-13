@@ -32,12 +32,16 @@ from .native_safety import (
     CommandLifetime,
     DisableReport,
     EnableReport,
+    GripperForceLevel,
     GripperSafetyHealth,
+    NativeGripperForceProfile,
     NativeJointControlConfig,
+    NativeJointSafetyLimits,
     NativeMotorDescriptor,
     NativeSafetyRuntime,
     SafetyHealth,
     SafetyState,
+    TrajectoryStartOutcome,
     TrajectoryStatus,
     TransportHealth,
 )
@@ -382,6 +386,82 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             )
         return tuple(configs)
 
+    def _native_joint_safety_limits(self) -> tuple[NativeJointSafetyLimits, ...]:
+        """由 URDF 硬限位和产品余量生成 Runtime 1.11 分层限位。"""
+        margin = self.config.soft_limit_margin
+        braking_zone = self.config.soft_limit_braking_zone
+        braking_acceleration = self.config.braking_acceleration
+        if any(
+            not math.isfinite(value) or value < 0.0
+            for value in (margin, braking_zone, braking_acceleration)
+        ) or braking_acceleration == 0.0:
+            raise ValueError("joint safety values must be finite and non-negative")
+        limits = []
+        for joint in self.config.arm_joints:
+            position_range, _, _ = damiao_model_limits(joint.model)
+            logical_hard_lower = (
+                -position_range if joint.lower_limit is None else joint.lower_limit
+            )
+            logical_hard_upper = (
+                position_range if joint.upper_limit is None else joint.upper_limit
+            )
+            logical_soft_lower = logical_hard_lower + margin
+            logical_soft_upper = logical_hard_upper - margin
+            if logical_soft_lower >= logical_soft_upper:
+                raise ValueError(
+                    f"{joint.name}: soft limit margin leaves no valid joint range"
+                )
+            soft_span = logical_soft_upper - logical_soft_lower
+            if braking_zone > soft_span:
+                raise ValueError(
+                    f"{joint.name}: soft limit braking zone exceeds the soft range"
+                )
+            hard_motor = (
+                joint.direction * logical_hard_lower,
+                joint.direction * logical_hard_upper,
+            )
+            soft_motor = (
+                joint.direction * logical_soft_lower,
+                joint.direction * logical_soft_upper,
+            )
+            limits.append(
+                NativeJointSafetyLimits(
+                    motor=self.robot._motor_map[joint.name],
+                    hard_lower_position=min(hard_motor),
+                    hard_upper_position=max(hard_motor),
+                    soft_lower_position=min(soft_motor),
+                    soft_upper_position=max(soft_motor),
+                    soft_limit_braking_zone=braking_zone,
+                    braking_acceleration=braking_acceleration,
+                )
+            )
+        return tuple(limits)
+
+    def _native_gripper_force_profiles(
+        self,
+    ) -> tuple[NativeGripperForceProfile, ...]:
+        """把产品 1～10 档标定绑定到当前实际安装的夹爪。"""
+        gripper = self.config.gripper
+        if not self.enable_gripper or gripper is None:
+            return ()
+        motor = self.robot._motor_map[gripper.name]
+        return tuple(
+            NativeGripperForceProfile(
+                motor=motor,
+                force_level=level,
+                contact_torque=profile[0],
+                overload_torque=profile[1],
+                moving_kp=profile[2],
+                moving_kd=profile[3],
+                hold_kp=profile[4],
+                hold_kd=profile[5],
+            )
+            for level, profile in zip(
+                GripperForceLevel,
+                self.config.gripper_protection.force_profiles,
+            )
+        )
+
     def _default_joint_velocity_limits(self) -> np.ndarray:
         """返回 SDK 默认的逐关节速度上限。"""
         configured = np.asarray(
@@ -414,6 +494,8 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                 right_controller=None,
                 motors=descriptors,
                 joints=self._native_joint_control_configs(),
+                joint_safety_limits=self._native_joint_safety_limits(),
+                gripper_force_profiles=self._native_gripper_force_profiles(),
                 control_hz=self.config.control_hz,
                 command_timeout_s=self.config.command_timeout_s,
                 enable_grace_s=self.config.enable_grace_s,
@@ -475,7 +557,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                 and self._single_safety_runtime is None
             ):
                 raise RuntimeError(
-                    "motor-drive-layer 0.8.5 native safety runtime is unavailable"
+                    "motor-drive-layer 0.8.8 native safety runtime is unavailable"
                 )
         except Exception:
             try:
@@ -515,7 +597,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
     def close(self, *, disable: bool = True) -> None:
         """停止生成控制命令并关闭总线。
 
-        原生 Runtime 的关闭包含 ABI 1.8 确定性失能事务；失败时保留 Runtime、
+        原生 Runtime 的关闭包含 ABI 1.11 确定性失能事务；失败时保留 Runtime、
         ControllerGroup 和 Transport，供调用方读取结构化报告并重试。``disable=False``
         仅影响没有原生 Runtime 的自定义后端。
         """
@@ -531,7 +613,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                     self._faulted = True
                     self._fault_reason = f"close failed: {exc}"
                     self._safe_holding = False
-                # ABI 1.8：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
+                # ABI 1.11：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
                 raise
             self._single_safety_runtime = None
             with self._state_lock:
@@ -577,7 +659,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接；首次使能时，Python 只配置构造时选择的控制模式和电机
-        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.8 Runtime
+        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.11 Runtime
         完成。在 MIT 模式下仍可提供一条完整的后续初始命令。操作失败时抛出的
         :class:`NativeEnableError` 携带结构化使能报告。
         """
@@ -662,7 +744,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             self._sync_native_safety_flags(runtime.health)
             return
 
-        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.8
+        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.11
         # Runtime 独占物理使能事务，不能在 Python 中提前逐组使能。
         try:
             if initial_position_vector is None:
@@ -1000,8 +1082,9 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         positions: Sequence[float],
         *,
         name: str | None = None,
+        enforce_limits: bool = True,
     ) -> tuple[float, ...]:
-        """校验逻辑关节目标，任何关节超出 URDF 限位时拒绝整条命令。"""
+        """校验逻辑关节目标，并按需执行 URDF 位置限位检查。"""
         values = tuple(float(value) for value in positions)
         joint_count = len(self.config.arm_joints)
         prefix = "" if name is None else f"{name} "
@@ -1011,6 +1094,9 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             )
         if any(not math.isfinite(value) for value in values):
             raise ValueError(f"{prefix}joint positions must be finite")
+
+        if not enforce_limits:
+            return values
 
         violations = []
         for joint, value in zip(self.config.arm_joints, values):
@@ -1040,6 +1126,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         torques: Sequence[float] | None = None,
         mit_kp: float | Sequence[float] | None = None,
         mit_kd: float | Sequence[float] | None = None,
+        enforce_position_limits: bool = True,
     ) -> _PreparedJointPositionBatch | None:
         """校验一侧关节目标，并生成可交给 ControllerGroup 的命令。"""
         self._require_connected()
@@ -1047,7 +1134,10 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         if not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
         joint_count = len(self.config.arm_joints)
-        values = self._validated_joint_positions(positions)
+        values = self._validated_joint_positions(
+            positions,
+            enforce_limits=enforce_position_limits,
+        )
         logical_position = np.asarray(values, dtype=np.float64)
 
         def optional_vector(
@@ -1144,6 +1234,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         positions: Sequence[float],
         *,
         velocity: float | Sequence[float] | None,
+        enforce_position_limits: bool = True,
     ) -> tuple[tuple[object, float, float], ...]:
         """把逻辑目标转换为 runtime 轨迹使用的原生坐标。"""
         self._require_connected()
@@ -1152,7 +1243,10 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             raise RuntimeError("ARX-D-CAN arm is not enabled")
         joint_count = len(self.config.arm_joints)
         target = np.asarray(
-            self._validated_joint_positions(positions),
+            self._validated_joint_positions(
+                positions,
+                enforce_limits=enforce_position_limits,
+            ),
             dtype=np.float64,
         )
 
@@ -1221,6 +1315,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         mit_kd: float | Sequence[float] | None = None,
         require_enabled: bool = True,
         lifetime: CommandLifetime = CommandLifetime.STREAMING,
+        enforce_position_limits: bool = True,
     ) -> None:
         """在 SDK 内部更新 runtime 的完整逻辑关节目标。
 
@@ -1240,7 +1335,10 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         if require_enabled and not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
         joint_count = len(self.config.arm_joints)
-        position_target = self._validated_joint_positions(positions)
+        position_target = self._validated_joint_positions(
+            positions,
+            enforce_limits=enforce_position_limits,
+        )
         velocity_target: np.ndarray | None = None
         if velocities is not None:
             if len(velocities) != joint_count:
@@ -1418,7 +1516,13 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             positions,
             velocity=velocity,
         )
-        trajectory_id = runtime.start_joint_trajectory(targets, profile=profile)
+        start = runtime.start_joint_trajectory(targets, profile=profile)
+        if start.outcome is not TrajectoryStartOutcome.STARTED:
+            detail = f": {start.reason}" if start.reason else ""
+            raise RuntimeError(
+                f"joint trajectory {start.outcome.value}{detail}"
+            )
+        trajectory_id = start.trajectory_id
         result = runtime.wait_trajectory(trajectory_id)
         if result.status is not TrajectoryStatus.COMPLETED:
             detail = f": {result.error}" if result.error else ""
@@ -1504,11 +1608,19 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             verify_samples=verify_samples,
         )
 
-    def set_gripper_opening(self, value: float) -> None:
+    def set_gripper_opening(
+        self,
+        value: float,
+        *,
+        speed: float = 1000.0,
+        force_level: GripperForceLevel = GripperForceLevel.LEVEL_5,
+    ) -> None:
         """使用简单的 ``0``～``1000`` 刻度设置夹爪开合度。
 
         ``0`` 表示完全闭合，``1000`` 表示完全张开，超出范围的值会自动限幅。
-        夹爪始终使用机型配置中的 MIT 增益；Yunyi 默认 Kp 为 4.0、Kd 为 0.5。
+        ``speed`` 使用 ``(0, 1000]`` 产品归一化刻度；``1000`` 对应配置中的最大
+        标定速度。``force_level`` 必须使用 :class:`GripperForceLevel` 枚举，具体
+        接触、过载和保持参数由产品配置固定，普通用户不能逐项覆盖。
         """
         self._require_connected()
         if self._dual_runtime_managed:
@@ -1530,11 +1642,17 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         if not math.isfinite(opening):
             raise ValueError("gripper opening must be finite")
         opening = max(0.0, min(1000.0, opening))
+        normalized_speed = float(speed)
+        if not math.isfinite(normalized_speed) or not 0.0 < normalized_speed <= 1000.0:
+            raise ValueError("gripper speed must be finite and in (0, 1000]")
+        level = GripperForceLevel(force_level)
         runtime = self._single_safety_runtime
         if runtime is not None:
             motor = self.robot._motor_map[self.config.gripper.name]
             try:
-                runtime.set_gripper_openings(((motor, opening),))
+                runtime.set_gripper_commands(
+                    ((motor, opening, normalized_speed, level),)
+                )
             finally:
                 self._sync_native_safety_flags(runtime.health)
             return

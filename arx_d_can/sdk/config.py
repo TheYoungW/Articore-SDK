@@ -12,6 +12,29 @@ from ..actuator import JointCfg, load_cfg
 from .native_safety import TrajectoryExecutionConfig
 
 
+# 1～10 档，字段依次为接触/过载力矩、运动 Kp/Kd、保持 Kp/Kd。
+_DEFAULT_GRIPPER_FORCE_PROFILES = (
+    (0.5, 1.0, 3.0, 0.3, 1.0, 0.2),
+    (0.575, 1.125, 3.25, 0.35, 1.25, 0.275),
+    (0.65, 1.25, 3.5, 0.4, 1.5, 0.35),
+    (0.725, 1.375, 3.75, 0.45, 1.75, 0.425),
+    (0.8, 1.5, 4.0, 0.5, 2.0, 0.5),
+    (0.88, 1.6, 4.4, 0.56, 2.2, 0.54),
+    (0.96, 1.7, 4.8, 0.62, 2.4, 0.58),
+    (1.04, 1.8, 5.2, 0.68, 2.6, 0.62),
+    (1.12, 1.9, 5.6, 0.74, 2.8, 0.66),
+    (1.2, 2.0, 6.0, 0.8, 3.0, 0.7),
+)
+_GRIPPER_PROFILE_FIELDS = (
+    "contact_torque",
+    "overload_torque",
+    "moving_kp",
+    "moving_kd",
+    "hold_kp",
+    "hold_kd",
+)
+
+
 @dataclass(slots=True, frozen=True)
 class GripperProtectionConfig:
     """传递给 motor 原生运行时的夹爪保护参数。"""
@@ -31,11 +54,15 @@ class GripperProtectionConfig:
     overload_retreat_interval_s: float = 0.1
     hold_kp: float = 2.0
     hold_kd: float = 0.5
+    force_profiles: tuple[tuple[float, float, float, float, float, float], ...] = (
+        _DEFAULT_GRIPPER_FORCE_PROFILES
+    )
 
     def __post_init__(self) -> None:
         values = tuple(
             float(getattr(self, name))
             for name in self.__dataclass_fields__
+            if name != "force_profiles"
         )
         if not all(math.isfinite(value) and value >= 0.0 for value in values):
             raise ValueError("gripper protection values must be finite and non-negative")
@@ -55,6 +82,15 @@ class GripperProtectionConfig:
                 raise ValueError(f"{name} must be positive")
         if self.overload_torque <= self.contact_torque:
             raise ValueError("overload_torque must be greater than contact_torque")
+        if len(self.force_profiles) != 10 or any(
+            len(profile) != 6
+            or not all(math.isfinite(value) and value >= 0 for value in profile)
+            or profile[1] <= profile[0]
+            or profile[2] <= 0
+            or profile[4] <= 0
+            for profile in self.force_profiles
+        ):
+            raise ValueError("gripper force_profiles must contain ten valid profiles")
 
 
 @dataclass(slots=True, frozen=True)
@@ -94,6 +130,9 @@ class ArxDCanConfig:
         default_factory=GripperProtectionConfig
     )
     gripper_fault_action: str = "hold"
+    soft_limit_margin: float = 0.0
+    soft_limit_braking_zone: float = math.radians(5.0)
+    braking_acceleration: float = 2.0
     command_timeout_s: float = 0.25
     enable_grace_s: float = 2.0
     safe_hold_hz: float = 100.0
@@ -190,6 +229,7 @@ def _config_from_loaded(
     gripper_mapping = data.get("gripper_mapping", {}) or {}
     motion = data.get("motion", {}) or {}
     protection = data.get("gripper_protection", {}) or {}
+    joint_safety = data.get("joint_safety", {}) or {}
     safety = data.get("safety", {}) or {}
     trajectory = data.get("trajectory_execution")
     if trajectory is not None and not isinstance(trajectory, dict):
@@ -204,6 +244,30 @@ def _config_from_loaded(
     ).strip().lower()
     if gripper_fault_action not in {"hold", "disable"}:
         raise ValueError("safety.gripper_fault_action must be 'hold' or 'disable'")
+
+    configured_force_profiles = protection.get("force_profiles", {}) or {}
+    if not isinstance(configured_force_profiles, dict):
+        raise ValueError("gripper_protection.force_profiles must be a mapping")
+    force_profiles = []
+    profile_names = tuple(f"level_{level}" for level in range(1, 11))
+    unknown_profiles = set(configured_force_profiles) - set(profile_names)
+    if unknown_profiles:
+        raise ValueError(
+            "unknown gripper force profiles: "
+            + ", ".join(sorted(map(str, unknown_profiles)))
+        )
+    for name, fallback in zip(profile_names, _DEFAULT_GRIPPER_FORCE_PROFILES):
+        raw = configured_force_profiles.get(name, {}) or {}
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"gripper_protection.force_profiles.{name} must be a mapping"
+            )
+        force_profiles.append(
+            tuple(
+                float(raw.get(field_name, default))
+                for field_name, default in zip(_GRIPPER_PROFILE_FIELDS, fallback)
+            )
+        )
 
     product_velocity_at_400 = tuple(
         float(value) for value in motion.get("joint_velocity_at_max", ())
@@ -277,8 +341,14 @@ def _config_from_loaded(
             ),
             hold_kp=float(protection.get("hold_kp", 2.0)),
             hold_kd=float(protection.get("hold_kd", 0.5)),
+            force_profiles=tuple(force_profiles),
         ),
         gripper_fault_action=gripper_fault_action,
+        soft_limit_margin=float(joint_safety.get("soft_limit_margin", 0.0)),
+        soft_limit_braking_zone=float(
+            joint_safety.get("soft_limit_braking_zone", math.radians(5.0))
+        ),
+        braking_acceleration=float(joint_safety.get("braking_acceleration", 2.0)),
         command_timeout_s=float(safety.get("command_timeout_s", 0.25)),
         enable_grace_s=float(safety.get("enable_grace_s", 2.0)),
         safe_hold_hz=float(safety.get("safe_hold_hz", 100.0)),
@@ -416,6 +486,18 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             "overload_retreat_interval_s": protection.overload_retreat_interval_s,
             "hold_kp": protection.hold_kp,
             "hold_kd": protection.hold_kd,
+            "force_profiles": {
+                name: dict(zip(_GRIPPER_PROFILE_FIELDS, profile))
+                for name, profile in zip(
+                    (f"level_{level}" for level in range(1, 11)),
+                    protection.force_profiles,
+                )
+            },
+        },
+        "joint_safety": {
+            "soft_limit_margin": config.soft_limit_margin,
+            "soft_limit_braking_zone": config.soft_limit_braking_zone,
+            "braking_acceleration": config.braking_acceleration,
         },
         "safety": {
             "command_timeout_s": config.command_timeout_s,

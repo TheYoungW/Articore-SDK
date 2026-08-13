@@ -10,6 +10,12 @@ motion:
   speed_level_max: 400.0
   joint_velocity_at_max: [2.0, 2.0, 3.3, 3.3, 6.3, 6.3, 6.3]
 
+# ABI 1.11：URDF 限位作为机械硬限位；正常轨迹在两端各预留 1°。
+joint_safety:
+  soft_limit_margin: 0.01745329252
+  soft_limit_braking_zone: 0.08726646260
+  braking_acceleration: 2.0
+
 safety:
   command_timeout_s: 0.25
   enable_grace_s: 2.0
@@ -33,9 +39,10 @@ gripper_mapping:
 
 # 夹爪始终使用 MIT 模式，默认 Kp=4.0；保护逻辑由 motor 原生运行时执行。
 gripper_protection:
-  # ABI 兼容字段；Runtime 1.8 正常运行时实际跟随整机 500 Hz。
+  # ABI 兼容字段；Runtime 1.11 正常运行时实际跟随整机 500 Hz。
   control_hz: 500.0
-  close_speed: 1.0
+  # 张开/闭合双向斜坡的产品最大标定速度；公开 speed=1000 对应 5.0 rad/s。
+  close_speed: 5.0
   contact_torque: 0.8
   overload_torque: 1.5
   motion_window_s: 0.2
@@ -49,6 +56,18 @@ gripper_protection:
   overload_retreat_interval_s: 0.1
   hold_kp: 2.0
   hold_kd: 0.5
+  # 1 最轻、5 默认、10 最强；每档底层阈值与增益都由产品标定。
+  force_profiles:
+    level_1:  {contact_torque: 0.5,   overload_torque: 1.0,   moving_kp: 3.0,  moving_kd: 0.3,  hold_kp: 1.0,  hold_kd: 0.2}
+    level_2:  {contact_torque: 0.575, overload_torque: 1.125, moving_kp: 3.25, moving_kd: 0.35, hold_kp: 1.25, hold_kd: 0.275}
+    level_3:  {contact_torque: 0.65,  overload_torque: 1.25,  moving_kp: 3.5,  moving_kd: 0.4,  hold_kp: 1.5,  hold_kd: 0.35}
+    level_4:  {contact_torque: 0.725, overload_torque: 1.375, moving_kp: 3.75, moving_kd: 0.45, hold_kp: 1.75, hold_kd: 0.425}
+    level_5:  {contact_torque: 0.8,   overload_torque: 1.5,   moving_kp: 4.0,  moving_kd: 0.5,  hold_kp: 2.0,  hold_kd: 0.5}
+    level_6:  {contact_torque: 0.88,  overload_torque: 1.6,   moving_kp: 4.4,  moving_kd: 0.56, hold_kp: 2.2,  hold_kd: 0.54}
+    level_7:  {contact_torque: 0.96,  overload_torque: 1.7,   moving_kp: 4.8,  moving_kd: 0.62, hold_kp: 2.4,  hold_kd: 0.58}
+    level_8:  {contact_torque: 1.04,  overload_torque: 1.8,   moving_kp: 5.2,  moving_kd: 0.68, hold_kp: 2.6,  hold_kd: 0.62}
+    level_9:  {contact_torque: 1.12,  overload_torque: 1.9,   moving_kp: 5.6,  moving_kd: 0.74, hold_kp: 2.8,  hold_kd: 0.66}
+    level_10: {contact_torque: 1.2,   overload_torque: 2.0,   moving_kp: 6.0,  moving_kd: 0.8,  hold_kp: 3.0,  hold_kd: 0.7}
 
 # 左右臂是两条独立 CAN 通道，各自固定 7 个关节；双臂命令不会展平成 14 轴。
 # 机械臂 MIT 增益使用 OpenArm 默认安全组；夹爪仍使用 Yunyi 独立安全策略。

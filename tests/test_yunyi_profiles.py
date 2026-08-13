@@ -3,7 +3,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from arx_d_can import ArxDCanArm, available_models, load_cfg
+from arx_d_can import ArxDCanArm, GripperForceLevel, available_models, load_cfg
 from arx_d_can.actuator import arx_d_can as actuator_module
 
 
@@ -180,6 +180,48 @@ def test_yunyi_arm_and_gripper_share_500_hz_normal_control_rate() -> None:
         # ABI 兼容字段保留，但不再表示独立的低频夹爪线程。
         assert arm.config.gripper_protection.control_hz == pytest.approx(500.0)
         assert arm.config.safe_hold_hz == pytest.approx(100.0)
+
+
+def test_yunyi_gripper_uses_empty_load_verified_close_speed() -> None:
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        arm = ArxDCanArm(model=model, enable_gripper=True)
+
+        assert arm.config.gripper_protection.close_speed == pytest.approx(5.0)
+
+
+def test_yunyi_uses_one_degree_soft_limit_margin_and_dynamic_braking() -> None:
+    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+        arm = ArxDCanArm(model=model, enable_gripper=False)
+        arm.robot._motor_map.update(
+            {joint.name: object() for joint in arm.config.arm_joints}
+        )
+
+        assert arm.config.soft_limit_margin == pytest.approx(0.01745329252)
+        assert arm.config.soft_limit_braking_zone == pytest.approx(0.08726646260)
+        assert arm.config.braking_acceleration == pytest.approx(2.0)
+        native = arm._native_joint_safety_limits()
+        for joint, limits in zip(arm.config.arm_joints, native):
+            assert joint.lower_limit is not None
+            assert joint.upper_limit is not None
+            assert (
+                limits.hard_upper_position - limits.soft_upper_position
+            ) == pytest.approx(0.01745329252)
+            assert (
+                limits.soft_lower_position - limits.hard_lower_position
+            ) == pytest.approx(0.01745329252)
+
+
+def test_yunyi_gripper_has_complete_ten_level_product_profiles() -> None:
+    arm = ArxDCanArm(model="yunyi_v1_0_right", enable_gripper=True)
+    profiles = arm.config.gripper_protection.force_profiles
+
+    assert len(profiles) == len(GripperForceLevel) == 10
+    assert [profile[0] for profile in profiles] == pytest.approx(
+        [0.5, 0.575, 0.65, 0.725, 0.8, 0.88, 0.96, 1.04, 1.12, 1.2]
+    )
+    assert [profile[1] for profile in profiles] == pytest.approx(
+        [1.0, 1.125, 1.25, 1.375, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0]
+    )
 
 
 def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:

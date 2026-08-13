@@ -6,7 +6,11 @@ import time
 # 此处保留 ``load_cfg``，以兼容调用方以及通过 ``arx_d_can.sdk`` 检查配置加载过程的测试。
 from ..actuator import load_cfg
 from .arm import ArxDCanArm
-from .config import ArxDCanConfig, JointMotorConfig, default_config
+from .config import (
+    ArxDCanConfig,
+    JointMotorConfig,
+    default_config,
+)
 from .dual_arm import ArxDCanDualArm, ArxDCanDualArmState
 from .diagnostics import MotorDiagnostic
 from .native_safety import (
@@ -15,6 +19,7 @@ from .native_safety import (
     EnableMotorResult,
     EnableReport,
     GripperControlState,
+    GripperForceLevel,
     GripperSafetyHealth,
     MissingEnableMotor,
     MissingDisableMotor,
@@ -24,6 +29,8 @@ from .native_safety import (
     SafetyState,
     TrajectoryExecutionConfig,
     TrajectoryInfo,
+    TrajectoryStartOutcome,
+    TrajectoryStartReport,
     TrajectoryStatus,
     TransportHealth,
 )
@@ -47,6 +54,7 @@ for _public_type in (
     EnableMotorResult,
     EnableReport,
     GripperControlState,
+    GripperForceLevel,
     GripperSafetyHealth,
     GripperState,
     JointMotorConfig,
@@ -62,6 +70,8 @@ for _public_type in (
     SafetyState,
     TrajectoryExecutionConfig,
     TrajectoryInfo,
+    TrajectoryStartOutcome,
+    TrajectoryStartReport,
     TrajectoryStatus,
     TransportHealth,
 ):
@@ -81,6 +91,7 @@ __all__ = [
     "EnableReport",
     "GripperState",
     "GripperControlState",
+    "GripperForceLevel",
     "GripperSafetyHealth",
     "JointMotorConfig",
     "JointState",
@@ -95,6 +106,8 @@ __all__ = [
     "SafetyState",
     "TrajectoryExecutionConfig",
     "TrajectoryInfo",
+    "TrajectoryStartOutcome",
+    "TrajectoryStartReport",
     "TrajectoryStatus",
     "TransportHealth",
     "default_config",

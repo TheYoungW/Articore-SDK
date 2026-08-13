@@ -13,7 +13,10 @@ from arx_d_can.driver import CallError
 from arx_d_can.sdk.arm import _PreparedJointPositionBatch
 from arx_d_can.sdk.native_safety import (
     CommandLifetime,
+    GripperForceLevel,
     TrajectoryInfo,
+    TrajectoryStartOutcome,
+    TrajectoryStartReport,
     TrajectoryStatus,
 )
 
@@ -21,6 +24,48 @@ from arx_d_can.sdk.native_safety import (
 VALID_POSITIONS = (0.0,) * 7
 VALID_LEFT_POSITIONS = (0.0, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2)
 VALID_RIGHT_POSITIONS = (0.0, -0.1, -0.2, 0.1, -0.2, -0.1, -0.2)
+
+
+def _started(trajectory_id: int) -> TrajectoryStartReport:
+    return TrajectoryStartReport(
+        TrajectoryStartOutcome.STARTED,
+        None,
+        trajectory_id,
+        False,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        True,
+    )
+
+
+def _held(reason: str) -> TrajectoryStartReport:
+    return TrajectoryStartReport(
+        TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD,
+        30,
+        None,
+        True,
+        1,
+        6,
+        "right/r-joint6",
+        reason,
+        0.8,
+        0.0,
+        0.0,
+        -0.7675,
+        0.7675,
+        -0.785,
+        0.785,
+        True,
+    )
 
 
 def _health(
@@ -338,6 +383,7 @@ def test_dual_mit_send_forwards_each_side_parameters() -> None:
             "torques": range(30, 37),
             "mit_kp": range(50, 57),
             "mit_kd": range(70, 77),
+            "enforce_position_limits": True,
         },
     )
     assert prepared["right"] == (
@@ -348,6 +394,7 @@ def test_dual_mit_send_forwards_each_side_parameters() -> None:
             "torques": range(40, 47),
             "mit_kp": range(60, 67),
             "mit_kd": range(80, 87),
+            "enforce_position_limits": True,
         },
     )
     assert submitted == [("left-command", "right-command")]
@@ -559,7 +606,7 @@ def test_dual_move_runs_one_blocking_native_trajectory() -> None:
             replace: bool,
         ) -> int:
             calls.append(("start", tuple(targets), profile, replace))
-            return 23
+            return _started(23)
 
         def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
             calls.append(("wait", trajectory_id))
@@ -621,7 +668,7 @@ def test_dual_nonblocking_trajectory_exposes_replace_query_wait_and_cancel() -> 
             replace: bool,
         ) -> int:
             calls.append(("start", tuple(targets), profile, replace))
-            return 31
+            return _started(31)
 
         def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
             calls.append(("get", trajectory_id))
@@ -638,15 +685,15 @@ def test_dual_nonblocking_trajectory_exposes_replace_query_wait_and_cancel() -> 
     robot.left._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: left_targets  # type: ignore[method-assign]
     robot.right._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: right_targets  # type: ignore[method-assign]
 
-    trajectory_id = robot.start_joint_trajectory(
+    start = robot.start_joint_trajectory(
         left=VALID_POSITIONS,
         right=VALID_POSITIONS,
         velocity=0.5,
         replace=True,
     )
-    assert robot.get_trajectory(trajectory_id) is running
-    assert robot.wait_trajectory(trajectory_id) is completed
-    robot.cancel_trajectory(trajectory_id)
+    assert robot.get_trajectory(start) is running
+    assert robot.wait_trajectory(start) is completed
+    robot.cancel_trajectory(start)
 
     assert calls == [
         ("start", left_targets + right_targets, "min_jerk", True),
@@ -713,16 +760,50 @@ def test_dual_smooth_replace_requires_minimum_jerk() -> None:
         )
 
 
+def test_dual_replace_sends_out_of_limit_target_to_atomic_runtime_hold() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    prepared: list[bool] = []
+    calls: list[tuple[object, ...]] = []
+
+    class Runtime:
+        @staticmethod
+        def start_joint_trajectory(targets, *, profile: str, replace: bool):
+            calls.append((tuple(targets), profile, replace))
+            return _held("trajectory target exceeds a hard position limit")
+
+    def prepare(_positions, *, velocity, enforce_position_limits):
+        del velocity
+        prepared.append(enforce_position_limits)
+        return ((object(), 0.0, 1.0),)
+
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    robot.left._prepare_joint_trajectory_targets = prepare  # type: ignore[method-assign]
+    robot.right._prepare_joint_trajectory_targets = prepare  # type: ignore[method-assign]
+    right = list(VALID_POSITIONS)
+    right[5] = 1.0  # r-joint6 URDF 硬上限为 0.785 rad
+
+    report = robot.start_joint_trajectory(
+        left=VALID_POSITIONS,
+        right=right,
+        replace=True,
+    )
+
+    assert report.outcome is TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD
+    assert report.hold_installed
+    assert prepared == [False, False]
+    assert calls[0][1:] == ("min_jerk", True)
+
+
 def test_dual_gripper_openings_are_one_native_atomic_submission() -> None:
     robot = ArxDCanDualArm()
-    calls: list[tuple[tuple[object, float], ...]] = []
+    calls: list[tuple[tuple[object, float, float, GripperForceLevel], ...]] = []
     left_motor = object()
     right_motor = object()
     robot.left.robot._motor_map[robot.left.config.gripper.name] = left_motor
     robot.right.robot._motor_map[robot.right.config.gripper.name] = right_motor
 
     class Runtime:
-        def set_gripper_openings(self, targets) -> None:
+        def set_gripper_commands(self, targets) -> None:
             calls.append(tuple(targets))
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
@@ -730,12 +811,14 @@ def test_dual_gripper_openings_are_one_native_atomic_submission() -> None:
     robot.set_gripper_openings(left=-10.0, right=1200.0)
 
     assert len(calls) == 1
-    assert [value for _, value in calls[0]] == [0.0, 1000.0]
+    assert [value for _, value, _, _ in calls[0]] == [0.0, 1000.0]
+    assert [speed for _, _, speed, _ in calls[0]] == [1000.0, 1000.0]
+    assert all(level is GripperForceLevel.LEVEL_5 for _, _, _, level in calls[0])
     assert calls[0][0][0] is left_motor
     assert calls[0][1][0] is right_motor
 
 
-def test_dual_gripper_has_one_explicit_opening_api() -> None:
+def test_dual_gripper_exposes_simple_profiled_interfaces() -> None:
     robot = ArxDCanDualArm()
     assert hasattr(robot, "set_gripper_openings")
     assert not hasattr(robot, "send_joint_positions")
@@ -753,7 +836,7 @@ def test_custom_end_does_not_submit_disabled_gripper() -> None:
     robot.right.robot._motor_map[robot.right.config.gripper.name] = right_motor
 
     class Runtime:
-        def set_gripper_openings(self, targets) -> None:
+        def set_gripper_commands(self, targets) -> None:
             calls.append(tuple(targets))
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]

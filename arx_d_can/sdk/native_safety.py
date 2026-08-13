@@ -13,13 +13,17 @@ from motor_drive_layer.abi import get_abi
 
 _UINT64_MAX = (1 << 64) - 1
 _ARTICORE_ABI_MAJOR = 1
-_ARTICORE_ABI_MINOR = 8
+_ARTICORE_ABI_MINOR = 11
 ARTICORE_CAP_COMMAND_LIFETIME = 1 << 11
 ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY = 1 << 12
 ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1 << 13
 ARTICORE_CAP_DETERMINISTIC_DISABLE = 1 << 14
 ARTICORE_CAP_TRAJECTORY_MANAGEMENT = 1 << 15
 ARTICORE_CAP_TRAJECTORY_SETTLING = 1 << 16
+ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD = 1 << 17
+ARTICORE_CAP_LAYERED_JOINT_LIMITS = 1 << 18
+ARTICORE_CAP_GRIPPER_COMMAND_PROFILES = 1 << 19
+ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS = 1 << 20
 _REQUIRED_CAPABILITIES = (
     (1 << 0)  # 命令看门狗
     | (1 << 1)  # 安全保持
@@ -36,6 +40,10 @@ _REQUIRED_CAPABILITIES = (
     | ARTICORE_CAP_DETERMINISTIC_DISABLE
     | ARTICORE_CAP_TRAJECTORY_MANAGEMENT
     | ARTICORE_CAP_TRAJECTORY_SETTLING
+    | ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD
+    | ARTICORE_CAP_LAYERED_JOINT_LIMITS
+    | ARTICORE_CAP_GRIPPER_COMMAND_PROFILES
+    | ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS
 )
 
 _NATIVE_DEFAULT_SETTLING_TIMEOUT_S = 3.0
@@ -68,12 +76,37 @@ class GripperControlState(str, Enum):
     FAULT = "FAULT"
 
 
+class GripperForceLevel(IntEnum):
+    """Runtime 1.11 的十档夹持力；1 最轻，5 默认，10 最强。"""
+
+    LEVEL_1 = 1
+    LEVEL_2 = 2
+    LEVEL_3 = 3
+    LEVEL_4 = 4
+    LEVEL_5 = 5
+    LEVEL_6 = 6
+    LEVEL_7 = 7
+    LEVEL_8 = 8
+    LEVEL_9 = 9
+    LEVEL_10 = 10
+
+
 class TrajectoryStatus(str, Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     PREEMPTED = "PREEMPTED"
     FAILED = "FAILED"
     CANCELED = "CANCELED"
+
+
+class TrajectoryStartOutcome(str, Enum):
+    """一次轨迹启动或安全替换事务的结构化结果。"""
+
+    STARTED = "STARTED"
+    REPLACED = "REPLACED"
+    REPLACEMENT_REJECTED_HELD = "REPLACEMENT_REJECTED_HELD"
+    REJECTED = "REJECTED"
+    FAULTED = "FAULTED"
 
 
 _STATE_BY_CODE = {
@@ -101,6 +134,14 @@ _TRAJECTORY_STATUS_BY_CODE = {
     3: TrajectoryStatus.PREEMPTED,
     4: TrajectoryStatus.FAILED,
     5: TrajectoryStatus.CANCELED,
+}
+
+_TRAJECTORY_START_OUTCOME_BY_CODE = {
+    1: TrajectoryStartOutcome.STARTED,
+    2: TrajectoryStartOutcome.REPLACED,
+    3: TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD,
+    4: TrajectoryStartOutcome.REJECTED,
+    5: TrajectoryStartOutcome.FAULTED,
 }
 
 _TRAJECTORY_PROFILE_BY_NAME = {
@@ -203,6 +244,33 @@ class NativeJointControlConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class NativeJointSafetyLimits:
+    """一个机械臂关节在 motor 原生坐标中的分层位置安全参数。"""
+
+    motor: object
+    hard_lower_position: float
+    hard_upper_position: float
+    soft_lower_position: float
+    soft_upper_position: float
+    soft_limit_braking_zone: float
+    braking_acceleration: float
+
+
+@dataclass(slots=True, frozen=True)
+class NativeGripperForceProfile:
+    """一个实际安装夹爪的一档产品力矩与增益标定。"""
+
+    motor: object
+    force_level: GripperForceLevel
+    contact_torque: float
+    overload_torque: float
+    moving_kp: float
+    moving_kd: float
+    hold_kp: float
+    hold_kd: float
+
+
+@dataclass(slots=True, frozen=True)
 class TrajectoryInfo:
     trajectory_id: int
     status: TrajectoryStatus
@@ -210,6 +278,38 @@ class TrajectoryInfo:
     duration_s: float
     elapsed_s: float
     error: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class TrajectoryStartReport:
+    """Runtime 对轨迹启动、替换或安全保持的完整结果。"""
+
+    outcome: TrajectoryStartOutcome
+    old_trajectory_id: int | None
+    new_trajectory_id: int | None
+    hold_installed: bool
+    limiting_channel: int | None
+    limiting_can_id: int | None
+    limiting_joint: str | None
+    reason: str | None
+    position: float
+    velocity: float
+    acceleration: float
+    soft_lower: float
+    soft_upper: float
+    hard_lower: float
+    hard_upper: float
+    feedback_fresh: bool
+
+    @property
+    def trajectory_id(self) -> int:
+        """返回已启动的新轨迹 ID；保持/拒绝结果没有可等待的轨迹。"""
+        if self.new_trajectory_id is None:
+            raise RuntimeError(
+                f"trajectory did not start: {self.outcome.value}"
+                + (f": {self.reason}" if self.reason else "")
+            )
+        return self.new_trajectory_id
 
 
 @dataclass(slots=True, frozen=True)
@@ -427,10 +527,27 @@ class _MitCommand(ctypes.Structure):
     ]
 
 
-class _GripperTarget(ctypes.Structure):
+class _GripperCommand(ctypes.Structure):
     _fields_ = [
+        ("struct_size", ctypes.c_uint32),
         ("motor", ctypes.c_void_p),
         ("opening", ctypes.c_float),
+        ("speed", ctypes.c_float),
+        ("force_level", ctypes.c_int32),
+    ]
+
+
+class _GripperForceProfile(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("motor", ctypes.c_void_p),
+        ("force_level", ctypes.c_int32),
+        ("contact_torque", ctypes.c_float),
+        ("overload_torque", ctypes.c_float),
+        ("moving_kp", ctypes.c_float),
+        ("moving_kd", ctypes.c_float),
+        ("hold_kp", ctypes.c_float),
+        ("hold_kd", ctypes.c_float),
     ]
 
 
@@ -444,6 +561,19 @@ class _JointControlConfig(ctypes.Structure):
         ("mit_kp", ctypes.c_float),
         ("mit_kd", ctypes.c_float),
         ("mit_feedforward_torque", ctypes.c_float),
+    ]
+
+
+class _JointSafetyLimits(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("motor", ctypes.c_void_p),
+        ("hard_lower_position", ctypes.c_float),
+        ("hard_upper_position", ctypes.c_float),
+        ("soft_lower_position", ctypes.c_float),
+        ("soft_upper_position", ctypes.c_float),
+        ("soft_limit_braking_zone", ctypes.c_float),
+        ("braking_acceleration", ctypes.c_float),
     ]
 
 
@@ -476,6 +606,29 @@ class _TrajectoryInfo(ctypes.Structure):
         ("duration_ns", ctypes.c_uint64),
         ("elapsed_ns", ctypes.c_uint64),
         ("error", ctypes.c_char * 256),
+    ]
+
+
+class _TrajectoryStartReport(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("outcome", ctypes.c_int32),
+        ("old_trajectory_id", ctypes.c_uint64),
+        ("new_trajectory_id", ctypes.c_uint64),
+        ("hold_installed", ctypes.c_int32),
+        ("limiting_channel", ctypes.c_uint8),
+        ("limiting_can_id", ctypes.c_uint8),
+        ("feedback_fresh", ctypes.c_uint8),
+        ("reserved", ctypes.c_uint8),
+        ("limiting_joint", ctypes.c_char * 64),
+        ("reason", ctypes.c_char * 256),
+        ("position", ctypes.c_float),
+        ("velocity", ctypes.c_float),
+        ("acceleration", ctypes.c_float),
+        ("soft_lower", ctypes.c_float),
+        ("soft_upper", ctypes.c_float),
+        ("hard_lower", ctypes.c_float),
+        ("hard_upper", ctypes.c_float),
     ]
 
 
@@ -631,6 +784,8 @@ class NativeSafetyRuntime:
         right_controller: object | None = None,
         motors: Sequence[NativeMotorDescriptor],
         joints: Sequence[NativeJointControlConfig],
+        joint_safety_limits: Sequence[NativeJointSafetyLimits],
+        gripper_force_profiles: Sequence[NativeGripperForceProfile] = (),
         control_hz: float = 500.0,
         command_timeout_s: float = 0.25,
         enable_grace_s: float = 2.0,
@@ -647,7 +802,7 @@ class NativeSafetyRuntime:
     ) -> None:
         self._lib = ctypes.CDLL(articore_runtime_library_path())
         # 先读取旧 ABI 也具备的版本与能力符号。误装旧版运行库时应给出明确的版本
-        # 错误，而不是因 ABI 1.8 新符号不存在而抛出晦涩的 AttributeError。
+        # 错误，而不是因 ABI 1.11 新符号不存在而抛出晦涩的 AttributeError。
         self._lib.articore_runtime_abi_version.restype = ctypes.c_uint32
         self._lib.articore_runtime_capabilities.restype = ctypes.c_uint64
         version = int(self._lib.articore_runtime_abi_version())
@@ -671,11 +826,11 @@ class NativeSafetyRuntime:
         motor_lib = self._motor_abi.lib
         if not getattr(self._motor_abi, "has_transport_health", False):
             raise RuntimeError(
-                "motor-drive-layer 0.8.5 must expose structured transport health"
+                "motor-drive-layer 0.8.8 must expose structured transport health"
             )
         if not getattr(self._motor_abi, "has_structured_feedback_report", False):
             raise RuntimeError(
-                "motor-drive-layer 0.8.5 must expose structured feedback reports"
+                "motor-drive-layer 0.8.8 must expose structured feedback reports"
             )
         transport_health_pointer = _function_pointer(
             motor_lib.motor_controller_get_transport_health
@@ -765,6 +920,14 @@ class NativeSafetyRuntime:
             raise RuntimeError(f"native safety runtime creation failed: {self._error()}")
         try:
             self._configure_joints(joints)
+            self._configure_joint_safety_limits(joint_safety_limits)
+            active_grippers = tuple(
+                descriptor for descriptor in descriptors if descriptor.is_gripper
+            )
+            if active_grippers:
+                self._configure_gripper_force_profiles(gripper_force_profiles)
+            elif gripper_force_profiles:
+                raise ValueError("gripper force profiles require an installed gripper")
             if trajectory_execution is not None:
                 self.configure_trajectory_execution(trajectory_execution)
         except Exception:
@@ -773,8 +936,7 @@ class NativeSafetyRuntime:
             raise
         self._pv_array = None
         self._arm_mit_array = None
-        self._gripper_mit_array = None
-        self._gripper_target_array = None
+        self._gripper_command_array = None
         self._trajectory_target_array = None
         self._trajectory_settling_timeout_s = (
             _NATIVE_DEFAULT_SETTLING_TIMEOUT_S
@@ -808,15 +970,14 @@ class NativeSafetyRuntime:
             ctypes.POINTER(_JointControlConfig),
             ctypes.c_uint32,
         ]
+        lib.articore_runtime_configure_joint_safety_limits.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_JointSafetyLimits),
+            ctypes.c_uint32,
+        ]
         lib.articore_runtime_configure_trajectory_execution.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(_TrajectoryExecutionConfig),
-        ]
-        lib.articore_runtime_submit_pos_vel.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(_PosVelCommand), ctypes.c_uint32,
-        ]
-        lib.articore_runtime_submit_mit.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(_MitCommand), ctypes.c_uint32,
         ]
         lib.articore_runtime_submit_pos_vel_ex.argtypes = [
             ctypes.c_void_p,
@@ -830,27 +991,24 @@ class NativeSafetyRuntime:
             ctypes.c_uint32,
             ctypes.c_int32,
         ]
-        lib.articore_runtime_submit_gripper_mit.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(_MitCommand), ctypes.c_uint32,
+        lib.articore_runtime_configure_gripper_force_profiles.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_GripperForceProfile),
+            ctypes.c_uint32,
         ]
-        lib.articore_runtime_set_gripper_openings.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(_GripperTarget), ctypes.c_uint32,
+        lib.articore_runtime_set_gripper_commands.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_GripperCommand),
+            ctypes.c_uint32,
         ]
-        lib.articore_runtime_start_joint_trajectory.argtypes = [
+        lib.articore_runtime_start_joint_trajectory_report.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(_JointTrajectoryTarget),
             ctypes.c_uint32,
             ctypes.c_int32,
-        ]
-        lib.articore_runtime_start_joint_trajectory.restype = ctypes.c_uint64
-        lib.articore_runtime_start_joint_trajectory_ex.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(_JointTrajectoryTarget),
-            ctypes.c_uint32,
             ctypes.c_int32,
-            ctypes.c_int32,
+            ctypes.POINTER(_TrajectoryStartReport),
         ]
-        lib.articore_runtime_start_joint_trajectory_ex.restype = ctypes.c_uint64
         lib.articore_runtime_get_trajectory.argtypes = [
             ctypes.c_void_p,
             ctypes.c_uint64,
@@ -882,12 +1040,13 @@ class NativeSafetyRuntime:
             "articore_runtime_get_last_enable_report",
             "articore_runtime_get_last_disable_report",
             "articore_runtime_configure_joints",
+            "articore_runtime_configure_joint_safety_limits",
             "articore_runtime_configure_trajectory_execution",
-            "articore_runtime_submit_pos_vel", "articore_runtime_submit_mit",
             "articore_runtime_submit_pos_vel_ex",
             "articore_runtime_submit_mit_ex",
-            "articore_runtime_submit_gripper_mit",
-            "articore_runtime_set_gripper_openings",
+            "articore_runtime_configure_gripper_force_profiles",
+            "articore_runtime_set_gripper_commands",
+            "articore_runtime_start_joint_trajectory_report",
             "articore_runtime_get_trajectory",
             "articore_runtime_wait_trajectory",
             "articore_runtime_cancel_trajectory",
@@ -937,11 +1096,72 @@ class NativeSafetyRuntime:
         )
         self._native_joint_configs = native
 
+    def _configure_joint_safety_limits(
+        self,
+        limits: Sequence[NativeJointSafetyLimits],
+    ) -> None:
+        """在 connect 前配置每个机械臂关节的硬/软限位与制动参数。"""
+        values = tuple(limits)
+        if not values:
+            raise ValueError("joint safety limits must not be empty")
+        native = (_JointSafetyLimits * len(values))()
+        for index, value in enumerate(values):
+            native[index] = _JointSafetyLimits(
+                ctypes.sizeof(_JointSafetyLimits),
+                _pointer(value.motor, name="joint safety motor"),
+                float(value.hard_lower_position),
+                float(value.hard_upper_position),
+                float(value.soft_lower_position),
+                float(value.soft_upper_position),
+                float(value.soft_limit_braking_zone),
+                float(value.braking_acceleration),
+            )
+        self._ok(
+            self._lib.articore_runtime_configure_joint_safety_limits(
+                self._ptr,
+                native,
+                len(values),
+            ),
+            "runtime layered joint safety configuration",
+        )
+        self._native_joint_safety_limits = native
+
+    def _configure_gripper_force_profiles(
+        self,
+        profiles: Sequence[NativeGripperForceProfile],
+    ) -> None:
+        """在 connect 前为每个实际安装夹爪配置完整十档产品标定。"""
+        values = tuple(profiles)
+        if not values:
+            raise ValueError("gripper force profiles must not be empty")
+        native = (_GripperForceProfile * len(values))()
+        for index, value in enumerate(values):
+            native[index] = _GripperForceProfile(
+                ctypes.sizeof(_GripperForceProfile),
+                _pointer(value.motor, name="gripper force profile motor"),
+                int(GripperForceLevel(value.force_level)),
+                float(value.contact_torque),
+                float(value.overload_torque),
+                float(value.moving_kp),
+                float(value.moving_kd),
+                float(value.hold_kp),
+                float(value.hold_kd),
+            )
+        self._ok(
+            self._lib.articore_runtime_configure_gripper_force_profiles(
+                self._ptr,
+                native,
+                len(values),
+            ),
+            "runtime gripper force profile configuration",
+        )
+        self._native_gripper_force_profiles = native
+
     def configure_trajectory_execution(
         self,
         config: TrajectoryExecutionConfig,
     ) -> None:
-        """在 connect 前覆盖 ABI 1.8 的轨迹收敛与 following-error 策略。"""
+        """在 connect 前覆盖 ABI 1.11 的轨迹收敛与 following-error 策略。"""
         native = _TrajectoryExecutionConfig(
             ctypes.sizeof(_TrajectoryExecutionConfig),
             float(config.position_tolerance),
@@ -1038,13 +1258,12 @@ class NativeSafetyRuntime:
             "runtime PV submit",
         )
 
-    def _mit_commands(self, commands: Sequence[object], *, gripper: bool):
+    def _mit_commands(self, commands: Sequence[object]):
         count = len(commands)
-        attribute = "_gripper_mit_array" if gripper else "_arm_mit_array"
-        array = getattr(self, attribute)
+        array = self._arm_mit_array
         if array is None or len(array) != count:
             array = (_MitCommand * count)()
-            setattr(self, attribute, array)
+            self._arm_mit_array = array
         for index, command in enumerate(commands):
             native = array[index]
             pointer = _pointer(command.motor, name="MIT motor")
@@ -1063,7 +1282,7 @@ class NativeSafetyRuntime:
         *,
         lifetime: CommandLifetime = CommandLifetime.STREAMING,
     ) -> None:
-        array, count = self._mit_commands(commands, gripper=False)
+        array, count = self._mit_commands(commands)
         self._ok(
             self._lib.articore_runtime_submit_mit_ex(
                 self._ptr,
@@ -1074,34 +1293,35 @@ class NativeSafetyRuntime:
             "runtime MIT submit",
         )
 
-    def submit_gripper_mit(self, commands: Sequence[object]) -> None:
-        array, count = self._mit_commands(commands, gripper=True)
-        self._ok(
-            self._lib.articore_runtime_submit_gripper_mit(
-                self._ptr, array, count
-            ),
-            "runtime gripper submit",
-        )
-
-    def set_gripper_openings(
-        self, targets: Sequence[tuple[object, float]]
+    def set_gripper_commands(
+        self,
+        commands: Sequence[tuple[object, float, float, GripperForceLevel]],
     ) -> None:
-        count = len(targets)
-        if count == 0:
-            raise ValueError("gripper opening targets must not be empty")
-        if self._gripper_target_array is None or len(self._gripper_target_array) != count:
-            self._gripper_target_array = (_GripperTarget * count)()
-        for index, (motor, opening) in enumerate(targets):
-            native = self._gripper_target_array[index]
-            pointer = _pointer(motor, name="gripper motor")
-            if native.motor != pointer:
-                native.motor = pointer
-            native.opening = float(opening)
+        """原子提交所有实际安装夹爪的开合度、归一化速度和力等级。"""
+        values = tuple(commands)
+        if not values:
+            raise ValueError("gripper commands must not be empty")
+        count = len(values)
+        if (
+            self._gripper_command_array is None
+            or len(self._gripper_command_array) != count
+        ):
+            self._gripper_command_array = (_GripperCommand * count)()
+        for index, (motor, opening, speed, force_level) in enumerate(values):
+            self._gripper_command_array[index] = _GripperCommand(
+                ctypes.sizeof(_GripperCommand),
+                _pointer(motor, name="gripper command motor"),
+                float(opening),
+                float(speed),
+                int(GripperForceLevel(force_level)),
+            )
         self._ok(
-            self._lib.articore_runtime_set_gripper_openings(
-                self._ptr, self._gripper_target_array, count
+            self._lib.articore_runtime_set_gripper_commands(
+                self._ptr,
+                self._gripper_command_array,
+                count,
             ),
-            "runtime gripper opening submit",
+            "runtime gripper command submit",
         )
 
     @staticmethod
@@ -1131,8 +1351,8 @@ class NativeSafetyRuntime:
         *,
         profile: str = "min_jerk",
         replace: bool = False,
-    ) -> int:
-        """非阻塞启动完整关节轨迹；可选择平滑替换当前轨迹。"""
+    ) -> TrajectoryStartReport:
+        """启动完整轨迹；替换失败时由 Runtime 原子安装当前位置保持。"""
         normalized = str(profile).strip().lower().replace("-", "_")
         try:
             profile_id = _TRAJECTORY_PROFILE_BY_NAME[normalized]
@@ -1153,28 +1373,53 @@ class NativeSafetyRuntime:
                 float(position),
                 float(velocity_limit),
             )
-        if replace:
-            trajectory_id = int(
-                self._lib.articore_runtime_start_joint_trajectory_ex(
-                    self._ptr,
-                    self._trajectory_target_array,
-                    count,
-                    profile_id,
-                    1,  # ARTICORE_TRAJECTORY_SMOOTH_REPLACE
-                )
-            )
-        else:
-            trajectory_id = int(
-                self._lib.articore_runtime_start_joint_trajectory(
-                    self._ptr,
-                    self._trajectory_target_array,
-                    count,
-                    profile_id,
-                )
-            )
-        if trajectory_id == 0:
-            raise RuntimeError(f"runtime trajectory start failed: {self._error()}")
-        return trajectory_id
+        native = _TrajectoryStartReport()
+        native.struct_size = ctypes.sizeof(_TrajectoryStartReport)
+        self._ok(
+            self._lib.articore_runtime_start_joint_trajectory_report(
+                self._ptr,
+                self._trajectory_target_array,
+                count,
+                profile_id,
+                (
+                    2  # ARTICORE_TRAJECTORY_SMOOTH_REPLACE_OR_HOLD
+                    if replace
+                    else 0  # ARTICORE_TRAJECTORY_REJECT_IF_BUSY
+                ),
+                ctypes.byref(native),
+            ),
+            "runtime trajectory start report",
+        )
+        try:
+            outcome = _TRAJECTORY_START_OUTCOME_BY_CODE[int(native.outcome)]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"native runtime returned unknown trajectory start outcome "
+                f"{native.outcome}"
+            ) from exc
+        limiting_joint = _text(native.limiting_joint)
+        return TrajectoryStartReport(
+            outcome=outcome,
+            old_trajectory_id=(
+                int(native.old_trajectory_id) or None
+            ),
+            new_trajectory_id=(
+                int(native.new_trajectory_id) or None
+            ),
+            hold_installed=bool(native.hold_installed),
+            limiting_channel=(int(native.limiting_channel) if limiting_joint else None),
+            limiting_can_id=(int(native.limiting_can_id) if limiting_joint else None),
+            limiting_joint=limiting_joint,
+            reason=_text(native.reason),
+            position=float(native.position),
+            velocity=float(native.velocity),
+            acceleration=float(native.acceleration),
+            soft_lower=float(native.soft_lower),
+            soft_upper=float(native.soft_upper),
+            hard_lower=float(native.hard_lower),
+            hard_upper=float(native.hard_upper),
+            feedback_fresh=bool(native.feedback_fresh),
+        )
 
     def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
         native = _TrajectoryInfo()
@@ -1193,7 +1438,7 @@ class NativeSafetyRuntime:
         initial = self.get_trajectory(trajectory_id)
         if initial.status is not TrajectoryStatus.RUNNING:
             return initial
-        # duration/elapsed 只描述 reference 生成阶段。ABI 1.8 在 reference 结束后
+        # duration/elapsed 只描述 reference 生成阶段。ABI 1.11 在 reference 结束后
         # 还会进入 SETTLING，因此等待预算必须显式包含 settling timeout。
         remaining = max(0.0, initial.duration_s - initial.elapsed_s)
         settling_timeout = getattr(
@@ -1379,7 +1624,7 @@ class NativeSafetyRuntime:
     def close(self) -> None:
         if self._ptr:
             if self._lib.articore_runtime_close(self._ptr) != 0:
-                # ABI 1.8 要求关闭失败时保留 Runtime。它仍拥有
+                # ABI 1.11 要求关闭失败时保留 Runtime。它仍拥有
                 # ControllerGroup、Controller 和 Transport 的生命周期前置条件。
                 raise NativeDisableError(
                     self.last_disable_report,
@@ -1397,24 +1642,33 @@ class NativeSafetyRuntime:
 
 __all__ = [
     "ARTICORE_CAP_DETERMINISTIC_DISABLE",
+    "ARTICORE_CAP_GRIPPER_COMMAND_PROFILES",
+    "ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS",
+    "ARTICORE_CAP_LAYERED_JOINT_LIMITS",
     "ARTICORE_CAP_TRAJECTORY_MANAGEMENT",
+    "ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD",
     "ARTICORE_CAP_TRAJECTORY_SETTLING",
     "DisableMotorResult",
     "DisableReport",
     "EnableMotorResult",
     "EnableReport",
     "GripperControlState",
+    "GripperForceLevel",
     "GripperSafetyHealth",
     "MissingEnableMotor",
     "MissingDisableMotor",
     "NativeDisableError",
     "NativeEnableError",
     "NativeJointControlConfig",
+    "NativeJointSafetyLimits",
+    "NativeGripperForceProfile",
     "NativeMotorDescriptor",
     "NativeSafetyRuntime",
     "SafetyHealth",
     "SafetyState",
     "TrajectoryInfo",
+    "TrajectoryStartOutcome",
+    "TrajectoryStartReport",
     "TrajectoryExecutionConfig",
     "TrajectoryStatus",
     "TransportHealth",

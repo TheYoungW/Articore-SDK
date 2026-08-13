@@ -18,7 +18,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时使用 `motor-drive-layer>=0.8.5,<0.9`。平台 wheel 已包含对应的
+底层通信与原生安全运行时固定使用 `motor-drive-layer==0.8.8`（Runtime ABI 1.11）。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -63,17 +63,35 @@ state = arm.move_joint_positions(
 `move_joint_positions()` 不在 Python 中插值，轨迹完全由 C++ runtime 执行。
 `velocity` 表示实际轨迹速度，单位为 rad/s；省略时使用 SDK 默认轨迹速度。
 插值可选 `min_jerk` 或 `linear`。
-ABI 1.8 中，规划时长只负责生成位置/速度 reference。reference 到达终点后 Runtime
+Runtime ABI 1.11 中，规划时长只负责生成位置/速度 reference。reference 到达终点后 Runtime
 进入 `SETTLING` 并继续发送终点目标；只有全部关节的位置误差和速度连续满足容差，
 轨迹才返回 `COMPLETED`。settling 超时或持续 following error 会返回 `FAILED`，因此
 SDK 的阻塞等待预算由“剩余 reference 时长 + settling timeout + 调度余量”组成。
 它是阻塞接口，因此同一线程连续调用 A、B 时一定先完成 A 再开始 B。双臂高级 API
 同时公开非阻塞的 `start_joint_trajectory()`，以及 `get_trajectory()`、
 `wait_trajectory()` 和 `cancel_trajectory()`。默认启动策略会在已有活动轨迹时拒绝；
-`replace=True` 可用 minimum-jerk 从旧轨迹当时的位置、速度和加速度平滑替换，旧轨迹
-进入 `PREEMPTED`。取消后双臂进入当前位置内部保持，并不等于物理失能。平滑替换和
+`replace=True` 使用 `SMOOTH_REPLACE_OR_HOLD`。能够安全替换时，新轨迹从旧轨迹当时的
+位置、速度和加速度继续；无法满足软限位、速度或边界条件时，Runtime 原子停止旧轨迹、
+安装完整双臂当前位置保持，并返回结构化的 `REPLACEMENT_REJECTED_HELD`。该结果不是
+异常，Runtime 保持 `RUNNING`。取消后双臂进入当前位置内部保持，并不等于物理失能。平滑替换和
 取消不会放入 examples，只供实现了限速、状态检查和故障处理的高级控制器使用。
 轨迹完成后底层持续发送终点保持，不会误触发用户命令看门狗。
+
+非阻塞启动返回 `TrajectoryStartReport`：
+
+```python
+from arx_d_can import TrajectoryStartOutcome
+
+report = robot.start_joint_trajectory(
+    left=left_target,
+    right=right_target,
+    replace=True,
+)
+if report.outcome is TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD:
+    print("已安全保持：", report.limiting_joint, report.reason)
+elif report.new_trajectory_id is not None:
+    result = robot.wait_trajectory(report)
+```
 
 已经自行生成连续目标的 ROS、遥操作和视觉跟随程序，可以在 PV 模式下使用
 `stream_joint_positions()`。双臂 MIT 的原始位置、速度、Kp/Kd 和前馈力矩通过高级
@@ -144,10 +162,11 @@ with GravityCompensationMode(arm) as gravity:
     gravity.run()  # 按 Ctrl+C 后恢复当前位置保持并失能
 ```
 
-Python 默认以 100 Hz 根据原生反馈缓存计算 URDF 重力矩，motor Runtime 仍以机型配置的
-500 Hz 发送最新完整 MIT 目标，并负责看门狗、通信故障、安全保持和夹爪防堵转。双臂
-控制器会把左右力矩作为同一个 14 轴批次原子提交，不会按左右顺序发送。模型输出超过
-URDF `effort` 时会先限幅，并通过 `sample.limited_joints` 暴露发生限幅的关节。
+Python 默认跟随机型的 500 Hz 控制频率，根据每次 MIT 发送所更新的原生反馈缓存计算
+URDF 重力矩；motor Runtime 同样以 500 Hz 发送最新完整 MIT 目标，并负责看门狗、通信
+故障、安全保持和夹爪防堵转。双臂控制器会把左右力矩作为同一个 14 轴批次原子提交，
+不会按左右顺序发送。模型输出超过 URDF `effort` 时会先限幅，并通过
+`sample.limited_joints` 暴露发生限幅的关节。
 
 重力补偿依赖 Pinocchio，请先安装 `.[dynamics]`。公开示例不要求用户填写 Kp/Kd、
 补偿比例或发送频率：
@@ -212,7 +231,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.8.5 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.8.8 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -230,10 +249,22 @@ python -m arx_d_can.examples.dual_arm.example_04_read_state \
 夹爪接口统一使用 `0～1000` 开合度：
 
 ```python
+from arx_d_can import GripperForceLevel
+
 arm.set_gripper_opening(1000)
 
 robot.set_gripper_openings(left=1000, right=500)
+robot.set_gripper_openings(
+    left=0,
+    right=0,
+    speed=500,  # (0, 1000]；1000 对应产品最大标定速度
+    force_level=GripperForceLevel.LEVEL_5,
+)
 ```
+
+按次命令只公开开合度、归一化速度和 `LEVEL_1`～`LEVEL_10` 十档产品力等级；
+1 最轻、5 默认、10 最强。每档映射完整的接触、过载、
+运动增益和保持增益标定；普通用户不能直接修改 MIT Kp/Kd、堵转窗口或回退距离。
 
 单臂和双臂夹爪 Demo 都要求显式填写目标，不提供隐含的 open/close 动作：
 
@@ -251,6 +282,11 @@ Yunyi 夹爪固定使用 MIT 模式，默认 `Kp=4.0`。堵转检测、接触后
 运行时启用后，单侧原始夹爪命令会被拒绝，避免绕过整机安全状态机。更换自定义末端时
 可用 `ArxDCanArm(enable_gripper=False)`，或
 `ArxDCanDualArm(left_gripper=False, right_gripper=False)` 关闭产品夹爪。
+
+Yunyi 产品的最大标定速度为 `5.0 rad/s`，公开 `speed=1000` 与之对应；张开和闭合均由
+Runtime 生成受控速度斜坡。正常夹爪控制跟随整机 `control_hz=500`，不是 Python 控制
+线程。该速度已完成双臂夹爪空载真机验证，空载闭合约 1.0 秒；软物体、硬物体接触和
+持续过载回退仍需作为带载验证项。
 
 `read_state()` 同时公开结构化夹爪控制状态：
 
@@ -295,7 +331,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer>=0.8.5,<0.9` 的平台 wheel 会自动加载随包提供的运行库；
+厂商动态库。`motor-drive-layer==0.8.8` 的平台 wheel 会自动加载随包提供的运行库；
 `MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -319,8 +355,10 @@ SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.8.5 提供的 ABI 1.8 `libarticore_runtime`。SDK 初始化时同时要求
-`deterministic_disable`、`trajectory_management` 和 `trajectory_settling` 能力。
+motor-drive-layer 0.8.8 提供的 ABI 1.11 `libarticore_runtime`。SDK 初始化时同时要求
+`deterministic_disable`、`trajectory_management`、`trajectory_settling`、
+`trajectory_replace_or_hold`、`layered_joint_limits`、`gripper_command_profiles` 和
+`gripper_force_10_levels` 能力。
 本仓库不再编译 C++；Python 只校验
 和提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
@@ -330,6 +368,20 @@ motor-drive-layer 0.8.5 提供的 ABI 1.8 `libarticore_runtime`。SDK 初始化�
 若整个 Python 进程退出，进程内原生线程也会随之终止；SDK 因此在配置阶段同时写入
 `motor_communication_timeout_ms`（Yunyi 默认 500 ms），由电机固件在主机进程消失后
 执行最终通信超时失能。
+
+SDK 在 `runtime.connect()` 前把 URDF 边界作为机械硬限位，并由产品 YAML 生成软限位和
+动态制动参数。Yunyi 默认在硬限位两端各预留 1°，并使用 5° 减速区：
+
+```yaml
+joint_safety:
+  soft_limit_margin: 0.01745329252       # 1°
+  soft_limit_braking_zone: 0.08726646260 # 5°
+  braking_acceleration: 2.0              # rad/s²
+```
+
+反馈超过软限位但仍在硬限位内时不会因此失能或进入全局 FAULT：Runtime 禁止继续向外，
+但允许当前位置保持和向软限位内部恢复。只有新鲜反馈越过硬限位、无法建立安全保持或
+底层通信/发送失败，才升级为故障。
 
 ```python
 robot = ArxDCanDualArm(control_mode="pv")
@@ -348,10 +400,10 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程以 500 Hz 发送，`SAFE_HOLD/FAULT` 下统一使用 100 Hz。相关职责由
-motor-drive-layer 0.8.5 承担。
+motor-drive-layer 0.8.8 承担。
 
 使能时，SDK 先完成控制模式和电机参数配置，然后只调用一次原生 `runtime.enable()`。
-ABI 1.8 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
+ABI 1.11 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
 目标，并行使能左右通道并确认所有电机均返回新鲜 `ENABLED` 反馈。失败时 Runtime 会
 回滚失能全部电机。SDK 不再提前调用左右臂或夹爪的物理使能接口。
 
@@ -379,7 +431,7 @@ except NativeEnableError as exc:
 状态下仍会尝试物理失能全部电机，但不会清除故障锁存；`recover()` 只有在物理失能、
 反馈新鲜且通信健康均得到确认后才会回到 `READY`。
 
-ABI 1.8 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
+ABI 1.11 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
 在途批次完成，建立 ControllerGroup 与 USB/CAN 队列屏障，并行失能 CH0/CH1 并确认
 所有电机的新鲜失能反馈；第一轮未确认的电机只会被定向重发一次。正常关闭不再依赖
 电机通信超时。失能确认失败时会抛出携带 `DisableReport` 的 `NativeDisableError`：
@@ -432,7 +484,7 @@ MIT 示例使用原生平滑轨迹，Kp/Kd 读取机型 YAML，前馈力矩使�
 `--velocity` 是 0～400 的产品速度档位；需要选择 `min_jerk` 或 `linear` 时使用
 example 10。
 
-产品需要覆盖 ABI 1.8 的原生轨迹执行默认值时，可以在 YAML 中增加：
+产品需要覆盖 ABI 1.11 的原生轨迹执行默认值时，可以在 YAML 中增加：
 
 ```yaml
 trajectory_execution:

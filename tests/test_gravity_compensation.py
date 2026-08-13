@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 
 from arx_d_can.controllers.gravity_compensation import GravityCompensationMode
-from arx_d_can.sdk import ArxDCanConfig, ArxDCanState, JointMotorConfig, JointState
+from arx_d_can.sdk import (
+    ArxDCanArm,
+    ArxDCanConfig,
+    ArxDCanState,
+    JointMotorConfig,
+    JointState,
+)
 from arx_d_can.service_tools import gravity_compensation_cli
 
 
@@ -117,6 +123,7 @@ def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     sample = mode.start()
 
     assert mode.active
+    assert mode.hz == pytest.approx(arm.config.control_hz)
     assert arm.fresh_reads == 1
     assert arm.cached_reads == 1
     assert [name for name, _ in arm.calls[:2]] == ["connect", "enable"]
@@ -124,6 +131,7 @@ def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     np.testing.assert_allclose(enable_kwargs["initial_positions"], arm.positions)
     np.testing.assert_allclose(arm.commands[-1]["mit_kp"], [0.0, 0.0])
     np.testing.assert_allclose(arm.commands[-1]["mit_kd"], [0.0, 0.0])
+    assert not bool(arm.commands[-1]["enforce_position_limits"])
     np.testing.assert_allclose(arm.commands[-1]["torques"], [1.0, -2.0])
     assert sample.commanded_torques == pytest.approx((1.0, -2.0))
 
@@ -205,16 +213,33 @@ def test_mode_requires_mit_selected_at_construction() -> None:
     assert not arm.enabled
 
 
-def test_mode_rejects_out_of_limit_feedback_before_enable() -> None:
+def test_mode_accepts_feedback_outside_urdf_position_limits() -> None:
     arm = FakeArm()
     arm.positions = (2.1, 0.0)
     mode = make_mode(arm)
 
-    with pytest.raises(RuntimeError, match="joint1"):
-        mode.start()
+    sample = mode.start()
+    assert sample.positions == pytest.approx((2.1, 0.0))
+    assert arm.enabled
 
+    mode.stop()
     assert not arm.enabled
     assert not arm.connected
+
+
+def test_sdk_internal_validation_can_skip_only_position_limits() -> None:
+    arm = ArxDCanArm(model="yunyi_v1_0_left", enable_gripper=False)
+    positions = [0.0] * len(arm.joint_names)
+    assert arm.config.arm_joints[-1].upper_limit is not None
+    positions[-1] = arm.config.arm_joints[-1].upper_limit + 0.01
+
+    with pytest.raises(ValueError, match="l-joint7"):
+        arm._validated_joint_positions(positions)
+
+    assert arm._validated_joint_positions(
+        positions,
+        enforce_limits=False,
+    ) == pytest.approx(positions)
 
 
 def test_mode_does_not_send_python_gripper_commands() -> None:

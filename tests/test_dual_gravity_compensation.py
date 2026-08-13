@@ -111,10 +111,11 @@ def test_dual_gravity_uses_one_atomic_runtime_submission() -> None:
 
     sample = gravity.start()
 
+    assert gravity.hz == pytest.approx(500.0)
     enable_kwargs = next(value for name, value in robot.calls if name == "enable")
-    assert enable_kwargs["left_initial_positions"] == pytest.approx((0.1,))
-    assert enable_kwargs["right_initial_positions"] == pytest.approx((-0.2,))
+    assert enable_kwargs == {}
     assert len(robot.commands) == 1
+    assert not bool(robot.commands[0]["enforce_position_limits"])
     np.testing.assert_allclose(robot.commands[0]["left_torques"], [1.0])
     np.testing.assert_allclose(robot.commands[0]["right_torques"], [-2.0])
     assert sample.left.commanded_torques == pytest.approx((1.0,))

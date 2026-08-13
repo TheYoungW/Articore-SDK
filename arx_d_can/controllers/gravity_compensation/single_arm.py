@@ -101,20 +101,6 @@ class _GravityTorqueCalculator:
             ],
             dtype=np.float64,
         )
-        self.lower_limits = np.asarray(
-            [
-                -math.inf if joint.lower_limit is None else joint.lower_limit
-                for joint in arm.config.arm_joints
-            ],
-            dtype=np.float64,
-        )
-        self.upper_limits = np.asarray(
-            [
-                math.inf if joint.upper_limit is None else joint.upper_limit
-                for joint in arm.config.arm_joints
-            ],
-            dtype=np.float64,
-        )
         self.provider = gravity_provider or self._build_provider()
 
     def _build_provider(self) -> GravityProvider:
@@ -161,29 +147,12 @@ class _GravityTorqueCalculator:
         )
         return limited, limited_joints
 
-    def validate_positions(self, positions: np.ndarray) -> None:
-        """拒绝越过产品关节限位的反馈，避免使能时被静默夹到边界。"""
-        tolerance = 1e-4
-        invalid = tuple(
-            name
-            for name, value, lower, upper in zip(
-                self.arm.joint_names,
-                positions,
-                self.lower_limits,
-                self.upper_limits,
-            )
-            if value < lower - tolerance or value > upper + tolerance
-        )
-        if invalid:
-            raise RuntimeError("关节反馈超出 URDF 限位：" + ", ".join(invalid))
-
-
 class GravityCompensationMode:
     """使用 MIT 前馈力矩抵消单臂重力。
 
-    机械臂必须在创建时选择 ``control_mode="mit"``。Python 只读取原生反馈
-    缓存并计算重力矩；500 Hz 发送、通信监控、故障保持和夹爪防堵转均由 motor
-    原生 Runtime 执行。
+    机械臂必须在创建时选择 ``control_mode="mit"``。Python 按产品控制频率读取
+    每次 MIT 发送所更新的原生反馈缓存并计算重力矩；通信监控、故障保持和夹爪
+    防堵转均由 motor 原生 Runtime 执行。
     """
 
     def __init__(
@@ -197,7 +166,7 @@ class GravityCompensationMode:
         damping: float | Sequence[float] = 0.0,
         gravity_provider: GravityProvider | None = None,
     ) -> None:
-        update_hz = arm.config.feedback_check_hz if hz is None else float(hz)
+        update_hz = arm.config.control_hz if hz is None else float(hz)
         if not math.isfinite(update_hz) or update_hz <= 0.0:
             raise ValueError("hz 必须是有限正数")
         if 1.0 / update_hz >= arm.config.command_timeout_s * 0.5:
@@ -241,7 +210,6 @@ class GravityCompensationMode:
             raise RuntimeError("机械臂反馈关节数量发生变化")
         if np.any(~np.isfinite(positions)) or np.any(~np.isfinite(velocities)):
             raise RuntimeError("机械臂反馈包含非有限值")
-        self._calculator.validate_positions(positions)
         return positions, velocities
 
     def _submit(
@@ -265,6 +233,7 @@ class GravityCompensationMode:
             torques=torques,
             mit_kp=kp,
             mit_kd=kd,
+            enforce_position_limits=False,
         )
         sample = GravityCompensationSample(
             elapsed_s=max(0.0, time.monotonic() - self._active_started),

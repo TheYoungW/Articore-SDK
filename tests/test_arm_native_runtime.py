@@ -16,6 +16,8 @@ from arx_d_can import (
 from arx_d_can.sdk.native_safety import (
     CommandLifetime,
     TrajectoryInfo,
+    TrajectoryStartOutcome,
+    TrajectoryStartReport,
     TrajectoryStatus,
 )
 
@@ -46,6 +48,27 @@ GRIPPER = JointMotorConfig(
     pv_pos_ki=0.0,
     pv_vlim=1.0,
 )
+
+
+def _started(trajectory_id: int) -> TrajectoryStartReport:
+    return TrajectoryStartReport(
+        TrajectoryStartOutcome.STARTED,
+        None,
+        trajectory_id,
+        False,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        True,
+    )
 
 
 def _health() -> SafetyHealth:
@@ -100,7 +123,7 @@ def _ready_arm(
             joint_calls.append(tuple(commands))
 
         @staticmethod
-        def set_gripper_openings(targets) -> None:
+        def set_gripper_commands(targets) -> None:
             gripper_calls.extend(targets)
 
     arm._connected = True
@@ -364,7 +387,7 @@ def test_move_joint_positions_blocks_on_one_native_trajectory() -> None:
     class Runtime:
         def start_joint_trajectory(self, targets, *, profile: str) -> int:
             calls.append(("start", tuple(targets), profile))
-            return 17
+            return _started(17)
 
         def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
             calls.append(("wait", trajectory_id))
@@ -398,7 +421,7 @@ def test_move_joint_positions_reports_direct_command_preemption() -> None:
         @staticmethod
         def start_joint_trajectory(_targets, *, profile: str) -> int:
             del profile
-            return 18
+            return _started(18)
 
         @staticmethod
         def wait_trajectory(trajectory_id: int) -> TrajectoryInfo:
