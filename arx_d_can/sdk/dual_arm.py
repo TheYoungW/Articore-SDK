@@ -11,6 +11,7 @@ from ..errors import TransportError
 from .arm import ArxDCanArm
 from .native_safety import (
     CommandLifetime,
+    DisableReport,
     EnableReport,
     GripperSafetyHealth,
     NativeMotorDescriptor,
@@ -134,6 +135,12 @@ class ArxDCanDualArm:
         runtime = self._safety_runtime
         return None if runtime is None else runtime.last_enable_report
 
+    @property
+    def last_disable_report(self) -> DisableReport | None:
+        """返回最近一次双臂确定性失能报告。"""
+        runtime = self._safety_runtime
+        return None if runtime is None else runtime.last_disable_report
+
     def _native_motor_descriptors(self) -> tuple[NativeMotorDescriptor, ...]:
         return (
             *self.left._native_motor_descriptors(side=0, label="left"),
@@ -152,7 +159,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.2 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.8.3 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -186,7 +193,7 @@ class ArxDCanDualArm:
                 left.safe_hold_pv_velocity_limit,
                 right.safe_hold_pv_velocity_limit,
             ),
-            # ABI 字段为兼容保留；1.5 正常运行时夹爪跟随机械臂控制频率。
+            # ABI 字段为兼容保留；1.6 正常运行时夹爪跟随机械臂控制频率。
             gripper_control_hz=min(left.control_hz, right.control_hz),
             gripper_fault_action=(
                 "disable"
@@ -234,10 +241,12 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.8.2 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.8.3 dual-arm safety runtime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
+                # Runtime 关闭失败时仍依赖后续所有句柄；异常直接向上传播，绝不能
+                # 继续释放 ControllerGroup、Controller 或 Transport。
                 self._safety_runtime.close()
                 self._safety_runtime = None
             if self._controller_group is not None:
@@ -340,33 +349,49 @@ class ArxDCanDualArm:
             raise RuntimeError("dual-arm safety runtime is not connected")
         try:
             runtime.disable()
-        finally:
+        except Exception as exc:
+            # 不允许后续 health 读取失败覆盖结构化 NativeDisableError。
+            try:
+                health = runtime.health
+            except Exception:
+                for arm in (self.left, self.right):
+                    with arm._state_lock:
+                        arm._enabled = True
+                        arm._faulted = True
+                        arm._fault_reason = f"disable failed: {exc}"
+                        arm._safe_holding = False
+            else:
+                self._sync_python_safety_flags(health)
+            raise
+        else:
             self._sync_python_safety_flags(runtime.health)
 
     def close(self, *, disable: bool = True) -> None:
-        """释放并行发送线程后关闭左右通道。"""
+        """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
+
+        ABI 1.6 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
+        此方法保留全部底层句柄，以便调用方检查 ``last_disable_report`` 并重试。
+        ``disable`` 仅为 API 兼容保留；原生 Runtime 始终执行受检关闭。
+        """
+        del disable
         errors: list[Exception] = []
         runtime = self._safety_runtime
-        self._safety_runtime = None
-        if disable and runtime is not None:
-            try:
-                runtime.disable()
-            except Exception as exc:
-                errors.append(exc)
-        self.left._set_dual_runtime_managed(False)
-        self.right._set_dual_runtime_managed(False)
         if runtime is not None:
-            try:
-                runtime.close()
-            except Exception as exc:
-                errors.append(exc)
+            # close() 失败时必须原样保留 runtime、group、两侧 controller/transport。
+            runtime.close()
+            self._safety_runtime = None
         group = self._controller_group
-        self._controller_group = None
         if group is not None:
             try:
                 group.close()
             except Exception as exc:
                 errors.append(exc)
+            else:
+                self._controller_group = None
+        if errors:
+            raise RuntimeError("failed to close dual-arm ControllerGroup") from errors[0]
+        self.left._set_dual_runtime_managed(False)
+        self.right._set_dual_runtime_managed(False)
         for arm in (self.left, self.right):
             if not arm.connected:
                 continue

@@ -244,6 +244,43 @@ def test_single_arm_exposes_no_user_hold_or_open_close_aliases() -> None:
     assert not hasattr(arm, "close_gripper")
 
 
+def test_single_arm_close_failure_retains_runtime_group_and_transport() -> None:
+    arm = ArxDCanArm(
+        config=ArxDCanConfig(arm_joints=(JOINT,)),
+        enable_gripper=False,
+    )
+    events: list[str] = []
+
+    class Runtime:
+        def close(self) -> None:
+            events.append("runtime")
+            raise RuntimeError("joint1 did not confirm disable")
+
+    class Group:
+        def close(self) -> None:
+            events.append("group")
+
+    runtime = Runtime()
+    group = Group()
+    arm._single_safety_runtime = runtime  # type: ignore[assignment]
+    arm._single_controller_group = group  # type: ignore[assignment]
+    arm.robot = SimpleNamespace(
+        disconnect=lambda **_kwargs: events.append("transport")
+    )
+    arm._connected = True
+    arm._enabled = True
+
+    with pytest.raises(RuntimeError, match="did not confirm disable"):
+        arm.close()
+
+    assert events == ["runtime"]
+    assert arm._single_safety_runtime is runtime
+    assert arm._single_controller_group is group
+    assert arm.connected
+    assert arm._enabled
+    assert arm._faulted
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_velocity"),
     (("pv", 1.0), ("mit", 2.0)),

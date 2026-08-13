@@ -33,7 +33,7 @@ gripper_mapping:
 
 # 夹爪始终使用 MIT 模式，默认 Kp=4.0；保护逻辑由 motor 原生运行时执行。
 gripper_protection:
-  # ABI 兼容字段；Runtime 1.5 正常运行时实际跟随整机 500 Hz。
+  # ABI 兼容字段；Runtime 1.6 正常运行时实际跟随整机 500 Hz。
   control_hz: 500.0
   close_speed: 1.0
   contact_torque: 0.8
@@ -103,6 +103,7 @@ arms:
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
+        direction: -1
         MIT: {kp: 10.0, kd: 0.7}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 20.0}
       - name: l-joint6
@@ -177,6 +178,7 @@ arms:
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
+        direction: -1
         MIT: {kp: 10.0, kd: 0.7}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 20.0}
       - name: r-joint6

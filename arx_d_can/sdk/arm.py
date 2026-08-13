@@ -30,6 +30,7 @@ from .config import (
 from .joint_commands import _JointCommandMixin
 from .native_safety import (
     CommandLifetime,
+    DisableReport,
     EnableReport,
     GripperSafetyHealth,
     NativeJointControlConfig,
@@ -248,6 +249,12 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         return None if runtime is None else runtime.last_enable_report
 
     @property
+    def last_disable_report(self) -> DisableReport | None:
+        """返回最近一次确定性失能报告；未创建原生 Runtime 时返回 ``None``。"""
+        runtime = self._single_safety_runtime
+        return None if runtime is None else runtime.last_disable_report
+
+    @property
     def gripper_safety_health(self) -> GripperSafetyHealth | None:
         """返回产品夹爪的原生防堵转状态；无原生夹爪时返回 ``None``。"""
         return self.safety_health.left_gripper
@@ -416,7 +423,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                 feedback_max_age_s=self.config.max_cached_feedback_age_s,
                 safe_hold_failure_threshold=self.config.safe_hold_failure_threshold,
                 safe_pv_velocity_limit=self.config.safe_hold_pv_velocity_limit,
-                # ABI 字段为兼容保留；1.5 正常运行时夹爪跟随机械臂控制频率。
+                # ABI 字段为兼容保留；1.6 正常运行时夹爪跟随机械臂控制频率。
                 gripper_control_hz=self.config.control_hz,
                 gripper_fault_action=self.config.gripper_fault_action,
             )
@@ -467,7 +474,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                 and self._single_safety_runtime is None
             ):
                 raise RuntimeError(
-                    "motor-drive-layer 0.8.2 native safety runtime is unavailable"
+                    "motor-drive-layer 0.8.3 native safety runtime is unavailable"
                 )
         except Exception:
             try:
@@ -507,35 +514,39 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
     def close(self, *, disable: bool = True) -> None:
         """停止生成控制命令并关闭总线。
 
-        默认先失能所有电机。``disable=False`` 仅供从未配置、使能或控制机器人的
-        只读客户端使用，以避免退出时发送电机控制帧。
+        原生 Runtime 的关闭包含 ABI 1.6 确定性失能事务；失败时保留 Runtime、
+        ControllerGroup 和 Transport，供调用方读取结构化报告并重试。``disable=False``
+        仅影响没有原生 Runtime 的自定义后端。
         """
         errors: list[Exception] = []
         runtime = self._single_safety_runtime
-        self._single_safety_runtime = None
         group = self._single_controller_group
-        self._single_controller_group = None
-        if self._connected:
-            try:
-                if disable and runtime is not None:
-                    health = runtime.health
-                    if health.state not in {
-                        SafetyState.DISCONNECTED,
-                        SafetyState.READY,
-                    }:
-                        runtime.disable()
-            except Exception as exc:
-                errors.append(exc)
         if runtime is not None:
             try:
                 runtime.close()
             except Exception as exc:
-                errors.append(exc)
+                with self._state_lock:
+                    self._enabled = True
+                    self._faulted = True
+                    self._fault_reason = f"close failed: {exc}"
+                    self._safe_holding = False
+                # ABI 1.6：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
+                raise
+            self._single_safety_runtime = None
+            with self._state_lock:
+                self._enabled = False
+                self._safe_holding = False
         if group is not None:
             try:
                 group.close()
             except Exception as exc:
                 errors.append(exc)
+            else:
+                self._single_controller_group = None
+        if errors:
+            raise RuntimeError(
+                f"ARX-D-CAN ControllerGroup close failed: {errors[0]}"
+            ) from errors[0]
         if self._connected:
             try:
                 if disable and runtime is None:
@@ -544,17 +555,12 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
                     self.robot.disconnect(disable=False)
             except Exception as exc:
                 errors.append(exc)
-        with self._state_lock:
-            self._connected = False
-            self._configured = False
-            self._safe_holding = False
-            if not errors:
+        if not errors:
+            with self._state_lock:
+                self._connected = False
+                self._configured = False
+                self._safe_holding = False
                 self._enabled = False
-            else:
-                # 总线虽已关闭，但尚未确认电机已在物理层失能。
-                self._enabled = True
-                self._faulted = True
-                self._fault_reason = f"close failed: {errors[0]}"
         if errors:
             raise RuntimeError(f"ARX-D-CAN close failed: {errors[0]}") from errors[0]
 
@@ -570,7 +576,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接；首次使能时，Python 只配置构造时选择的控制模式和电机
-        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.5 Runtime
+        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 1.6 Runtime
         完成。在 MIT 模式下仍可提供一条完整的后续初始命令。操作失败时抛出的
         :class:`NativeEnableError` 携带结构化使能报告。
         """
@@ -655,7 +661,7 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
             self._sync_native_safety_flags(runtime.health)
             return
 
-        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.5
+        # 仅保留给没有原生句柄的自定义控制器和测试桩。内置产品必须由 ABI 1.6
         # Runtime 独占物理使能事务，不能在 Python 中提前逐组使能。
         try:
             if initial_position_vector is None:
@@ -687,7 +693,20 @@ class ArxDCanArm(_SafetyMixin, _JointCommandMixin):
         if runtime is not None:
             try:
                 runtime.disable()
-            finally:
+            except Exception as exc:
+                # 健康状态读取失败不能覆盖携带 DisableReport 的原始异常。
+                try:
+                    health = runtime.health
+                except Exception:
+                    with self._state_lock:
+                        self._enabled = True
+                        self._faulted = True
+                        self._fault_reason = f"disable failed: {exc}"
+                        self._safe_holding = False
+                else:
+                    self._sync_native_safety_flags(health)
+                raise
+            else:
                 self._sync_native_safety_flags(runtime.health)
             return
         try:

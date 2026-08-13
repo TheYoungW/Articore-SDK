@@ -13,10 +13,11 @@ from motor_drive_layer.abi import get_abi
 
 _UINT64_MAX = (1 << 64) - 1
 _ARTICORE_ABI_MAJOR = 1
-_ARTICORE_ABI_MINOR = 5
+_ARTICORE_ABI_MINOR = 6
 ARTICORE_CAP_COMMAND_LIFETIME = 1 << 11
 ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY = 1 << 12
 ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1 << 13
+ARTICORE_CAP_DETERMINISTIC_DISABLE = 1 << 14
 _REQUIRED_CAPABILITIES = (
     (1 << 0)  # 命令看门狗
     | (1 << 1)  # 安全保持
@@ -30,6 +31,7 @@ _REQUIRED_CAPABILITIES = (
     | ARTICORE_CAP_COMMAND_LIFETIME
     | ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY
     | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
+    | ARTICORE_CAP_DETERMINISTIC_DISABLE
 )
 
 
@@ -248,6 +250,55 @@ class NativeEnableError(RuntimeError):
         super().__init__(detail)
 
 
+@dataclass(slots=True, frozen=True)
+class DisableMotorResult:
+    """确定性失能事务中一台电机的最终确认结果。"""
+
+    side: int
+    name: str
+    can_id: int
+    status_code: int
+    has_feedback: bool
+    feedback_fresh: bool
+    disabled: bool
+    disable_sent: bool
+    retry_sent: bool
+
+
+@dataclass(slots=True, frozen=True)
+class MissingDisableMotor:
+    """确定性失能事务中未确认失能的电机标识。"""
+
+    side: int
+    can_id: int
+
+
+@dataclass(slots=True, frozen=True)
+class DisableReport:
+    """最近一次确定性失能事务的结构化报告。"""
+
+    success: bool
+    barrier_confirmed: bool
+    expected_count: int
+    disabled_count: int
+    missing_count: int
+    failure_count: int
+    retry_count: int
+    missing_motors: tuple[MissingDisableMotor, ...]
+    motors: tuple[DisableMotorResult, ...]
+    error: str | None
+
+
+class NativeDisableError(RuntimeError):
+    """原生确定性失能失败；Runtime 及其依赖句柄仍归调用方持有。"""
+
+    def __init__(self, report: DisableReport, *, operation: str) -> None:
+        self.report = report
+        self.operation = operation
+        detail = report.error or "确定性失能事务失败"
+        super().__init__(f"{operation} failed: {detail}")
+
+
 class _RuntimeConfig(ctypes.Structure):
     _fields_ = [
         ("control_hz", ctypes.c_uint32),
@@ -397,6 +448,38 @@ class _EnableReport(ctypes.Structure):
     ]
 
 
+class _DisableMotorResult(ctypes.Structure):
+    _fields_ = [
+        ("side", ctypes.c_uint8),
+        ("can_id", ctypes.c_uint8),
+        ("status_code", ctypes.c_uint8),
+        ("has_feedback", ctypes.c_uint8),
+        ("feedback_fresh", ctypes.c_uint8),
+        ("disabled", ctypes.c_uint8),
+        ("disable_sent", ctypes.c_uint8),
+        ("retry_sent", ctypes.c_uint8),
+        ("name", ctypes.c_char * 64),
+    ]
+
+
+class _DisableReport(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("success", ctypes.c_int32),
+        ("barrier_confirmed", ctypes.c_int32),
+        ("expected_count", ctypes.c_uint32),
+        ("disabled_count", ctypes.c_uint32),
+        ("missing_count", ctypes.c_uint32),
+        ("failure_count", ctypes.c_uint32),
+        ("retry_count", ctypes.c_uint32),
+        ("missing_motor_sides", ctypes.c_uint8 * 32),
+        ("missing_motor_ids", ctypes.c_uint32 * 32),
+        ("motor_count", ctypes.c_uint32),
+        ("motors", _DisableMotorResult * 32),
+        ("error", ctypes.c_char * 512),
+    ]
+
+
 class _TransportHealth(ctypes.Structure):
     _fields_ = [
         ("connected", ctypes.c_int32),
@@ -503,7 +586,7 @@ class NativeSafetyRuntime:
     ) -> None:
         self._lib = ctypes.CDLL(articore_runtime_library_path())
         # 先读取旧 ABI 也具备的版本与能力符号。误装旧版运行库时应给出明确的版本
-        # 错误，而不是因 ABI 1.5 新符号不存在而抛出晦涩的 AttributeError。
+        # 错误，而不是因 ABI 1.6 新符号不存在而抛出晦涩的 AttributeError。
         self._lib.articore_runtime_abi_version.restype = ctypes.c_uint32
         self._lib.articore_runtime_capabilities.restype = ctypes.c_uint64
         version = int(self._lib.articore_runtime_abi_version())
@@ -527,11 +610,11 @@ class NativeSafetyRuntime:
         motor_lib = self._motor_abi.lib
         if not getattr(self._motor_abi, "has_transport_health", False):
             raise RuntimeError(
-                "motor-drive-layer 0.8.2 must expose structured transport health"
+                "motor-drive-layer 0.8.3 must expose structured transport health"
             )
         if not getattr(self._motor_abi, "has_structured_feedback_report", False):
             raise RuntimeError(
-                "motor-drive-layer 0.8.2 must expose structured feedback reports"
+                "motor-drive-layer 0.8.3 must expose structured feedback reports"
             )
         transport_health_pointer = _function_pointer(
             motor_lib.motor_controller_get_transport_health
@@ -648,6 +731,10 @@ class NativeSafetyRuntime:
             ctypes.c_void_p,
             ctypes.POINTER(_EnableReport),
         ]
+        lib.articore_runtime_get_last_disable_report.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(_DisableReport),
+        ]
         lib.articore_runtime_configure_joints.argtypes = [
             ctypes.c_void_p,
             ctypes.POINTER(_JointControlConfig),
@@ -709,6 +796,7 @@ class NativeSafetyRuntime:
         for name in (
             "articore_runtime_connect", "articore_runtime_enable",
             "articore_runtime_get_last_enable_report",
+            "articore_runtime_get_last_disable_report",
             "articore_runtime_configure_joints",
             "articore_runtime_submit_pos_vel", "articore_runtime_submit_mit",
             "articore_runtime_submit_pos_vel_ex",
@@ -1004,7 +1092,57 @@ class NativeSafetyRuntime:
         )
 
     def disable(self) -> None:
-        self._ok(self._lib.articore_runtime_disable(self._ptr), "runtime disable")
+        if self._lib.articore_runtime_disable(self._ptr) != 0:
+            raise NativeDisableError(
+                self.last_disable_report,
+                operation="runtime disable",
+            )
+
+    @property
+    def last_disable_report(self) -> DisableReport:
+        """返回最近一次确定性失能事务的结构化结果。"""
+        native = _DisableReport()
+        native.struct_size = ctypes.sizeof(_DisableReport)
+        self._ok(
+            self._lib.articore_runtime_get_last_disable_report(
+                self._ptr,
+                ctypes.byref(native),
+            ),
+            "runtime disable report",
+        )
+        missing_count = min(int(native.missing_count), 32)
+        motor_count = min(int(native.motor_count), 32)
+        return DisableReport(
+            success=bool(native.success),
+            barrier_confirmed=bool(native.barrier_confirmed),
+            expected_count=int(native.expected_count),
+            disabled_count=int(native.disabled_count),
+            missing_count=int(native.missing_count),
+            failure_count=int(native.failure_count),
+            retry_count=int(native.retry_count),
+            missing_motors=tuple(
+                MissingDisableMotor(
+                    side=int(native.missing_motor_sides[index]),
+                    can_id=int(native.missing_motor_ids[index]),
+                )
+                for index in range(missing_count)
+            ),
+            motors=tuple(
+                DisableMotorResult(
+                    side=int(value.side),
+                    name=_text(value.name) or "",
+                    can_id=int(value.can_id),
+                    status_code=int(value.status_code),
+                    has_feedback=bool(value.has_feedback),
+                    feedback_fresh=bool(value.feedback_fresh),
+                    disabled=bool(value.disabled),
+                    disable_sent=bool(value.disable_sent),
+                    retry_sent=bool(value.retry_sent),
+                )
+                for value in native.motors[:motor_count]
+            ),
+            error=_text(native.error),
+        )
 
     def estop(self, reason: str = "emergency stop") -> None:
         self._ok(self._lib.articore_runtime_estop(self._ptr, reason.encode()), "runtime estop")
@@ -1085,11 +1223,15 @@ class NativeSafetyRuntime:
 
     def close(self) -> None:
         if self._ptr:
-            try:
-                self._ok(self._lib.articore_runtime_close(self._ptr), "runtime close")
-            finally:
-                self._lib.articore_runtime_free(self._ptr)
-                self._ptr = None
+            if self._lib.articore_runtime_close(self._ptr) != 0:
+                # ABI 1.6 要求关闭失败时保留 Runtime。它仍拥有
+                # ControllerGroup、Controller 和 Transport 的生命周期前置条件。
+                raise NativeDisableError(
+                    self.last_disable_report,
+                    operation="runtime close",
+                )
+            self._lib.articore_runtime_free(self._ptr)
+            self._ptr = None
 
     def __del__(self) -> None:
         try:
@@ -1099,11 +1241,16 @@ class NativeSafetyRuntime:
 
 
 __all__ = [
+    "ARTICORE_CAP_DETERMINISTIC_DISABLE",
+    "DisableMotorResult",
+    "DisableReport",
     "EnableMotorResult",
     "EnableReport",
     "GripperControlState",
     "GripperSafetyHealth",
     "MissingEnableMotor",
+    "MissingDisableMotor",
+    "NativeDisableError",
     "NativeEnableError",
     "NativeJointControlConfig",
     "NativeMotorDescriptor",

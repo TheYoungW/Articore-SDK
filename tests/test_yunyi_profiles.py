@@ -69,8 +69,8 @@ def test_yunyi_joint_directions_match_verified_tf_convention() -> None:
     left = load_cfg(model="yunyi_v1_0_left")["joints"]
     right = load_cfg(model="yunyi_v1_0_right")["joints"]
 
-    assert [joint.direction for joint in left] == [1, 1, 1, -1, 1, 1, 1, 1]
-    assert [joint.direction for joint in right] == [-1, 1, 1, 1, 1, -1, -1, 1]
+    assert [joint.direction for joint in left] == [1, 1, 1, -1, -1, 1, 1, 1]
+    assert [joint.direction for joint in right] == [-1, 1, 1, 1, -1, -1, -1, 1]
 
 
 def test_yunyi_gripper_mappings_match_calibrated_ranges() -> None:
@@ -223,6 +223,11 @@ def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
 
         joint4 = root.find(f"joint[@name='{side}-joint4']")
         assert joint4 is not None
+        assert tuple(float(value) for value in joint4.find("axis").attrib["xyz"].split()) == (
+            0.0,
+            -1.0,
+            0.0,
+        )
         joint4_limit = joint4.find("limit")
         assert joint4_limit is not None
         expected_joint4_lower, expected_joint4_upper = expected_joint4_limits[side]

@@ -450,7 +450,7 @@
     <origin xyz="0.0071957 0 -0.134" rpy="0 0 0" />
     <parent link="r-link3" />
     <child link="r-link4" />
-    <axis xyz="0 1 0" />
+    <axis xyz="0 -1 0" />
     <limit lower="-0.1744" upper="2.2678" effort="27" velocity="5" />
   </joint>
   <link name="r-link5">

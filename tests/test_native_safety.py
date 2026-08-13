@@ -8,36 +8,41 @@ from motor_drive_layer import articore_runtime_library_path
 
 from arx_d_can.sdk.native_safety import (
     ARTICORE_CAP_COMMAND_LIFETIME,
+    ARTICORE_CAP_DETERMINISTIC_DISABLE,
     ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY,
     ARTICORE_CAP_PROTECTIVE_FAULT_HOLD,
     CommandLifetime,
+    DisableReport,
     EnableReport,
     GripperControlState,
+    NativeDisableError,
     NativeJointControlConfig,
     NativeMotorDescriptor,
     NativeEnableError,
     NativeSafetyRuntime,
     SafetyState,
+    _DisableReport,
     _EnableReport,
     _SafetyHealth,
 )
 
 
-def test_packaged_runtime_exposes_required_abi_1_5_capabilities() -> None:
+def test_packaged_runtime_exposes_required_abi_1_6_capabilities() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
     library.articore_runtime_abi_version.restype = ctypes.c_uint32
     library.articore_runtime_capabilities.restype = ctypes.c_uint64
 
-    assert int(library.articore_runtime_abi_version()) >= (1 << 16) | 5
+    assert int(library.articore_runtime_abi_version()) >= (1 << 16) | 6
     required = (
         ARTICORE_CAP_COMMAND_LIFETIME
         | ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY
         | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
+        | ARTICORE_CAP_DETERMINISTIC_DISABLE
     )
     assert int(library.articore_runtime_capabilities()) & required == required
 
 
-def test_native_submit_uses_abi_1_5_command_lifetime_entry_points() -> None:
+def test_native_submit_uses_abi_1_6_command_lifetime_entry_points() -> None:
     calls: list[tuple[str, int]] = []
 
     class Library:
@@ -163,6 +168,58 @@ class FakeEnableRuntimeLibrary:
         return b"must not parse this error"
 
 
+class FakeDisableRuntimeLibrary:
+    def __init__(self) -> None:
+        self.close_result = -1
+        self.calls: list[str] = []
+
+    def articore_runtime_disable(self, _runtime) -> int:
+        return -1
+
+    def articore_runtime_close(self, _runtime) -> int:
+        self.calls.append("close")
+        return self.close_result
+
+    def articore_runtime_free(self, _runtime) -> None:
+        self.calls.append("free")
+
+    def articore_runtime_get_last_disable_report(self, _runtime, output) -> int:
+        report = ctypes.cast(output, ctypes.POINTER(_DisableReport)).contents
+        report.success = 0
+        report.barrier_confirmed = 1
+        report.expected_count = 16
+        report.disabled_count = 15
+        report.missing_count = 1
+        report.failure_count = 1
+        report.retry_count = 1
+        report.missing_motor_sides[0] = 1
+        report.missing_motor_ids[0] = 8
+        report.motor_count = 2
+        report.motors[0].side = 0
+        report.motors[0].can_id = 9
+        report.motors[0].status_code = 0
+        report.motors[0].has_feedback = 1
+        report.motors[0].feedback_fresh = 1
+        report.motors[0].disabled = 1
+        report.motors[0].disable_sent = 1
+        report.motors[0].retry_sent = 0
+        report.motors[0].name = b"left/l-joint1"
+        report.motors[1].side = 1
+        report.motors[1].can_id = 8
+        report.motors[1].status_code = 1
+        report.motors[1].has_feedback = 1
+        report.motors[1].feedback_fresh = 1
+        report.motors[1].disabled = 0
+        report.motors[1].disable_sent = 1
+        report.motors[1].retry_sent = 1
+        report.motors[1].name = b"right/r-gripper"
+        report.error = b"right gripper did not confirm disable"
+        return 0
+
+    def articore_runtime_last_error(self):
+        return b"must not parse this error"
+
+
 def test_native_health_is_exposed_as_immutable_python_values() -> None:
     runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
     runtime._lib = FakeRuntimeLibrary()
@@ -213,6 +270,52 @@ def test_atomic_enable_failure_exposes_structured_report() -> None:
     assert report.motors[1].name == "right/r-gripper"
     assert not report.motors[1].enabled
     assert str(captured.value) == "right gripper did not enable"
+
+
+def test_deterministic_disable_failure_exposes_structured_report() -> None:
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = FakeDisableRuntimeLibrary()
+    runtime._ptr = 1
+
+    with pytest.raises(NativeDisableError) as captured:
+        runtime.disable()
+
+    report = captured.value.report
+    assert isinstance(report, DisableReport)
+    assert not report.success
+    assert report.barrier_confirmed
+    assert report.expected_count == 16
+    assert report.disabled_count == 15
+    assert report.failure_count == 1
+    assert report.retry_count == 1
+    assert report.missing_motors[0].side == 1
+    assert report.missing_motors[0].can_id == 8
+    assert report.motors[0].name == "left/l-joint1"
+    assert report.motors[0].disabled
+    assert report.motors[1].name == "right/r-gripper"
+    assert report.motors[1].retry_sent
+    assert not report.motors[1].disabled
+    assert captured.value.operation == "runtime disable"
+
+
+def test_runtime_close_failure_retains_pointer_and_only_frees_after_success() -> None:
+    library = FakeDisableRuntimeLibrary()
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = library
+    runtime._ptr = 0x123
+
+    with pytest.raises(NativeDisableError) as captured:
+        runtime.close()
+
+    assert captured.value.operation == "runtime close"
+    assert runtime._ptr == 0x123
+    assert library.calls == ["close"]
+
+    library.close_result = 0
+    runtime.close()
+
+    assert runtime._ptr is None
+    assert library.calls == ["close", "close", "free"]
 
 
 def test_packaged_runtime_creates_a_single_channel_without_python_extension() -> None:

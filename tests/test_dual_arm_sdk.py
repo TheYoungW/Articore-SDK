@@ -666,3 +666,39 @@ def test_close_stops_native_runtime_before_group_and_controllers() -> None:
     robot.close(disable=False)
 
     assert events == ["runtime", "group", "left", "right"]
+
+
+def test_close_failure_retains_runtime_group_and_both_transports() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    events: list[str] = []
+
+    class Runtime:
+        def close(self) -> None:
+            events.append("runtime")
+            raise RuntimeError("one motor did not confirm disable")
+
+    class Group:
+        def close(self) -> None:
+            events.append("group")
+
+    runtime = Runtime()
+    group = Group()
+    robot._safety_runtime = runtime  # type: ignore[assignment]
+    robot._controller_group = group  # type: ignore[assignment]
+    robot.left._connected = True
+    robot.right._connected = True
+    robot.left._set_dual_runtime_managed(True)
+    robot.right._set_dual_runtime_managed(True)
+    robot.left.close = lambda *, disable=True: events.append("left")  # type: ignore[method-assign]
+    robot.right.close = lambda *, disable=True: events.append("right")  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="did not confirm disable"):
+        robot.close()
+
+    assert events == ["runtime"]
+    assert robot._safety_runtime is runtime
+    assert robot._controller_group is group
+    assert robot.left.connected
+    assert robot.right.connected
+    assert robot.left._dual_runtime_managed
+    assert robot.right._dual_runtime_managed

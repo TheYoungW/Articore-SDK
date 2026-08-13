@@ -18,7 +18,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时使用 `motor-drive-layer>=0.8.2,<0.9`。平台 wheel 已包含对应的
+底层通信与原生安全运行时使用 `motor-drive-layer>=0.8.3,<0.9`。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -204,7 +204,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.8.2 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.8.3 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -287,7 +287,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer>=0.8.2,<0.9` 的平台 wheel 会自动加载随包提供的运行库；
+厂商动态库。`motor-drive-layer>=0.8.3,<0.9` 的平台 wheel 会自动加载随包提供的运行库；
 `MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -311,7 +311,8 @@ SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.8.2 提供的 ABI 1.5 `libarticore_runtime`。本仓库不再编译 C++；Python 只校验
+motor-drive-layer 0.8.3 提供的 ABI 1.6 `libarticore_runtime`。SDK 初始化时同时要求
+`deterministic_disable` 能力。本仓库不再编译 C++；Python 只校验
 和提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
 `DISCONNECTED → READY → ENABLED → RUNNING → SAFE_HOLD / FAULT`，`FAULT` 只能通过
@@ -338,10 +339,10 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程以 500 Hz 发送，`SAFE_HOLD/FAULT` 下统一使用 100 Hz。相关职责由
-motor-drive-layer 0.8.2 承担。
+motor-drive-layer 0.8.3 承担。
 
 使能时，SDK 先完成控制模式和电机参数配置，然后只调用一次原生 `runtime.enable()`。
-ABI 1.5 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
+ABI 1.6 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
 目标，并行使能左右通道并确认所有电机均返回新鲜 `ENABLED` 反馈。失败时 Runtime 会
 回滚失能全部电机。SDK 不再提前调用左右臂或夹爪的物理使能接口。
 
@@ -368,8 +369,27 @@ except NativeEnableError as exc:
 也可以通过 `robot.last_enable_report` 读取最近一次使能报告。`disable()` 在 `FAULT`
 状态下仍会尝试物理失能全部电机，但不会清除故障锁存；`recover()` 只有在物理失能、
 反馈新鲜且通信健康均得到确认后才会回到 `READY`。
-满负载失能时物理失能命令只发送一次；第一轮新鲜反馈确认超时后仅额外重试一次确认，
-不会无限重试或重复发送运动命令。
+
+ABI 1.6 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
+在途批次完成，建立 ControllerGroup 与 USB/CAN 队列屏障，并行失能 CH0/CH1 并确认
+所有电机的新鲜失能反馈；第一轮未确认的电机只会被定向重发一次。正常关闭不再依赖
+电机通信超时。失能确认失败时会抛出携带 `DisableReport` 的 `NativeDisableError`：
+
+```python
+from arx_d_can import NativeDisableError
+
+try:
+    robot.close()
+except NativeDisableError as exc:
+    print(exc.report.missing_motors)
+    print(exc.report.motors)
+    raise
+```
+
+此时 Runtime、ControllerGroup、Controller 和 Transport 均保持有效，不会在 `finally`
+中继续释放；排查缺失电机后可以再次调用 `close()`。成功关闭严格按照 Runtime →
+ControllerGroup → Controller/Transport 的顺序执行。`disable()` 调用后或 `close()`
+失败时，也可以通过 `robot.last_disable_report` 读取最近一次失能报告。
 
 运行实机运动示例时，应先激活 Python 环境再执行 `python -m ...`。如果必须使用
 `conda run`，需要添加 `--no-capture-output`：
