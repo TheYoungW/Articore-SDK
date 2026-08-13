@@ -27,18 +27,12 @@ from .native_safety import (
     NativeEnableError,
     SafetyHealth,
     SafetyState,
-    TrajectoryExecutionConfig,
-    TrajectoryInfo,
-    TrajectoryStartOutcome,
-    TrajectoryStartReport,
-    TrajectoryStatus,
     TransportHealth,
 )
 from .state import (
     ArxDCanState,
     GripperState,
     JointState,
-    MitCommand,
     MotorState,
 )
 
@@ -59,7 +53,6 @@ for _public_type in (
     GripperState,
     JointMotorConfig,
     JointState,
-    MitCommand,
     MotorDiagnostic,
     MotorState,
     MissingEnableMotor,
@@ -68,11 +61,6 @@ for _public_type in (
     NativeEnableError,
     SafetyHealth,
     SafetyState,
-    TrajectoryExecutionConfig,
-    TrajectoryInfo,
-    TrajectoryStartOutcome,
-    TrajectoryStartReport,
-    TrajectoryStatus,
     TransportHealth,
 ):
     _public_type.__module__ = __name__
@@ -95,7 +83,6 @@ __all__ = [
     "GripperSafetyHealth",
     "JointMotorConfig",
     "JointState",
-    "MitCommand",
     "MotorDiagnostic",
     "MotorState",
     "MissingEnableMotor",
@@ -104,11 +91,6 @@ __all__ = [
     "NativeEnableError",
     "SafetyHealth",
     "SafetyState",
-    "TrajectoryExecutionConfig",
-    "TrajectoryInfo",
-    "TrajectoryStartOutcome",
-    "TrajectoryStartReport",
-    "TrajectoryStatus",
     "TransportHealth",
     "default_config",
 ]

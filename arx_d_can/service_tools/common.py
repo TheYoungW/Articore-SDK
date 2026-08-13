@@ -96,7 +96,7 @@ def send_for_seconds(
     period = 1.0 / max(1.0, hz)
     deadline = time.monotonic() + max(0.0, seconds)
     while time.monotonic() < deadline:
-        arm.stream_joint_positions(positions)
+        arm._submit_joint_positions(positions)
         time.sleep(period)
 
 
@@ -120,6 +120,6 @@ def interpolate_joint_positions(
             start_value + (end_value - start_value) * ratio
             for start_value, end_value in zip(start_values, end_values)
         )
-        arm.stream_joint_positions(target)
+        arm._submit_joint_positions(target)
         time.sleep(period)
-    arm.stream_joint_positions(end_values)
+    arm._submit_joint_positions(end_values)

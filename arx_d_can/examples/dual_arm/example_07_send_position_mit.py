@@ -1,36 +1,27 @@
 #!/usr/bin/env python3
-"""示例 07（MIT）：平滑移动双臂并保持最终位置。"""
+"""示例 07（MIT）：以统一速度设置双臂目标位置。"""
 from __future__ import annotations
 
 import argparse
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import (
-    joint_degrees,
-    scaled_joint_velocities,
-    speed_level,
-)
+from arx_d_can.examples.dual_arm.common import joint_degrees, positive_velocity_degrees
 
 
 def main(args: argparse.Namespace) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    if args.velocity == 0.0:
-        print("速度档位为 0，不执行运动")
-        return
-    velocity = scaled_joint_velocities(robot.left, args.velocity)
     robot.connect()
     print("机器人连接成功")
     try:
         robot.enable()
         print("已进入 MIT 模式")
-        print("开始平滑移动")
-        robot.move_joint_positions(
+        robot.set_joint_mit(
             left=joint_degrees(args.left),
             right=joint_degrees(args.right),
-            velocity=velocity,
+            velocity=args.velocity,
         )
-        print("已到达目标位置，按 Ctrl+C 失能并退出")
+        print("目标已提交，Runtime 正以 500 Hz 推进；按 Ctrl+C 失能并退出")
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
@@ -46,9 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--right", required=True, help="右臂 7 个关节角度，单位为度")
     parser.add_argument(
         "--velocity",
-        type=speed_level,
+        type=positive_velocity_degrees,
         required=True,
-        help="产品速度档位 0～400；400 对应 Yunyi 产品速度曲线",
+        help="双臂统一最大参考速度，单位为度/秒，必须大于 0",
     )
     return parser
 

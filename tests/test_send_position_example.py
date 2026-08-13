@@ -18,7 +18,7 @@ def test_parser_only_exposes_simple_position_options() -> None:
     assert "config_path" not in destinations
 
 
-def test_main_uses_native_smooth_trajectory(monkeypatch) -> None:
+def test_main_uses_ordinary_position_interface(monkeypatch) -> None:
     captured = {"calls": []}
 
     class FakeArm:
@@ -30,8 +30,9 @@ def test_main_uses_native_smooth_trajectory(monkeypatch) -> None:
         def enable(self):
             captured["calls"].append("enable")
 
-        def move_joint_positions(self, positions):
+        def set_joint_mit(self, positions, *, velocity):
             captured["target"] = tuple(positions)
+            captured["velocity"] = velocity
 
         def close(self):
             captured["calls"].append("close")
@@ -61,3 +62,4 @@ def test_main_uses_native_smooth_trajectory(monkeypatch) -> None:
     assert captured["target"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 10, 20, 30, 40, 50))
     )
+    assert captured["velocity"] == pytest.approx(math.radians(60.0))

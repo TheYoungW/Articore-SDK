@@ -3,8 +3,8 @@
 示例按机械臂使用形态分组：
 
 - `single_arm/`：完整的通用单臂示例，通过 `--arm-model` 选择机型；
-- `dual_arm/`：01～15 双臂示例，当前默认使用 Yunyi V1.0；示例 02 切换模式，
-  示例 03 演示使能/失能，示例 06 为 PV，示例 07 为 MIT，所有文件使用连续编号。
+- `dual_arm/`：双臂示例，当前默认使用 Yunyi V1.0；示例 02 切换模式，示例 03
+  演示使能/失能，示例 06 为 PV，示例 07 为 MIT。
 
 单臂示例不会绑定某一种产品：
 
@@ -36,12 +36,12 @@ python -m arx_d_can.examples.dual_arm.example_04_read_state \
 python -m arx_d_can.examples.dual_arm.example_06_send_position_pv \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
-  --velocity 200
+  --velocity 60
 
 python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
-  --velocity 200
+  --velocity 60
 
 python -m arx_d_can.examples.dual_arm.example_08_set_gripper_openings \
   --left-gripper 1000 \
@@ -52,17 +52,15 @@ python -m arx_d_can.examples.single_arm.example_12_gravity_compensation
 python -m arx_d_can.examples.dual_arm.example_15_gravity_compensation
 ```
 
-PV 和 MIT 位置示例都调用 C++ runtime 的平滑轨迹接口，不在 Python 中插值。
+PV 和 MIT 位置示例都调用 C++ Runtime 的普通位置接口，不在 Python 中插值。
 MIT 目标速度和前馈力矩均为零，Kp/Kd 读取机型 YAML。两种模式的 `--velocity`
-都是必须填写的 0～400 产品速度档位，与 URDF 最大速度相互独立。
-400 固定对应 `[2.0, 2.0, 3.3, 3.3, 6.3, 6.3, 6.3] rad/s`，其他档位
-按比例换算，0 不运动。URDF/YAML `vlim` 只作为绝对安全上限，`velocity_range`
-只用于电机协议缩放。
+都是必须填写的统一实际速度，命令行单位为度/秒；SDK 转为 rad/s 后一次提交完整
+双臂目标。Runtime 以原生 500 Hz 限步，新值覆盖旧的最终目标且不会排队。
+URDF/YAML `vlim` 仍作为绝对安全上限。
 夹爪开合度必须显式填写，范围为 0～1000；0 表示闭合，1000 表示打开。
 
-示例 06/07 的轨迹插值、固定频率发送、防堵转、通信检查和最终位置保持均由 C++
-runtime 处理。示例 10 用于演示多段轨迹和插值方式选择；轨迹接口阻塞到完成，
-插值支持 `min_jerk` 和 `linear`。
+示例 06/07 的限步、固定频率发送、通信检查和最终位置保持均由 C++ Runtime 处理；
+调用本身非阻塞。SDK 不再公开第二套关节轨迹执行接口。
 
 重力补偿示例内部固定使用 MIT 模式和机型参数。用户无需填写 Kp/Kd、补偿比例或
 发送频率；Python 计算 URDF 重力矩，底层 Runtime 负责 500 Hz 发送和安全状态机。

@@ -70,33 +70,6 @@ def test_custom_profile_drives_sdk_and_low_level_from_same_values(tmp_path: Path
     assert arm.robot._all_joints[1].direction == -1.0
 
 
-def test_custom_profile_can_override_trajectory_execution_policy(tmp_path: Path) -> None:
-    profile = write_profile(
-        tmp_path,
-        CUSTOM_PROFILE
-        + """
-trajectory_execution:
-  position_tolerance: 0.01
-  velocity_tolerance: 0.02
-  following_error_limit: 0.4
-  settling_stable_ms: 150
-  settling_timeout_ms: 2500
-  following_error_timeout_ms: 120
-""",
-    )
-
-    config = default_config(config_path=profile)
-
-    policy = config.trajectory_execution
-    assert policy is not None
-    assert policy.position_tolerance == pytest.approx(0.01)
-    assert policy.velocity_tolerance == pytest.approx(0.02)
-    assert policy.following_error_limit == pytest.approx(0.4)
-    assert policy.settling_stable_ms == 150
-    assert policy.settling_timeout_ms == 2500
-    assert policy.following_error_timeout_ms == 120
-
-
 def test_socketcan_profile_is_exposed_to_sdk_and_low_level(tmp_path: Path) -> None:
     profile = write_profile(
         tmp_path,

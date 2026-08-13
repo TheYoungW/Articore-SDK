@@ -5,6 +5,7 @@ import pytest
 
 from arx_d_can import ArxDCanArm, GripperForceLevel, available_models, load_cfg
 from arx_d_can.actuator import arx_d_can as actuator_module
+from arx_d_can.driver import damiao_model_limits
 
 
 MODELS_DIR = Path(__file__).resolve().parents[1] / "arx_d_can" / "models"
@@ -98,44 +99,31 @@ def test_yunyi_joint_velocity_ranges_match_hardware_registers() -> None:
         assert [joint.velocity_range for joint in joints] == expected
 
 
-def test_yunyi_product_speed_profile_is_independent_of_urdf_limits() -> None:
-    expected = (2.0, 2.0, 3.3, 3.3, 6.3, 6.3, 6.3)
-    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
-        arm = ArxDCanArm(model=model, enable_gripper=False)
-        config = arm.config
-        assert config.product_velocity_at_400 == expected
-        assert tuple(config.product_velocity_at_400) != tuple(
-            joint.pv_vlim for joint in config.arm_joints
-        )
-        assert tuple(arm._default_joint_velocity_limits()) == pytest.approx(
-            tuple(value * 0.5 for value in expected)
-        )
-
-
 def test_yunyi_control_gains_and_velocity_limits_match_product_profile() -> None:
-    joint1 = (70.0, 2.75, 0.010, 0.0025, 100.0, 0.3, 16.0)
-    joint2 = (70.0, 2.5, 0.008, 0.002, 80.0, 0.2, 16.0)
-    joint3 = (70.0, 2.0, 0.0125, 0.001, 165.0, 0.0, 5.0)
-    joint4 = (60.0, 2.0, 0.0125, 0.001, 180.0, 0.0, 5.0)
-    joint5 = (10.0, 0.7, 0.006, 0.0015, 80.0, 0.2, 20.0)
-    joint6 = (10.0, 0.6, 0.006, 0.0015, 80.0, 0.2, 20.0)
-    joint7 = (10.0, 0.5, 0.006, 0.0015, 80.0, 0.2, 20.0)
-    expected = [
-        joint1,
-        joint2,
-        joint3,
-        joint4,
-        joint5,
-        joint6,
-        joint7,
-    ]
+    expected_mit = (
+        (190.0, 4.55),
+        (190.0, 4.5),
+        (70.0, 2.0),
+        (125.0, 2.9),
+        (10.0, 0.7),
+        (22.0, 0.89),
+        (28.0, 0.84),
+    )
+    expected_pv = (
+        (0.010, 0.0025, 100.0, 0.3, 16.0),
+        (0.008, 0.002, 80.0, 0.2, 16.0),
+        (0.0125, 0.001, 165.0, 0.0, 5.0),
+        (0.0125, 0.001, 180.0, 0.0, 5.0),
+        (0.006, 0.0015, 80.0, 0.2, 20.0),
+        (0.006, 0.0015, 80.0, 0.2, 20.0),
+        (0.006, 0.0015, 80.0, 0.2, 20.0),
+    )
 
-    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+    for model in ("yunyi_v1_0_left", "yunyi_v1_0_right"):
         joints = load_cfg(model=model)["joints"][:7]
-        actual = [
+        assert tuple((joint.kp, joint.kd) for joint in joints) == expected_mit
+        assert tuple(
             (
-                joint.kp,
-                joint.kd,
                 joint.vel_kp,
                 joint.vel_ki,
                 joint.pos_kp,
@@ -143,15 +131,14 @@ def test_yunyi_control_gains_and_velocity_limits_match_product_profile() -> None
                 joint.vlim,
             )
             for joint in joints
-        ]
-        assert actual == expected
+        ) == expected_pv
 
 
-def test_yunyi_native_mit_trajectory_gains_come_from_yaml() -> None:
-    expected_kp = (70.0, 70.0, 70.0, 60.0, 10.0, 10.0, 10.0)
-    expected_kd = (2.75, 2.5, 2.0, 2.0, 0.7, 0.6, 0.5)
+def test_yunyi_native_ordinary_mit_gains_come_from_yaml() -> None:
+    expected_kp = (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
+    expected_kd = (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
 
-    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
+    for model in ("yunyi_v1_0_left", "yunyi_v1_0_right"):
         arm = ArxDCanArm(model=model, enable_gripper=False)
         arm.robot._motor_map.update(
             {joint.name: object() for joint in arm.config.arm_joints}
@@ -161,6 +148,27 @@ def test_yunyi_native_mit_trajectory_gains_come_from_yaml() -> None:
 
         assert tuple(joint.mit_kp for joint in native) == expected_kp
         assert tuple(joint.mit_kd for joint in native) == expected_kd
+
+
+def test_yunyi_runtime_torque_limits_match_urdf_effort_limits() -> None:
+    for model in ("yunyi_v1_0_left", "yunyi_v1_0_right"):
+        arm = ArxDCanArm(model=model, enable_gripper=False)
+        arm.robot._motor_map.update(
+            {joint.name: object() for joint in arm.config.arm_joints}
+        )
+
+        native_configs = arm._native_joint_control_configs()
+        for joint, native in zip(arm.config.arm_joints, native_configs):
+            _, _, native_torque_range = damiao_model_limits(joint.model)
+            configured_torque_range = joint.torque_range or native_torque_range
+            logical_torque_limit = (
+                native.torque_limit
+                * configured_torque_range
+                / native_torque_range
+            )
+
+            assert joint.effort_limit is not None
+            assert logical_torque_limit == pytest.approx(joint.effort_limit)
 
 
 def test_yunyi_gripper_uses_fixed_default_mit_gains() -> None:

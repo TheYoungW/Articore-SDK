@@ -58,7 +58,7 @@ def main(args: argparse.Namespace) -> None:
                 flush=True,
             )
     finally:
-        arm.close(disable=False)
+        arm.close()
         print("已断开连接", flush=True)
 
 

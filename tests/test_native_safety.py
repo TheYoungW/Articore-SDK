@@ -11,13 +11,10 @@ from arx_d_can.sdk.native_safety import (
     ARTICORE_CAP_DETERMINISTIC_DISABLE,
     ARTICORE_CAP_GRIPPER_COMMAND_PROFILES,
     ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS,
+    ARTICORE_CAP_JOINT_MIT_POSITION,
+    ARTICORE_CAP_JOINT_PV_POSITION,
     ARTICORE_CAP_LAYERED_JOINT_LIMITS,
-    ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY,
     ARTICORE_CAP_PROTECTIVE_FAULT_HOLD,
-    ARTICORE_CAP_TRAJECTORY_MANAGEMENT,
-    ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD,
-    ARTICORE_CAP_TRAJECTORY_SETTLING,
-    CommandLifetime,
     DisableReport,
     EnableReport,
     GripperControlState,
@@ -30,43 +27,51 @@ from arx_d_can.sdk.native_safety import (
     NativeEnableError,
     NativeSafetyRuntime,
     SafetyState,
-    TrajectoryExecutionConfig,
-    TrajectoryStartOutcome,
-    TrajectoryStatus,
     _DisableReport,
     _EnableReport,
     _SafetyHealth,
     _GripperCommand,
     _GripperForceProfile,
     _JointSafetyLimits,
-    _TrajectoryExecutionConfig,
-    _TrajectoryInfo,
-    _TrajectoryStartReport,
+    _JointMitTarget,
+    _JointPvTarget,
 )
 
 
-def test_packaged_runtime_exposes_required_abi_1_11_capabilities() -> None:
+def test_packaged_runtime_exposes_required_abi_2_0_capabilities() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
     library.articore_runtime_abi_version.restype = ctypes.c_uint32
     library.articore_runtime_capabilities.restype = ctypes.c_uint64
 
-    assert int(library.articore_runtime_abi_version()) >= (1 << 16) | 11
+    version = int(library.articore_runtime_abi_version())
+    assert (version >> 16, version & 0xFFFF) == (2, 0)
     required = (
         ARTICORE_CAP_COMMAND_LIFETIME
-        | ARTICORE_CAP_NONPREEMPTIVE_TRAJECTORY
         | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
         | ARTICORE_CAP_DETERMINISTIC_DISABLE
-        | ARTICORE_CAP_TRAJECTORY_MANAGEMENT
-        | ARTICORE_CAP_TRAJECTORY_SETTLING
-        | ARTICORE_CAP_TRAJECTORY_REPLACE_OR_HOLD
         | ARTICORE_CAP_LAYERED_JOINT_LIMITS
         | ARTICORE_CAP_GRIPPER_COMMAND_PROFILES
         | ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS
+        | ARTICORE_CAP_JOINT_MIT_POSITION
+        | ARTICORE_CAP_JOINT_PV_POSITION
     )
     assert int(library.articore_runtime_capabilities()) & required == required
 
 
-def test_native_submit_uses_abi_1_8_command_lifetime_entry_points() -> None:
+def test_packaged_runtime_abi_2_0_has_no_native_trajectory_api() -> None:
+    library = ctypes.CDLL(articore_runtime_library_path())
+
+    for name in (
+        "articore_runtime_configure_trajectory_execution",
+        "articore_runtime_start_joint_trajectory_report",
+        "articore_runtime_get_trajectory",
+        "articore_runtime_wait_trajectory",
+        "articore_runtime_cancel_trajectory",
+    ):
+        assert not hasattr(library, name)
+
+
+def test_native_raw_submit_is_always_streaming() -> None:
     calls: list[tuple[str, int]] = []
 
     class Library:
@@ -95,232 +100,81 @@ def test_native_submit_uses_abi_1_8_command_lifetime_entry_points() -> None:
     runtime._pv_array = None
     runtime._arm_mit_array = None
 
-    runtime.submit_pos_vel(
-        [SimpleNamespace(motor=motor, pos=0.1, vlim=1.0)],
-        lifetime=CommandLifetime.STREAMING,
-    )
+    runtime.submit_pos_vel([SimpleNamespace(motor=motor, pos=0.1, vlim=1.0)])
     runtime.submit_mit(
-        [SimpleNamespace(motor=motor, pos=0.1, vel=0.0, kp=10.0, kd=1.0, tau=0.0)],
-        lifetime=CommandLifetime.HOLD_UNTIL_REPLACED,
+        [SimpleNamespace(motor=motor, pos=0.1, vel=0.0, kp=10.0, kd=1.0, tau=0.0)]
     )
 
-    assert calls == [
-        ("pv", int(CommandLifetime.STREAMING)),
-        ("mit", int(CommandLifetime.HOLD_UNTIL_REPLACED)),
+    assert calls == [("pv", 1), ("mit", 1)]
+
+
+def test_native_ordinary_joint_positions_use_abi_2_0_entry_points() -> None:
+    captured: list[tuple[str, list[tuple[int, float]], float]] = []
+
+    class Library:
+        @staticmethod
+        def articore_runtime_set_joint_mit(_runtime, values, count, velocity) -> int:
+            captured.append(
+                (
+                    "mit",
+                    [
+                        (int(values[index].struct_size), float(values[index].target_position))
+                        for index in range(int(count))
+                    ],
+                    float(getattr(velocity, "value", velocity)),
+                )
+            )
+            return 0
+
+        @staticmethod
+        def articore_runtime_set_joint_pv(_runtime, values, count, velocity) -> int:
+            captured.append(
+                (
+                    "pv",
+                    [
+                        (int(values[index].struct_size), float(values[index].target_position))
+                        for index in range(int(count))
+                    ],
+                    float(getattr(velocity, "value", velocity)),
+                )
+            )
+            return 0
+
+        @staticmethod
+        def articore_runtime_last_error():
+            return b"ok"
+
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = Library()
+    runtime._ptr = 1
+    runtime._joint_mit_target_array = None
+    runtime._joint_pv_target_array = None
+    motors = (SimpleNamespace(_ptr=0x101), SimpleNamespace(_ptr=0x102))
+
+    runtime.set_joint_mit(((motors[0], 0.2), (motors[1], -0.3)), 1.5)
+    runtime.set_joint_pv(((motors[0], 0.4), (motors[1], -0.5)), 2.0)
+
+    assert captured == [
+        (
+            "mit",
+            [
+                (ctypes.sizeof(_JointMitTarget), pytest.approx(0.2)),
+                (ctypes.sizeof(_JointMitTarget), pytest.approx(-0.3)),
+            ],
+            pytest.approx(1.5),
+        ),
+        (
+            "pv",
+            [
+                (ctypes.sizeof(_JointPvTarget), pytest.approx(0.4)),
+                (ctypes.sizeof(_JointPvTarget), pytest.approx(-0.5)),
+            ],
+            pytest.approx(2.0),
+        ),
     ]
 
 
-def test_trajectory_execution_configuration_uses_abi_1_8_structure() -> None:
-    captured: list[_TrajectoryExecutionConfig] = []
-
-    class Library:
-        @staticmethod
-        def articore_runtime_configure_trajectory_execution(
-            _runtime,
-            value,
-        ) -> int:
-            source = ctypes.cast(
-                value,
-                ctypes.POINTER(_TrajectoryExecutionConfig),
-            ).contents
-            copy = _TrajectoryExecutionConfig()
-            ctypes.memmove(
-                ctypes.byref(copy),
-                ctypes.byref(source),
-                ctypes.sizeof(copy),
-            )
-            captured.append(copy)
-            return 0
-
-        @staticmethod
-        def articore_runtime_last_error():
-            return b"ok"
-
-    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
-    runtime._lib = Library()
-    runtime._ptr = 1
-    config = TrajectoryExecutionConfig(
-        position_tolerance=0.01,
-        velocity_tolerance=0.02,
-        following_error_limit=0.4,
-        settling_stable_ms=150,
-        settling_timeout_ms=2500,
-        following_error_timeout_ms=120,
-    )
-
-    runtime.configure_trajectory_execution(config)
-
-    assert captured[0].struct_size == ctypes.sizeof(_TrajectoryExecutionConfig)
-    assert captured[0].position_tolerance == pytest.approx(0.01)
-    assert captured[0].velocity_tolerance == pytest.approx(0.02)
-    assert captured[0].following_error_limit == pytest.approx(0.4)
-    assert captured[0].settling_stable_ms == 150
-    assert captured[0].settling_timeout_ms == 2500
-    assert captured[0].following_error_timeout_ms == 120
-    assert runtime._trajectory_settling_timeout_s == 2.5
-
-
-@pytest.mark.parametrize(
-    ("duration_s", "elapsed_s", "settling_timeout_s", "expected_timeout_ms"),
-    (
-        (10.0, 4.0, 3.0, 10_000),
-        (3.0, 3.0, 3.0, 4_000),
-        (3.0, 3.0, 5.0, 6_000),
-    ),
-)
-def test_wait_trajectory_includes_settling_timeout_after_reference(
-    duration_s: float,
-    elapsed_s: float,
-    settling_timeout_s: float,
-    expected_timeout_ms: int,
-) -> None:
-    timeouts: list[int] = []
-
-    class Library:
-        @staticmethod
-        def articore_runtime_get_trajectory(
-            _runtime,
-            _trajectory_id,
-            output,
-        ) -> int:
-            info = ctypes.cast(output, ctypes.POINTER(_TrajectoryInfo)).contents
-            info.trajectory_id = 7
-            info.status = 1
-            info.profile = 1
-            info.duration_ns = round(duration_s * 1_000_000_000)
-            info.elapsed_ns = round(elapsed_s * 1_000_000_000)
-            return 0
-
-        @staticmethod
-        def articore_runtime_wait_trajectory(
-            _runtime, _trajectory_id, timeout_ms, output
-        ) -> int:
-            timeouts.append(int(timeout_ms))
-            info = ctypes.cast(output, ctypes.POINTER(_TrajectoryInfo)).contents
-            info.trajectory_id = 7
-            info.status = 2
-            info.profile = 1
-            info.duration_ns = round(duration_s * 1_000_000_000)
-            info.elapsed_ns = round(duration_s * 1_000_000_000)
-            return 0
-
-        @staticmethod
-        def articore_runtime_last_error():
-            return b"ok"
-
-    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
-    runtime._lib = Library()
-    runtime._ptr = 1
-    runtime._trajectory_settling_timeout_s = settling_timeout_s
-
-    result = runtime.wait_trajectory(7)
-
-    assert result.status is TrajectoryStatus.COMPLETED
-    assert timeouts == [expected_timeout_ms]
-
-
-def test_native_trajectory_supports_smooth_replace_and_cancel() -> None:
-    calls: list[tuple[object, ...]] = []
-
-    class Library:
-        @staticmethod
-        def articore_runtime_start_joint_trajectory_report(
-            _runtime,
-            _targets,
-            count,
-            profile,
-            replace_policy,
-            output,
-        ) -> int:
-            calls.append(
-                ("start-report", int(count), int(profile), int(replace_policy))
-            )
-            report = ctypes.cast(
-                output, ctypes.POINTER(_TrajectoryStartReport)
-            ).contents
-            report.outcome = 2
-            report.old_trajectory_id = 40
-            report.new_trajectory_id = 41
-            return 0
-
-        @staticmethod
-        def articore_runtime_cancel_trajectory(_runtime, trajectory_id) -> int:
-            calls.append(("cancel", int(trajectory_id)))
-            return 0
-
-        @staticmethod
-        def articore_runtime_last_error():
-            return b"ok"
-
-    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
-    runtime._lib = Library()
-    runtime._ptr = 1
-    runtime._trajectory_target_array = None
-    motor = SimpleNamespace(_ptr=0x123)
-
-    report = runtime.start_joint_trajectory(
-        ((motor, 0.5, 1.0),),
-        profile="min_jerk",
-        replace=True,
-    )
-    runtime.cancel_trajectory(report.trajectory_id)
-
-    assert report.outcome is TrajectoryStartOutcome.REPLACED
-    assert report.old_trajectory_id == 40
-    assert report.trajectory_id == 41
-    assert calls == [("start-report", 1, 1, 2), ("cancel", 41)]
-
-
-def test_replacement_rejected_held_is_returned_without_exception() -> None:
-    class Library:
-        @staticmethod
-        def articore_runtime_start_joint_trajectory_report(
-            _runtime, _targets, _count, _profile, replace_policy, output
-        ) -> int:
-            assert int(replace_policy) == 2
-            report = ctypes.cast(
-                output, ctypes.POINTER(_TrajectoryStartReport)
-            ).contents
-            report.outcome = 3
-            report.old_trajectory_id = 77
-            report.hold_installed = 1
-            report.limiting_channel = 1
-            report.limiting_can_id = 6
-            report.feedback_fresh = 1
-            report.limiting_joint = b"right/r-joint6"
-            report.reason = b"trajectory target exceeds a soft position limit"
-            report.position = 0.77
-            report.soft_upper = 0.7675
-            report.hard_upper = 0.785
-            return 0
-
-        @staticmethod
-        def articore_runtime_last_error():
-            return b"ok"
-
-    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
-    runtime._lib = Library()
-    runtime._ptr = 1
-    runtime._trajectory_target_array = None
-    motor = SimpleNamespace(_ptr=0x123)
-
-    report = runtime.start_joint_trajectory(
-        ((motor, 0.8, 1.0),),
-        replace=True,
-    )
-
-    assert report.outcome is TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD
-    assert report.new_trajectory_id is None
-    assert report.hold_installed
-    assert report.limiting_channel == 1
-    assert report.limiting_can_id == 6
-    assert report.limiting_joint == "right/r-joint6"
-    assert report.feedback_fresh
-    with pytest.raises(RuntimeError, match="REPLACEMENT_REJECTED_HELD"):
-        _ = report.trajectory_id
-
-
-def test_abi_1_11_joint_and_gripper_configuration_structures() -> None:
+def test_abi_2_0_joint_and_gripper_configuration_structures() -> None:
     captured: dict[str, list[ctypes.Structure]] = {"limits": [], "profiles": []}
 
     class Library:
@@ -383,7 +237,7 @@ def test_abi_1_11_joint_and_gripper_configuration_structures() -> None:
     )
 
 
-def test_abi_1_11_gripper_command_is_atomic_profiled_submission() -> None:
+def test_abi_2_0_gripper_command_is_atomic_profiled_submission() -> None:
     captured: list[_GripperCommand] = []
 
     class Library:

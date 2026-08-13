@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 08：平滑控制机械臂回到零位。"""
+"""示例 08：使用普通 PV 位置接口控制机械臂回到零位。"""
 from __future__ import annotations
 
 import argparse
@@ -29,7 +29,9 @@ def main(args: argparse.Namespace) -> None:
         arm.enable()
 
         print("机械臂开始返回零位")
-        state = arm.move_joint_positions(zero, velocity=args.velocity)
+        arm.set_joint_pv(zero, velocity=args.velocity)
+        input("目标已提交，确认机械臂回到零位后按回车...")
+        state = arm.read_state()
         print(
             "当前角度：",
             [round(math.degrees(value), 2) for value in state.arm.positions],
@@ -48,7 +50,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--velocity",
         type=positive_velocity_degrees,
-        help="回零速度，单位为度/秒；省略时使用 SDK 默认轨迹速度",
+        default=math.radians(60.0),
+        help="统一最大参考速度，单位为度/秒；默认 60",
     )
     add_connection_arguments(parser)
     main(parser.parse_args())

@@ -15,7 +15,7 @@ def main() -> None:
         print("左臂零点设置完成：", ", ".join(left))
         print("右臂零点设置完成：", ", ".join(right))
     finally:
-        robot.close(disable=False)
+        robot.close()
         print("已断开连接")
 
 

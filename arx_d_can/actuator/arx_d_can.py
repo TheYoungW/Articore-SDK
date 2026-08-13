@@ -74,6 +74,18 @@ _NATIVE_VELOCITY_RANGES = {
     "4340P": 10.0,
     "8009": 45.0,
 }
+_MIT_GAIN_MAX = {"Kp": 500.0, "Kd": 5.0}
+
+
+def _validate_mit_gains(kp: np.ndarray, kd: np.ndarray) -> None:
+    for name, values in (("Kp", kp), ("Kd", kd)):
+        maximum = _MIT_GAIN_MAX[name]
+        if (
+            not np.all(np.isfinite(values))
+            or np.any(values < 0.0)
+            or np.any(values > maximum)
+        ):
+            raise ValueError(f"MIT {name} values must be in [0, {maximum:g}]")
 
 
 def _transport_error(
@@ -131,7 +143,7 @@ def _complete_feedback_error(
         return MotorFaultError(
             f"fresh feedback failed after {attempts} {attempt_label}: {detail}"
         )
-    # 0.8.8 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
+    # 0.9.0 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
     # 基础 CallError；这种情况保守地按“不完整”处理，而不是猜测成超时。
     error_type = (
         FeedbackTimeoutError
@@ -155,7 +167,7 @@ def _feedback_request_error(
     *,
     motor_names: tuple[str, ...],
 ) -> Exception:
-    """把 motor 0.8.8 的稳定反馈分类映射为 SDK 公共异常。"""
+    """把 motor 0.9.0 的稳定反馈分类映射为 SDK 公共异常。"""
     context = {
         "operation": "request_feedback",
         "motor_names": motor_names,
@@ -590,11 +602,6 @@ def load_cfg(
         "gripper_mapping": _optional_mapping(data, "gripper_mapping"),
         "gripper_protection": _optional_mapping(data, "gripper_protection"),
         "safety": _optional_mapping(data, "safety"),
-        "trajectory_execution": (
-            None
-            if data.get("trajectory_execution") is None
-            else _optional_mapping(data, "trajectory_execution")
-        ),
     }
 
 
@@ -705,6 +712,7 @@ class JointGroup:
         self._mode: str = "mit"
         self._mit_kp: np.ndarray = np.array([j.kp for j in self._jcfgs], dtype=np.float64)
         self._mit_kd: np.ndarray = np.array([j.kd for j in self._jcfgs], dtype=np.float64)
+        _validate_mit_gains(self._mit_kp, self._mit_kd)
         self._pv_vlim: np.ndarray = np.array([j.vlim for j in self._jcfgs], dtype=np.float64)
 
     # ── 属性 ────────────────────────────────────────────────────────────
@@ -764,6 +772,7 @@ class JointGroup:
             raise ValueError(f"MIT batch expects {n} values per vector")
         if any(not np.all(np.isfinite(vector)) for vector in vectors):
             raise ValueError("MIT batch values must be finite")
+        _validate_mit_gains(stiffness, damping)
 
         commands = []
         for index, joint in enumerate(self._jcfgs):
@@ -831,54 +840,29 @@ class JointGroup:
         mit_tau: Optional[np.ndarray] = None,
     ) -> None:
         """使能组内所有电机，并可选择立即写入一条 MIT 保持命令。"""
-        hold_vectors = None
+        hold_commands = None
         if mit_position is not None:
-            n = self.num_joints
-            position = np.asarray(mit_position, dtype=np.float64).reshape(-1)
-            velocity = (
-                np.zeros(n)
-                if mit_velocity is None
-                else np.asarray(mit_velocity, dtype=np.float64).reshape(-1)
+            hold_commands = self._make_mit_batch_commands(
+                mit_position,
+                vel=mit_velocity,
+                kp=mit_kp,
+                kd=mit_kd,
+                tau=mit_tau,
             )
-            kp = (
-                self._mit_kp
-                if mit_kp is None
-                else np.asarray(mit_kp, dtype=np.float64).reshape(-1)
-            )
-            kd = (
-                self._mit_kd
-                if mit_kd is None
-                else np.asarray(mit_kd, dtype=np.float64).reshape(-1)
-            )
-            tau = (
-                np.zeros(n)
-                if mit_tau is None
-                else np.asarray(mit_tau, dtype=np.float64).reshape(-1)
-            )
-            vectors = (position, velocity, kp, kd, tau)
-            if any(vector.size != n for vector in vectors):
-                raise ValueError(f"MIT enable hold expects {n} values per vector")
-            if any(not np.all(np.isfinite(vector)) for vector in vectors):
-                raise ValueError("MIT enable hold values must be finite")
-            hold_vectors = vectors
 
         errors = []
         for index, jc in enumerate(self._jcfgs):
             try:
                 motor = self._mm[jc.name]
                 motor.enable()
-                if hold_vectors is not None:
-                    position, velocity, kp, kd, tau = hold_vectors
-                    velocity_command_scale, _ = _velocity_range_scales(jc)
-                    torque_command_scale, _ = _torque_range_scales(jc)
-                    limited_position = self._clamp_position(jc, float(position[index]))
-                    limited_torque = self._clamp_effort(jc, float(tau[index]))
+                if hold_commands is not None:
+                    command = hold_commands[index]
                     motor.send_mit(
-                        jc.direction * limited_position,
-                        jc.direction * float(velocity[index]) * velocity_command_scale,
-                        float(kp[index]),
-                        float(kd[index]),
-                        jc.direction * limited_torque * torque_command_scale,
+                        command.pos,
+                        command.vel,
+                        command.kp,
+                        command.kd,
+                        command.tau,
                     )
             except Exception as exc:
                 errors.append(f"{jc.name}: {exc}")
@@ -1014,11 +998,22 @@ class JointGroup:
         kp: Optional[np.ndarray] = None,
         kd: Optional[np.ndarray] = None,
     ) -> bool:
+        stiffness = (
+            self._mit_kp
+            if kp is None
+            else np.asarray(kp, dtype=np.float64).reshape(-1)
+        )
+        damping = (
+            self._mit_kd
+            if kd is None
+            else np.asarray(kd, dtype=np.float64).reshape(-1)
+        )
+        if stiffness.size != self.num_joints or damping.size != self.num_joints:
+            raise ValueError(f"MIT mode expects {self.num_joints} Kp/Kd values")
+        _validate_mit_gains(stiffness, damping)
+        self._mit_kp = stiffness
+        self._mit_kd = damping
         self._mode = "mit"
-        if kp is not None:
-            self._mit_kp = np.asarray(kp, dtype=np.float64).reshape(-1)
-        if kd is not None:
-            self._mit_kd = np.asarray(kd, dtype=np.float64).reshape(-1)
         ok = True
         for jc in self._jcfgs:
             try:
@@ -1077,29 +1072,15 @@ class JointGroup:
         *,
         strict: bool = True,
     ) -> None:
-        n = self.num_joints
-        pos = np.asarray(pos, dtype=np.float64).reshape(-1)
-        if vel is None:
-            vel = np.zeros(n)
-        if tau is None:
-            tau = np.zeros(n)
-        if kp is None:
-            kp = self._mit_kp
-        if kd is None:
-            kd = self._mit_kd
-
-        for i, jc in enumerate(self._jcfgs):
+        commands = self._make_mit_batch_commands(pos, vel, kp, kd, tau)
+        for jc, command in zip(self._jcfgs, commands):
             try:
-                velocity_command_scale, _ = _velocity_range_scales(jc)
-                torque_command_scale, _ = _torque_range_scales(jc)
-                limited_position = self._clamp_position(jc, float(pos[i]))
-                limited_torque = self._clamp_effort(jc, float(tau[i]))
                 self._mm[jc.name].send_mit(
-                    jc.direction * limited_position,
-                    jc.direction * float(vel[i]) * velocity_command_scale,
-                    float(kp[i]),
-                    float(kd[i]),
-                    jc.direction * limited_torque * torque_command_scale,
+                    command.pos,
+                    command.vel,
+                    command.kp,
+                    command.kd,
+                    command.tau,
                 )
             except CallError as exc:
                 if strict:

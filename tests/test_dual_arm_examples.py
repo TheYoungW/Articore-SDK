@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_dual_arm_examples_use_contiguous_numbers() -> None:
+def test_dual_arm_examples_exclude_removed_runtime_trajectory_demo() -> None:
     root = Path(__file__).resolve().parents[1] / "arx_d_can" / "examples"
     dual = sorted(path.name for path in (root / "dual_arm").glob("example_*.py"))
 
@@ -15,10 +15,8 @@ def test_dual_arm_examples_use_contiguous_numbers() -> None:
         "example_07_send_position_mit.py",
         "example_08_set_gripper_openings.py",
         "example_09_benchmark_read_rate.py",
-        "example_10_send_joint_trajectory.py",
         "example_11_return_zero.py",
         "example_12_diagnose_status.py",
         "example_13_set_zero_current_position.py",
-        "example_14_record_and_replay_trajectory.py",
         "example_15_gravity_compensation.py",
     ]

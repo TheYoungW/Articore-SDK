@@ -27,8 +27,8 @@ def test_switch_mode_example_configures_both_arms(monkeypatch, mode: str) -> Non
         def configure_mode(self, requested_mode: str) -> None:
             captured["mode"] = requested_mode
 
-        def close(self, *, disable: bool = True) -> None:
-            captured["calls"].append(("close", disable))
+        def close(self) -> None:
+            captured["calls"].append("close")
 
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)
     args = example.build_parser().parse_args(["--mode", mode])
@@ -36,4 +36,4 @@ def test_switch_mode_example_configures_both_arms(monkeypatch, mode: str) -> Non
     example.main(args)
 
     assert captured["mode"] == mode
-    assert captured["calls"] == ["connect", ("close", False)]
+    assert captured["calls"] == ["connect", "close"]

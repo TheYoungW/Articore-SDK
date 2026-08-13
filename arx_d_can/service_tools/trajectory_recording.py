@@ -180,8 +180,8 @@ def replay(
         remaining = started + timestamp - first_timestamp - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        arm.stream_joint_positions(point[:joint_count])
-        arm.set_gripper_motor_value(point[joint_count])
+        arm._submit_joint_positions(point[:joint_count])
+        arm._set_gripper_motor_value(point[joint_count])
 
 
 def run(args: argparse.Namespace) -> None:
@@ -202,13 +202,7 @@ def run(args: argparse.Namespace) -> None:
                 gravity_mode = GravityCompensationMode(arm, hz=args.hz)
                 gravity_mode.start()
             elif args.enable:
-                initial = arm.read_state()
-                zeros = (0.0,) * len(initial.arm.positions)
-                arm.enable(
-                    initial_positions=initial.arm.positions,
-                    mit_kp=zeros,
-                    mit_kd=zeros,
-                )
+                arm.enable()
             try:
                 timestamps, positions = record(
                     arm,

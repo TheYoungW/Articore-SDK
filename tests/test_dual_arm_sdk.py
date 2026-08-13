@@ -6,66 +6,18 @@ from arx_d_can import (
     ArxDCanDualArm,
     SafetyHealth,
     SafetyState,
-    TransportError,
     TransportHealth,
 )
 from arx_d_can.driver import CallError
 from arx_d_can.sdk.arm import _PreparedJointPositionBatch
 from arx_d_can.sdk.native_safety import (
-    CommandLifetime,
     GripperForceLevel,
-    TrajectoryInfo,
-    TrajectoryStartOutcome,
-    TrajectoryStartReport,
-    TrajectoryStatus,
 )
 
 
 VALID_POSITIONS = (0.0,) * 7
 VALID_LEFT_POSITIONS = (0.0, 0.1, 0.2, 0.1, 0.2, 0.1, 0.2)
 VALID_RIGHT_POSITIONS = (0.0, -0.1, -0.2, 0.1, -0.2, -0.1, -0.2)
-
-
-def _started(trajectory_id: int) -> TrajectoryStartReport:
-    return TrajectoryStartReport(
-        TrajectoryStartOutcome.STARTED,
-        None,
-        trajectory_id,
-        False,
-        None,
-        None,
-        None,
-        None,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        True,
-    )
-
-
-def _held(reason: str) -> TrajectoryStartReport:
-    return TrajectoryStartReport(
-        TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD,
-        30,
-        None,
-        True,
-        1,
-        6,
-        "right/r-joint6",
-        reason,
-        0.8,
-        0.0,
-        0.0,
-        -0.7675,
-        0.7675,
-        -0.785,
-        0.785,
-        True,
-    )
 
 
 def _health(
@@ -158,13 +110,6 @@ def test_explicit_dm_device_uses_physical_channels_zero_and_one() -> None:
     assert robot.right.config.port == "1"
 
 
-def test_dual_targets_keep_left_and_right_commands_separate() -> None:
-    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
-    left, right = robot._targets(VALID_LEFT_POSITIONS, VALID_RIGHT_POSITIONS)
-    assert left == VALID_LEFT_POSITIONS
-    assert right == VALID_RIGHT_POSITIONS
-
-
 def test_dual_mit_enable_configures_both_sides_before_atomic_runtime_enable() -> None:
     robot = ArxDCanDualArm(
         control_mode="mit",
@@ -180,33 +125,15 @@ def test_dual_mit_enable_configures_both_sides_before_atomic_runtime_enable() ->
             calls.append(("runtime", mode))
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot.left.configure = lambda: calls.append(("configure-left", None))  # type: ignore[method-assign]
-    robot.right.configure = lambda: calls.append(("configure-right", None))  # type: ignore[method-assign]
-    robot._submit_joint_positions = lambda **kwargs: calls.append(("target", kwargs))  # type: ignore[method-assign]
-
-    left = VALID_LEFT_POSITIONS
-    right = VALID_RIGHT_POSITIONS
-    robot.enable(left_initial_positions=left, right_initial_positions=right)
+    robot.left._configure = lambda: calls.append(("configure-left", None))  # type: ignore[method-assign]
+    robot.right._configure = lambda: calls.append(("configure-right", None))  # type: ignore[method-assign]
+    robot.enable()
 
     assert calls == [
         ("configure-left", None),
         ("configure-right", None),
         ("runtime", "mit"),
-        (
-            "target",
-            {
-                "left": left,
-                "right": right,
-                "lifetime": CommandLifetime.HOLD_UNTIL_REPLACED,
-            },
-        ),
     ]
-
-
-def test_dual_validates_both_sides_before_sending() -> None:
-    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
-    with pytest.raises(ValueError, match="right"):
-        robot._targets(VALID_LEFT_POSITIONS, range(6))
 
 
 def test_connect_creates_one_native_group_and_closes_it_before_arms(
@@ -237,25 +164,21 @@ def test_connect_creates_one_native_group_and_closes_it_before_arms(
         events.append(f"{name}-connected")
         arm._connected = True
 
-    def close(arm, name: str, *, disable: bool) -> None:
-        events.append((f"{name}-closed", disable))
+    def close(arm, name: str) -> None:
+        events.append(f"{name}-closed")
         arm._connected = False
 
     robot.left.connect = lambda: connect(robot.left, "left")  # type: ignore[method-assign]
     robot.right.connect = lambda: connect(robot.right, "right")  # type: ignore[method-assign]
-    robot.left.close = lambda *, disable=True: close(  # type: ignore[method-assign]
-        robot.left, "left", disable=disable
-    )
-    robot.right.close = lambda *, disable=True: close(  # type: ignore[method-assign]
-        robot.right, "right", disable=disable
-    )
+    robot.left.close = lambda: close(robot.left, "left")  # type: ignore[method-assign]
+    robot.right.close = lambda: close(robot.right, "right")  # type: ignore[method-assign]
     robot.left._controller_for_parallel_batch = lambda: left_controller  # type: ignore[method-assign]
     robot.right._controller_for_parallel_batch = lambda: right_controller  # type: ignore[method-assign]
     robot._create_safety_runtime = lambda *_args: Runtime()  # type: ignore[method-assign]
 
     robot.connect()
     robot.connect()
-    robot.close(disable=False)
+    robot.close()
 
     assert events == [
         "left-connected",
@@ -263,8 +186,8 @@ def test_connect_creates_one_native_group_and_closes_it_before_arms(
         ("group-created", (left_controller, right_controller)),
         "runtime-closed",
         "group-closed",
-        ("left-closed", False),
-        ("right-closed", False),
+        "left-closed",
+        "right-closed",
     ]
 
 
@@ -283,11 +206,11 @@ def test_dual_send_uses_one_native_parallel_batch(mode: str, method_name: str) -
     class Runtime:
         health = _health()
 
-        def submit_pos_vel(self, commands, *, lifetime) -> None:
-            calls.append(("send_pos_vel", tuple(commands), lifetime))
+        def submit_pos_vel(self, commands) -> None:
+            calls.append(("send_pos_vel", tuple(commands)))
 
-        def submit_mit(self, commands, *, lifetime) -> None:
-            calls.append(("send_mit", tuple(commands), lifetime))
+        def submit_mit(self, commands) -> None:
+            calls.append(("send_mit", tuple(commands)))
 
     robot._controller_group = object()  # type: ignore[assignment]
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
@@ -299,16 +222,10 @@ def test_dual_send_uses_one_native_parallel_batch(mode: str, method_name: str) -
     )
     robot._submit_joint_positions(left=VALID_POSITIONS, right=VALID_POSITIONS)
 
-    assert calls == [
-        (
-            method_name,
-            ("l0", "l1", "r0", "r1"),
-            CommandLifetime.STREAMING,
-        )
-    ]
+    assert calls == [(method_name, ("l0", "l1", "r0", "r1"))]
 
 
-def test_dual_send_rejects_both_sides_before_preparing_an_out_of_limit_target() -> None:
+def test_dual_raw_send_validates_both_sides_before_submission() -> None:
     robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
     submitted: list[object] = []
 
@@ -322,12 +239,15 @@ def test_dual_send_rejects_both_sides_before_preparing_an_out_of_limit_target() 
     robot._controller_group = object()  # type: ignore[assignment]
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
     robot.left._prepare_parallel_joint_positions = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
-        pytest.fail("越界时不应开始准备任意一侧的发送命令")
+        _PreparedJointPositionBatch("mit", ("left",))
+    )
+    robot.right._prepare_parallel_joint_positions = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
+        (_ for _ in ()).throw(ValueError("r-joint6 exceeds allowed limit"))
     )
     right = list(VALID_POSITIONS)
     right[5] = 0.8
 
-    with pytest.raises(ValueError, match=r"r-joint6=.*allowed"):
+    with pytest.raises(ValueError, match=r"r-joint6.*allowed"):
         robot._submit_joint_positions(left=VALID_POSITIONS, right=right)
 
     assert submitted == []
@@ -345,8 +265,7 @@ def test_dual_mit_send_forwards_each_side_parameters() -> None:
     class Runtime:
         health = _health()
 
-        def submit_mit(self, commands, *, lifetime) -> None:
-            assert lifetime is CommandLifetime.STREAMING
+        def submit_mit(self, commands) -> None:
             submitted.append(tuple(commands))
 
     def prepare(side: str, positions, **kwargs):
@@ -400,47 +319,46 @@ def test_dual_mit_send_forwards_each_side_parameters() -> None:
     assert submitted == [("left-command", "right-command")]
 
 
-def test_dual_pv_send_forwards_each_side_velocity_limits() -> None:
+def test_dual_ordinary_pv_submits_one_atomic_batch_and_shared_velocity() -> None:
     robot = ArxDCanDualArm(
         control_mode="pv",
         left_gripper=False,
         right_gripper=False,
     )
-    prepared: dict[str, dict[str, object]] = {}
+    calls: list[tuple[tuple[object, ...], float]] = []
 
     class Runtime:
         health = _health()
 
         @staticmethod
-        def submit_pos_vel(_commands, *, lifetime) -> None:
-            assert lifetime is CommandLifetime.STREAMING
-            pass
+        def set_joint_pv(targets, velocity) -> None:
+            calls.append((tuple(targets), float(velocity)))
 
-    def prepare(side: str, _positions, **kwargs):
-        prepared[side] = kwargs
-        return _PreparedJointPositionBatch("pv", (f"{side}-command",))
-
-    robot._controller_group = object()  # type: ignore[assignment]
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot.left._prepare_parallel_joint_positions = (  # type: ignore[method-assign]
-        lambda positions, **kwargs: prepare("left", positions, **kwargs)
+    robot.left._ordinary_joint_position_targets = (  # type: ignore[method-assign]
+        lambda positions: (("left-motor", positions[0]),)
     )
-    robot.right._prepare_parallel_joint_positions = (  # type: ignore[method-assign]
-        lambda positions, **kwargs: prepare("right", positions, **kwargs)
+    robot.right._ordinary_joint_position_targets = (  # type: ignore[method-assign]
+        lambda positions: (("right-motor", positions[0]),)
     )
+    robot.left._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
 
-    robot.stream_joint_positions(
+    robot.set_joint_pv(
         left=VALID_POSITIONS,
         right=VALID_POSITIONS,
-        left_velocity_limits=range(1, 8),
-        right_velocity_limits=range(2, 9),
+        velocity=1.5,
     )
 
-    assert prepared["left"]["velocity_limits"] == range(1, 8)
-    assert prepared["right"]["velocity_limits"] == range(2, 9)
+    assert calls == [
+        (
+            (("left-motor", VALID_POSITIONS[0]), ("right-motor", VALID_POSITIONS[0])),
+            1.5,
+        )
+    ]
 
 
-def test_parallel_send_converts_native_error_for_both_arms() -> None:
+def test_parallel_send_preserves_native_error() -> None:
     robot = ArxDCanDualArm(
         control_mode="pv",
         left_gripper=False,
@@ -458,13 +376,11 @@ def test_parallel_send_converts_native_error_for_both_arms() -> None:
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
     robot.left._prepare_parallel_joint_positions = lambda _positions, **_kwargs: batch  # type: ignore[method-assign]
     robot.right._prepare_parallel_joint_positions = lambda _positions, **_kwargs: batch  # type: ignore[method-assign]
-    with pytest.raises(TransportError, match="CH1 motor ID 4") as caught:
-        robot.stream_joint_positions(left=VALID_POSITIONS, right=VALID_POSITIONS)
-
-    assert caught.value.operation == "send_pv"
+    with pytest.raises(CallError, match="CH1 motor ID 4"):
+        robot._submit_joint_positions(left=VALID_POSITIONS, right=VALID_POSITIONS)
 
 
-def test_dual_send_routes_through_native_safety_runtime() -> None:
+def test_dual_ordinary_pv_synchronizes_native_health() -> None:
     robot = ArxDCanDualArm(
         control_mode="pv",
         left_gripper=False,
@@ -475,25 +391,17 @@ def test_dual_send_routes_through_native_safety_runtime() -> None:
     class Runtime:
         health = _health()
 
-        def submit_pos_vel(self, commands, *, lifetime) -> None:
-            assert lifetime is CommandLifetime.STREAMING
-            calls.append(tuple(commands))
-
-    class Group:
-        def send_pos_vel(self, _commands) -> None:
-            raise AssertionError("native safety runtime must own the hot send path")
+        def set_joint_pv(self, targets, _velocity) -> None:
+            calls.append(tuple(targets))
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot._controller_group = Group()  # type: ignore[assignment]
-    robot.left._prepare_parallel_joint_positions = lambda _positions, **_kwargs: (  # type: ignore[method-assign]
-        _PreparedJointPositionBatch("pv", ("l0", "l1"))
-    )
-    robot.right._prepare_parallel_joint_positions = lambda _positions, **_kwargs: (  # type: ignore[method-assign]
-        _PreparedJointPositionBatch("pv", ("r0", "r1"))
-    )
-    robot.stream_joint_positions(left=VALID_POSITIONS, right=VALID_POSITIONS)
+    robot.left._ordinary_joint_position_targets = lambda _positions: (("l0", 0.0),)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_position_targets = lambda _positions: (("r0", 0.0),)  # type: ignore[method-assign]
+    robot.left._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.set_joint_pv(left=VALID_POSITIONS, right=VALID_POSITIONS)
 
-    assert calls == [("l0", "l1", "r0", "r1")]
+    assert calls == [(('l0', 0.0), ('r0', 0.0))]
     assert robot.safety_health.state is SafetyState.RUNNING
 
 
@@ -564,234 +472,74 @@ def test_managed_arm_rejects_a_command_that_bypasses_dual_batch() -> None:
     )
     robot.left._set_dual_runtime_managed(True)
 
-    with pytest.raises(RuntimeError, match="complete left/right command"):
-        robot.left.stream_joint_positions(range(7))
+    with pytest.raises(RuntimeError, match="complete left/right set_joint_pv"):
+        robot.left.set_joint_pv(range(7))
 
 
-def test_dual_public_stream_rejects_mit_mode() -> None:
+def test_dual_pv_position_rejects_mit_mode() -> None:
     robot = ArxDCanDualArm(
         control_mode="mit",
         left_gripper=False,
         right_gripper=False,
     )
 
-    with pytest.raises(RuntimeError, match="only available in PV mode"):
-        robot.stream_joint_positions(
+    with pytest.raises(RuntimeError, match="requires dual-arm PV mode"):
+        robot.set_joint_pv(
             left=VALID_POSITIONS,
             right=VALID_POSITIONS,
         )
 
 
-def test_dual_arm_exposes_only_move_and_stream_position_interfaces() -> None:
+def test_dual_arm_exposes_only_ordinary_position_interfaces() -> None:
     robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
 
-    assert hasattr(robot, "move_joint_positions")
-    assert hasattr(robot, "stream_joint_positions")
+    assert hasattr(robot, "set_joint_mit")
+    assert hasattr(robot, "set_joint_pv")
+    assert not hasattr(robot, "move_joint_positions")
+    assert not hasattr(robot, "start_joint_trajectory")
+    assert not hasattr(robot, "get_trajectory")
+    assert not hasattr(robot, "wait_trajectory")
+    assert not hasattr(robot, "cancel_trajectory")
+    assert not hasattr(robot, "stream_joint_positions")
+    assert not hasattr(robot, "stream_mit_joint_commands")
     assert not hasattr(robot, "set_joint_positions")
 
 
-def test_dual_move_runs_one_blocking_native_trajectory() -> None:
-    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
-    calls: list[tuple[object, ...]] = []
-    final_state = object()
-    left_targets = ((object(), 0.1, 0.5),)
-    right_targets = ((object(), -0.1, 0.5),)
-
-    class Runtime:
-        def start_joint_trajectory(
-            self,
-            targets,
-            *,
-            profile: str,
-            replace: bool,
-        ) -> int:
-            calls.append(("start", tuple(targets), profile, replace))
-            return _started(23)
-
-        def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
-            calls.append(("wait", trajectory_id))
-            return TrajectoryInfo(
-                trajectory_id=trajectory_id,
-                status=TrajectoryStatus.COMPLETED,
-                profile="min_jerk",
-                duration_s=1.0,
-                elapsed_s=1.0,
-                error=None,
-            )
-
-    robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot.left._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: left_targets  # type: ignore[method-assign]
-    robot.right._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: right_targets  # type: ignore[method-assign]
-    robot.read_state = lambda: final_state  # type: ignore[method-assign]
-
-    result = robot.move_joint_positions(
-        left=VALID_POSITIONS,
-        right=VALID_POSITIONS,
-        velocity=0.5,
-    )
-
-    assert result is final_state
-    assert calls == [
-        ("start", left_targets + right_targets, "min_jerk", False),
-        ("wait", 23),
-    ]
-
-
-def test_dual_nonblocking_trajectory_exposes_replace_query_wait_and_cancel() -> None:
-    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
-    calls: list[tuple[object, ...]] = []
-    left_targets = ((object(), 0.1, 0.5),)
-    right_targets = ((object(), -0.1, 0.5),)
-    running = TrajectoryInfo(
-        31,
-        TrajectoryStatus.RUNNING,
-        "min_jerk",
-        1.0,
-        0.2,
-        None,
-    )
-    completed = TrajectoryInfo(
-        31,
-        TrajectoryStatus.COMPLETED,
-        "min_jerk",
-        1.0,
-        1.0,
-        None,
-    )
-
-    class Runtime:
-        def start_joint_trajectory(
-            self,
-            targets,
-            *,
-            profile: str,
-            replace: bool,
-        ) -> int:
-            calls.append(("start", tuple(targets), profile, replace))
-            return _started(31)
-
-        def get_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
-            calls.append(("get", trajectory_id))
-            return running
-
-        def wait_trajectory(self, trajectory_id: int) -> TrajectoryInfo:
-            calls.append(("wait", trajectory_id))
-            return completed
-
-        def cancel_trajectory(self, trajectory_id: int) -> None:
-            calls.append(("cancel", trajectory_id))
-
-    robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot.left._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: left_targets  # type: ignore[method-assign]
-    robot.right._prepare_joint_trajectory_targets = lambda *_args, **_kwargs: right_targets  # type: ignore[method-assign]
-
-    start = robot.start_joint_trajectory(
-        left=VALID_POSITIONS,
-        right=VALID_POSITIONS,
-        velocity=0.5,
-        replace=True,
-    )
-    assert robot.get_trajectory(start) is running
-    assert robot.wait_trajectory(start) is completed
-    robot.cancel_trajectory(start)
-
-    assert calls == [
-        ("start", left_targets + right_targets, "min_jerk", True),
-        ("get", 31),
-        ("wait", 31),
-        ("cancel", 31),
-    ]
-
-
-def test_dual_mit_stream_exposes_complete_advanced_command_without_example() -> None:
+def test_dual_ordinary_mit_submits_only_positions_and_shared_velocity() -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    calls: list[dict[str, object]] = []
-    robot._submit_joint_positions = lambda **kwargs: calls.append(kwargs)  # type: ignore[method-assign]
+    calls: list[tuple[tuple[object, ...], float]] = []
 
-    robot.stream_mit_joint_commands(
-        left_positions=VALID_POSITIONS,
-        right_positions=VALID_POSITIONS,
-        left_velocities=(0.1,) * 7,
-        right_velocities=(-0.1,) * 7,
-        left_torques=(0.2,) * 7,
-        right_torques=(-0.2,) * 7,
-        left_kp=20.0,
-        right_kp=21.0,
-        left_kd=1.0,
-        right_kd=1.1,
+    class Runtime:
+        health = _health()
+
+        def set_joint_mit(self, targets, velocity) -> None:
+            calls.append((tuple(targets), float(velocity)))
+
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    robot.left._ordinary_joint_position_targets = lambda _positions: (("left", 0.2),)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_position_targets = lambda _positions: (("right", -0.3),)  # type: ignore[method-assign]
+    robot.left._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+
+    robot.set_joint_mit(
+        left=VALID_POSITIONS,
+        right=VALID_POSITIONS,
+        velocity=2.0,
     )
 
     assert calls == [
-        {
-            "left": VALID_POSITIONS,
-            "right": VALID_POSITIONS,
-            "left_velocities": (0.1,) * 7,
-            "right_velocities": (-0.1,) * 7,
-            "left_torques": (0.2,) * 7,
-            "right_torques": (-0.2,) * 7,
-            "left_mit_kp": 20.0,
-            "right_mit_kp": 21.0,
-            "left_mit_kd": 1.0,
-            "right_mit_kd": 1.1,
-            "lifetime": CommandLifetime.STREAMING,
-        }
+        ((('left', 0.2), ('right', -0.3)), 2.0)
     ]
 
 
-def test_dual_rejects_mit_stream_in_pv_mode() -> None:
+def test_dual_mit_position_rejects_pv_mode() -> None:
     robot = ArxDCanDualArm(control_mode="pv")
 
     with pytest.raises(RuntimeError, match="requires dual-arm MIT mode"):
-        robot.stream_mit_joint_commands(
-            left_positions=VALID_POSITIONS,
-            right_positions=VALID_POSITIONS,
-        )
-
-
-def test_dual_smooth_replace_requires_minimum_jerk() -> None:
-    robot = ArxDCanDualArm()
-
-    with pytest.raises(ValueError, match="requires min_jerk"):
-        robot.start_joint_trajectory(
+        robot.set_joint_mit(
             left=VALID_POSITIONS,
             right=VALID_POSITIONS,
-            profile="linear",
-            replace=True,
         )
-
-
-def test_dual_replace_sends_out_of_limit_target_to_atomic_runtime_hold() -> None:
-    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
-    prepared: list[bool] = []
-    calls: list[tuple[object, ...]] = []
-
-    class Runtime:
-        @staticmethod
-        def start_joint_trajectory(targets, *, profile: str, replace: bool):
-            calls.append((tuple(targets), profile, replace))
-            return _held("trajectory target exceeds a hard position limit")
-
-    def prepare(_positions, *, velocity, enforce_position_limits):
-        del velocity
-        prepared.append(enforce_position_limits)
-        return ((object(), 0.0, 1.0),)
-
-    robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot.left._prepare_joint_trajectory_targets = prepare  # type: ignore[method-assign]
-    robot.right._prepare_joint_trajectory_targets = prepare  # type: ignore[method-assign]
-    right = list(VALID_POSITIONS)
-    right[5] = 1.0  # r-joint6 URDF 硬上限为 0.785 rad
-
-    report = robot.start_joint_trajectory(
-        left=VALID_POSITIONS,
-        right=right,
-        replace=True,
-    )
-
-    assert report.outcome is TrajectoryStartOutcome.REPLACEMENT_REJECTED_HELD
-    assert report.hold_installed
-    assert prepared == [False, False]
-    assert calls[0][1:] == ("min_jerk", True)
 
 
 def test_dual_gripper_openings_are_one_native_atomic_submission() -> None:
@@ -872,10 +620,10 @@ def test_close_stops_native_runtime_before_group_and_controllers() -> None:
     robot._controller_group = Group()  # type: ignore[assignment]
     robot.left._connected = True
     robot.right._connected = True
-    robot.left.close = lambda *, disable=True: events.append("left")  # type: ignore[method-assign]
-    robot.right.close = lambda *, disable=True: events.append("right")  # type: ignore[method-assign]
+    robot.left.close = lambda: events.append("left")  # type: ignore[method-assign]
+    robot.right.close = lambda: events.append("right")  # type: ignore[method-assign]
 
-    robot.close(disable=False)
+    robot.close()
 
     assert events == ["runtime", "group", "left", "right"]
 

@@ -19,7 +19,7 @@ def test_reads_and_prints_state_inline(monkeypatch) -> None:
     arm = SimpleNamespace(
         connect=lambda: None,
         read_state=lambda: state,
-        close=lambda *, disable: close_calls.append(disable),
+        close=lambda: close_calls.append(True),
     )
     output: list[str] = []
 
@@ -41,4 +41,4 @@ def test_reads_and_prints_state_inline(monkeypatch) -> None:
     assert any("关节角度 (deg)" in line for line in output)
     assert any("关节速度 (rad/s)" in line for line in output)
     assert any("夹爪开合度:        500 / 1000" in line for line in output)
-    assert close_calls == [False]
+    assert close_calls == [True]

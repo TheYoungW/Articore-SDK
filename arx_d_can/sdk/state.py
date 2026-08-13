@@ -58,22 +58,9 @@ class ArxDCanState:
         return self.arm.positions
 
 
-@dataclass(slots=True, frozen=True)
-class MitCommand:
-    """驱动保留的一条完整逻辑关节 MIT 命令。"""
-
-    positions: tuple[float, ...]
-    velocities: tuple[float, ...]
-    kp: tuple[float, ...]
-    kd: tuple[float, ...]
-    feedforward_torques: tuple[float, ...]
-    timestamp: float
-
-
 __all__ = [
     "ArxDCanState",
     "GripperState",
     "JointState",
-    "MitCommand",
     "MotorState",
 ]

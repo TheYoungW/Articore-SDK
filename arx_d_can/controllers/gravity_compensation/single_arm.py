@@ -287,7 +287,7 @@ class GravityCompensationMode:
             initial_position, _ = self._checked_state(fresh=True)
             # 使能前先验证模型输出，避免错误模型在电机使能后才暴露。
             self._calculator.compute(initial_position)
-            self.arm.enable(initial_positions=initial_position)
+            self.arm.enable()
             self._active = True
             self._active_started = time.monotonic()
             self._transition(initial_position, entering=True)

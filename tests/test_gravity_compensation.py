@@ -127,8 +127,7 @@ def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     assert arm.fresh_reads == 1
     assert arm.cached_reads == 1
     assert [name for name, _ in arm.calls[:2]] == ["connect", "enable"]
-    enable_kwargs = arm.calls[1][1]
-    np.testing.assert_allclose(enable_kwargs["initial_positions"], arm.positions)
+    assert arm.calls[1][1] == {}
     np.testing.assert_allclose(arm.commands[-1]["mit_kp"], [0.0, 0.0])
     np.testing.assert_allclose(arm.commands[-1]["mit_kd"], [0.0, 0.0])
     assert not bool(arm.commands[-1]["enforce_position_limits"])

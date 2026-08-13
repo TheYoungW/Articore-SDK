@@ -5,12 +5,7 @@ transport: dm-device
 baud: 1000000
 rate: 500
 
-# 用户速度档位是独立的产品运动参数，不按 URDF 最大速度换算。
-motion:
-  speed_level_max: 400.0
-  joint_velocity_at_max: [2.0, 2.0, 3.3, 3.3, 6.3, 6.3, 6.3]
-
-# ABI 1.11：URDF 限位作为机械硬限位；正常轨迹在两端各预留 1°。
+# ABI 2.0：URDF 限位作为机械硬限位；普通位置 reference 在两端各预留 1°。
 joint_safety:
   soft_limit_margin: 0.01745329252
   soft_limit_braking_zone: 0.08726646260
@@ -39,7 +34,7 @@ gripper_mapping:
 
 # 夹爪始终使用 MIT 模式，默认 Kp=4.0；保护逻辑由 motor 原生运行时执行。
 gripper_protection:
-  # ABI 兼容字段；Runtime 1.11 正常运行时实际跟随整机 500 Hz。
+  # ABI 兼容字段；Runtime 2.0 正常运行时实际跟随整机 500 Hz。
   control_hz: 500.0
   # 张开/闭合双向斜坡的产品最大标定速度；公开 speed=1000 对应 5.0 rad/s。
   close_speed: 5.0
@@ -76,6 +71,7 @@ arms:
     name: Yunyi V1.0 Left Arm
     channel: "0"
     end_effector_frame: l-link7
+    # 普通 MIT 增益当前按左右臂镜像配置；真机标定结果需在完整目标姿态下分别复核。
     groups:
       arm:
         joints: [l-joint1, l-joint2, l-joint3, l-joint4, l-joint5, l-joint6, l-joint7]
@@ -89,7 +85,7 @@ arms:
         torque_range: 40.0
         velocity_range: 20.0
         direction: 1
-        MIT: {kp: 70.0, kd: 2.75}
+        MIT: {kp: 190.0, kd: 4.55}
         POS_VEL: {vel_kp: 0.010, vel_ki: 0.0025, pos_kp: 100.0, pos_ki: 0.3, vlim: 16.0}
       - name: l-joint2
         motor_id: 0x0A
@@ -97,7 +93,7 @@ arms:
         model: "8009"
         torque_range: 40.0
         velocity_range: 20.0
-        MIT: {kp: 70.0, kd: 2.5}
+        MIT: {kp: 190.0, kd: 4.5}
         POS_VEL: {vel_kp: 0.008, vel_ki: 0.002, pos_kp: 80.0, pos_ki: 0.2, vlim: 16.0}
       - name: l-joint3
         motor_id: 0x0B
@@ -114,7 +110,7 @@ arms:
         torque_range: 27.0
         velocity_range: 10.0
         direction: -1
-        MIT: {kp: 60.0, kd: 2.0}
+        MIT: {kp: 125.0, kd: 2.9}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 180.0, pos_ki: 0.0, vlim: 5.0}
       - name: l-joint5
         motor_id: 0x0D
@@ -131,7 +127,7 @@ arms:
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
-        MIT: {kp: 10.0, kd: 0.6}
+        MIT: {kp: 22.0, kd: 0.89}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 20.0}
       - name: l-joint7
         motor_id: 0x0F
@@ -139,7 +135,7 @@ arms:
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
-        MIT: {kp: 10.0, kd: 0.5}
+        MIT: {kp: 28.0, kd: 0.84}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 20.0}
       - name: l-gripper
         motor_id: 0x01
@@ -165,7 +161,7 @@ arms:
         torque_range: 40.0
         velocity_range: 10.0
         direction: 1
-        MIT: {kp: 70.0, kd: 2.75}
+        MIT: {kp: 190.0, kd: 4.55}
         POS_VEL: {vel_kp: 0.010, vel_ki: 0.0025, pos_kp: 100.0, pos_ki: 0.3, vlim: 16.0}
       - name: r-joint2
         motor_id: 0x02
@@ -173,7 +169,7 @@ arms:
         model: "8009"
         torque_range: 40.0
         velocity_range: 10.0
-        MIT: {kp: 70.0, kd: 2.5}
+        MIT: {kp: 190.0, kd: 4.5}
         POS_VEL: {vel_kp: 0.008, vel_ki: 0.002, pos_kp: 80.0, pos_ki: 0.2, vlim: 16.0}
       - name: r-joint3
         motor_id: 0x03
@@ -189,7 +185,7 @@ arms:
         model: "4340P"
         torque_range: 27.0
         velocity_range: 10.0
-        MIT: {kp: 60.0, kd: 2.0}
+        MIT: {kp: 125.0, kd: 2.9}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.001, pos_kp: 180.0, pos_ki: 0.0, vlim: 5.0}
       - name: r-joint5
         motor_id: 0x05
@@ -207,7 +203,7 @@ arms:
         torque_range: 7.0
         velocity_range: 10.0
         direction: -1
-        MIT: {kp: 10.0, kd: 0.6}
+        MIT: {kp: 22.0, kd: 0.89}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 20.0}
       - name: r-joint7
         motor_id: 0x07
@@ -216,7 +212,7 @@ arms:
         torque_range: 7.0
         velocity_range: 10.0
         direction: 1
-        MIT: {kp: 10.0, kd: 0.5}
+        MIT: {kp: 28.0, kd: 0.84}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0015, pos_kp: 80.0, pos_ki: 0.2, vlim: 20.0}
       - name: r-gripper
         motor_id: 0x08

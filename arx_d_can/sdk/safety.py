@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+from .config import _MIT_GAIN_MAX
+
 
 class _SafetyMixin:
     """不执行安全循环，只把故障动作交给 motor 原生运行时。"""
@@ -18,6 +20,15 @@ class _SafetyMixin:
         return names
 
     def _validate_safety_config(self) -> None:
+        for joint in (*self.config.arm_joints, self.config.gripper):
+            if joint is None:
+                continue
+            for name, value in (("Kp", joint.mit_kp), ("Kd", joint.mit_kd)):
+                maximum = _MIT_GAIN_MAX[name]
+                if not math.isfinite(value) or not 0.0 <= value <= maximum:
+                    raise ValueError(
+                        f"{joint.name}.MIT.{name.lower()} must be in [0, {maximum:g}]"
+                    )
         if self.config.gripper is not None:
             endpoints = (
                 self.config.gripper_closed_value,

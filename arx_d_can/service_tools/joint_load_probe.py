@@ -125,7 +125,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
         raise SystemExit(f"--joint must be in 1..{joint_count}")
     try:
         arm.connect()
-        arm.configure()
+        arm._configure()
         arm.enable()
         initial_state = arm.read_state()
         prepose = parse_optional_prepose(args.prepose, expected_count=joint_count)
@@ -160,7 +160,7 @@ def run_probe(args: argparse.Namespace) -> list[Sample]:
             target = sine_target(center=center, amplitude=amplitude, elapsed=elapsed, period=args.period)
             command = list(base)
             command[joint_index] = target
-            arm.stream_joint_positions(command)
+            arm._submit_joint_positions(command)
             state = arm.read_state()
             actual = float(state.arm.positions[joint_index])
             velocity = float(state.arm.velocities[joint_index]) if state.arm.velocities else 0.0

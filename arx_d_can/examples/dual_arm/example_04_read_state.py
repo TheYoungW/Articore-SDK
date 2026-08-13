@@ -79,7 +79,7 @@ def main(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
-        robot.close(disable=False)
+        robot.close()
         print("已断开连接")
 
 

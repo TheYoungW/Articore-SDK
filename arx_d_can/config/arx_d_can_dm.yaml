@@ -46,7 +46,7 @@ joints:
     model: "4340P"
     MIT:
       kp: 120.0
-      kd: 8.0
+      kd: 5.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -60,7 +60,7 @@ joints:
     model: "4340P"
     MIT:
       kp: 120.0
-      kd: 8.0
+      kd: 5.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -74,7 +74,7 @@ joints:
     model: "4340P"
     MIT:
       kp: 120.0
-      kd: 8.0
+      kd: 5.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""示例 11：平滑控制双臂和夹爪返回零位。"""
+"""示例 11：使用普通 MIT 位置接口控制双臂返回零位。"""
 from __future__ import annotations
 
 import argparse
+import math
 
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.dual_arm.common import positive_velocity_degrees
@@ -14,11 +15,12 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
     try:
         robot.enable()
-        robot.move_joint_positions(
+        robot.set_joint_mit(
             left=[0.0] * len(robot.left.joint_names),
             right=[0.0] * len(robot.right.joint_names),
             velocity=args.velocity,
         )
+        input("目标已提交，确认双臂回到零位后按回车...")
         if robot.left.has_gripper and robot.right.has_gripper:
             robot.set_gripper_openings(left=0, right=0)
         print("双臂已返回零位")
@@ -32,6 +34,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--velocity",
         type=positive_velocity_degrees,
-        help="回零速度，单位为度/秒；省略时使用 SDK 默认轨迹速度",
+        default=math.radians(60.0),
+        help="统一最大参考速度，单位为度/秒；默认 60",
     )
     main(parser.parse_args())

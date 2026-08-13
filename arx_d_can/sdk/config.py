@@ -9,9 +9,6 @@ from typing import Sequence
 import numpy as np
 
 from ..actuator import JointCfg, load_cfg
-from .native_safety import TrajectoryExecutionConfig
-
-
 # 1～10 档，字段依次为接触/过载力矩、运动 Kp/Kd、保持 Kp/Kd。
 _DEFAULT_GRIPPER_FORCE_PROFILES = (
     (0.5, 1.0, 3.0, 0.3, 1.0, 0.2),
@@ -33,6 +30,7 @@ _GRIPPER_PROFILE_FIELDS = (
     "hold_kp",
     "hold_kd",
 )
+_MIT_GAIN_MAX = {"Kp": 500.0, "Kd": 5.0}
 
 
 @dataclass(slots=True, frozen=True)
@@ -122,7 +120,6 @@ class ArxDCanConfig:
     control_hz: float = 500.0
     arm_control_mode: str = "posvel"
     arm_joints: tuple[JointMotorConfig, ...] = ()
-    product_velocity_at_400: tuple[float, ...] = ()
     gripper: JointMotorConfig | None = None
     gripper_open_value: float = 2.64
     gripper_closed_value: float = 0.0
@@ -144,7 +141,6 @@ class ArxDCanConfig:
     feedback_fault_threshold: int = 3
     max_cached_feedback_age_s: float = 0.02
     motor_communication_timeout_ms: int = 500
-    trajectory_execution: TrajectoryExecutionConfig | None = None
     name: str = "ARX-D-CAN"
     model: str = "custom"
     hardware_config_path: str | None = None
@@ -206,8 +202,13 @@ def _mit_gain_vector(
             raise ValueError(
                 f"expected {joint_count} MIT {name} values, got {len(values)}"
             )
-    if np.any(~np.isfinite(values)) or np.any(values < 0.0):
-        raise ValueError(f"MIT {name} values must be finite and non-negative")
+    maximum = _MIT_GAIN_MAX[name]
+    if (
+        np.any(~np.isfinite(values))
+        or np.any(values < 0.0)
+        or np.any(values > maximum)
+    ):
+        raise ValueError(f"MIT {name} values must be finite and in [0, {maximum:g}]")
     return values
 
 
@@ -227,13 +228,9 @@ def _config_from_loaded(
     arm_names = list(groups.get("arm", {}).get("joints", []))
     gripper_names = list(groups.get("gripper", {}).get("joints", []))
     gripper_mapping = data.get("gripper_mapping", {}) or {}
-    motion = data.get("motion", {}) or {}
     protection = data.get("gripper_protection", {}) or {}
     joint_safety = data.get("joint_safety", {}) or {}
     safety = data.get("safety", {}) or {}
-    trajectory = data.get("trajectory_execution")
-    if trajectory is not None and not isinstance(trajectory, dict):
-        raise ValueError("trajectory_execution must be a mapping")
     gripper_control_hz = float(
         protection.get("control_hz", data.get("rate", 500.0))
     )
@@ -269,38 +266,6 @@ def _config_from_loaded(
             )
         )
 
-    product_velocity_at_400 = tuple(
-        float(value) for value in motion.get("joint_velocity_at_max", ())
-    )
-    speed_level_max = float(motion.get("speed_level_max", 400.0))
-    if speed_level_max != 400.0:
-        raise ValueError("motion.speed_level_max must be 400")
-    if product_velocity_at_400:
-        if len(product_velocity_at_400) != len(arm_names):
-            raise ValueError(
-                "motion.joint_velocity_at_max must match the arm joint count"
-            )
-        if not all(
-            math.isfinite(value) and value > 0.0
-            for value in product_velocity_at_400
-        ):
-            raise ValueError(
-                "motion.joint_velocity_at_max values must be finite and positive"
-            )
-        configured_limits = tuple(
-            joints_by_name[name].pv_vlim for name in arm_names
-        )
-        if any(
-            velocity > limit
-            for velocity, limit in zip(
-                product_velocity_at_400,
-                configured_limits,
-            )
-        ):
-            raise ValueError(
-                "motion.joint_velocity_at_max must not exceed URDF/YAML limits"
-            )
-
     return ArxDCanConfig(
         name=str(data.get("name", "ARX-D-CAN")),
         model=str(data.get("model", "custom")),
@@ -319,7 +284,6 @@ def _config_from_loaded(
         ),
         arm_control_mode=arm_control_mode,
         arm_joints=tuple(joints_by_name[name] for name in arm_names),
-        product_velocity_at_400=product_velocity_at_400,
         gripper=joints_by_name.get(gripper_names[0]) if gripper_names else None,
         gripper_closed_value=float(gripper_mapping.get("closed_value", 0.0)),
         gripper_open_value=float(gripper_mapping.get("open_value", 2.64)),
@@ -367,30 +331,6 @@ def _config_from_loaded(
         ),
         motor_communication_timeout_ms=int(
             safety.get("motor_communication_timeout_ms", 500)
-        ),
-        trajectory_execution=(
-            None
-            if trajectory is None
-            else TrajectoryExecutionConfig(
-                position_tolerance=float(
-                    trajectory.get("position_tolerance", 0.02)
-                ),
-                velocity_tolerance=float(
-                    trajectory.get("velocity_tolerance", 0.05)
-                ),
-                following_error_limit=float(
-                    trajectory.get("following_error_limit", 0.5)
-                ),
-                settling_stable_ms=int(
-                    trajectory.get("settling_stable_ms", 100)
-                ),
-                settling_timeout_ms=int(
-                    trajectory.get("settling_timeout_ms", 3000)
-                ),
-                following_error_timeout_ms=int(
-                    trajectory.get("following_error_timeout_ms", 100)
-                ),
-            )
         ),
     )
 
@@ -460,10 +400,6 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
         "transport": config.transport,
         "baud": config.baud,
         "rate": config.control_hz,
-        "motion": {
-            "speed_level_max": 400.0,
-            "joint_velocity_at_max": list(config.product_velocity_at_400),
-        },
         "groups": groups,
         "joints": joints,
         "gripper_mapping": {
@@ -514,22 +450,11 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
             "gripper_fault_action": config.gripper_fault_action,
         },
     }
-    trajectory = config.trajectory_execution
-    if trajectory is not None:
-        result["trajectory_execution"] = {
-            "position_tolerance": trajectory.position_tolerance,
-            "velocity_tolerance": trajectory.velocity_tolerance,
-            "following_error_limit": trajectory.following_error_limit,
-            "settling_stable_ms": trajectory.settling_stable_ms,
-            "settling_timeout_ms": trajectory.settling_timeout_ms,
-            "following_error_timeout_ms": trajectory.following_error_timeout_ms,
-        }
     return result
 
 
 __all__ = [
     "ArxDCanConfig",
     "JointMotorConfig",
-    "TrajectoryExecutionConfig",
     "default_config",
 ]

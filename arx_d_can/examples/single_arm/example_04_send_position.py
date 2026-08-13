@@ -10,6 +10,7 @@ from arx_d_can import ArxDCanArm
 from arx_d_can.examples.single_arm.common import (
     add_connection_arguments,
     parse_joint_positions_degrees,
+    positive_velocity_degrees,
 )
 
 
@@ -34,8 +35,8 @@ def main(args: argparse.Namespace) -> None:
         arm.enable()
         print(f"已进入 {args.mode.upper()} 模式")
         print("目标角度：", [round(math.degrees(value), 2) for value in target])
-        arm.move_joint_positions(target)
-        print("已到达目标位置，按 Ctrl+C 失能并退出")
+        getattr(arm, f"set_joint_{args.mode}")(target, velocity=args.velocity)
+        print("目标已提交，Runtime 正以 500 Hz 推进；按 Ctrl+C 失能并退出")
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
@@ -53,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="逗号分隔的关节角度，单位为度",
     )
     parser.add_argument("--mode", choices=("pv", "mit"), default="pv")
+    parser.add_argument(
+        "--velocity",
+        type=positive_velocity_degrees,
+        default=math.radians(60.0),
+        help="统一最大参考速度，单位为度/秒；默认 60",
+    )
     add_connection_arguments(parser)
     return parser
 

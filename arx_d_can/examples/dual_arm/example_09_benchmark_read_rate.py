@@ -27,7 +27,7 @@ def main(args: argparse.Namespace) -> None:
         print(f"最大耗时：{result.max_read_s * 1000.0:.3f} ms")
         print(f"错过周期：{result.missed_deadlines}")
     finally:
-        robot.close(disable=False)
+        robot.close()
         print("已断开连接")
 
 

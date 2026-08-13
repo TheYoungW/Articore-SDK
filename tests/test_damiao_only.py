@@ -396,16 +396,35 @@ def test_joint_group_enable_immediately_holds_each_motor_at_seed_position(
         mit_position=[-0.35, -0.42],
         mit_velocity=[0.0, 0.0],
         mit_kp=[120.0, 18.0],
-        mit_kd=[8.0, 2.0],
+        mit_kd=[5.0, 2.0],
         mit_tau=[0.0, 0.0],
     )
 
     assert events == [
         ("enable", "joint1"),
-        ("send_mit", "joint1", -0.35, 0.0, 120.0, 8.0, 0.0),
+        ("send_mit", "joint1", -0.35, 0.0, 120.0, 5.0, 0.0),
         ("enable", "joint2"),
         ("send_mit", "joint2", 0.42, -0.0, 18.0, 2.0, -0.0),
     ]
+
+
+def test_joint_group_rejects_mit_kd_above_protocol_range() -> None:
+    joint = JointCfg(
+        name="joint1",
+        motor_id=1,
+        feedback_id=0x11,
+        model="4340P",
+    )
+    group = JointGroup(
+        "arm",
+        [joint.name],
+        [joint],
+        {joint.name: object()},
+        {},
+    )
+
+    with pytest.raises(ValueError, match=r"MIT Kd values must be in \[0, 5\]"):
+        group.send_mit([0.0], kd=[5.01])
 
 
 def test_joint_group_enable_rejects_faulted_motor_and_rolls_back(monkeypatch):

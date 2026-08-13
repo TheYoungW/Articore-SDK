@@ -38,7 +38,7 @@ def main(args: argparse.Namespace) -> None:
         print("右臂汇总：")
         print_diagnostic_summary(right, temperature_warning=args.temperature_warning)
     finally:
-        robot.close(disable=False)
+        robot.close()
         print("已断开连接")
 
 

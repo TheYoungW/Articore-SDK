@@ -1,27 +1,10 @@
 import math
-from types import SimpleNamespace
 
 import pytest
 
 from arx_d_can.examples.dual_arm import (
     example_07_send_position_mit as mit_example,
 )
-
-
-PRODUCT_VELOCITIES_AT_400 = (2.0, 2.0, 3.3, 3.3, 6.3, 6.3, 6.3)
-
-
-def _fake_arm():
-    return SimpleNamespace(
-        joint_names=tuple(f"joint{index}" for index in range(1, 8)),
-        config=SimpleNamespace(
-            product_velocity_at_400=PRODUCT_VELOCITIES_AT_400,
-            arm_joints=tuple(
-                SimpleNamespace(pv_vlim=20.0)
-                for _ in PRODUCT_VELOCITIES_AT_400
-            )
-        ),
-    )
 from arx_d_can.examples.dual_arm import (
     example_06_send_position_pv as pv_example,
 )
@@ -39,20 +22,24 @@ def test_dual_position_example_fixes_control_mode(
     captured = {"calls": []}
 
     class FakeRobot:
-        left = _fake_arm()
-        right = _fake_arm()
-
         def connect(self):
             captured["calls"].append("connect")
 
         def enable(self):
             captured["calls"].append("enable")
 
-        def move_joint_positions(self, *, left, right, **kwargs):
+        def _set(self, mode, *, left, right, **kwargs):
+            captured["method"] = mode
             captured["left"] = tuple(left)
             captured["right"] = tuple(right)
-            captured["move_kwargs"] = kwargs
+            captured["set_kwargs"] = kwargs
             raise KeyboardInterrupt
+
+        def set_joint_pv(self, **kwargs):
+            self._set("pv", **kwargs)
+
+        def set_joint_mit(self, **kwargs):
+            self._set("mit", **kwargs)
 
         def close(self):
             captured["calls"].append("close")
@@ -74,13 +61,14 @@ def test_dual_position_example_fixes_control_mode(
             "--right",
             "0,-10,-20,-30,-40,-50,-60",
             "--velocity",
-            "200",
+            "60",
         ]
     )
 
     example.main(args)
 
     assert captured["mode"] == expected_mode
+    assert captured["method"] == expected_mode
     assert captured["calls"] == ["connect", "enable", "close"]
     assert captured["left"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 10, 20, 30, 40, 50, 60))
@@ -88,24 +76,20 @@ def test_dual_position_example_fixes_control_mode(
     assert captured["right"] == pytest.approx(
         tuple(math.radians(value) for value in (0, -10, -20, -30, -40, -50, -60))
     )
-    expected = tuple(value * 0.5 for value in PRODUCT_VELOCITIES_AT_400)
-    assert captured["move_kwargs"] == {"velocity": pytest.approx(expected)}
+    assert captured["set_kwargs"] == {"velocity": pytest.approx(math.radians(60.0))}
 
 
-def test_pv_example_forwards_product_speed_to_native_trajectory(monkeypatch) -> None:
+def test_pv_example_forwards_shared_velocity_in_radians(monkeypatch) -> None:
     captured = {}
 
     class FakeRobot:
-        left = _fake_arm()
-        right = _fake_arm()
-
         def connect(self):
             pass
 
         def enable(self):
             pass
 
-        def move_joint_positions(self, **kwargs):
+        def set_joint_pv(self, **kwargs):
             captured.update(kwargs)
             raise KeyboardInterrupt
 
@@ -120,34 +104,16 @@ def test_pv_example_forwards_product_speed_to_native_trajectory(monkeypatch) -> 
             "--right",
             "0,-10,-20,-30,-40,-50,-60",
             "--velocity",
-            "100",
+            "90",
         ]
     )
 
     pv_example.main(args)
 
-    expected = tuple(value * 0.25 for value in PRODUCT_VELOCITIES_AT_400)
-    assert captured["velocity"] == pytest.approx(expected)
+    assert captured["velocity"] == pytest.approx(math.pi / 2.0)
 
 
-@pytest.mark.parametrize(
-    ("level", "expected"),
-    (
-        (100.0, (0.5, 0.5, 0.825, 0.825, 1.575, 1.575, 1.575)),
-        (200.0, (1.0, 1.0, 1.65, 1.65, 3.15, 3.15, 3.15)),
-        (400.0, PRODUCT_VELOCITIES_AT_400),
-    ),
-)
-def test_product_speed_levels_are_independent_of_urdf_limits(
-    level: float,
-    expected: tuple[float, ...],
-) -> None:
-    from arx_d_can.examples.dual_arm.common import scaled_joint_velocities
-
-    assert scaled_joint_velocities(_fake_arm(), level) == pytest.approx(expected)
-
-
-def test_pv_example_requires_a_zero_to_four_hundred_speed_level() -> None:
+def test_pv_example_requires_a_positive_velocity() -> None:
     parser = pv_example.build_parser()
 
     with pytest.raises(SystemExit):
@@ -157,25 +123,22 @@ def test_pv_example_requires_a_zero_to_four_hundred_speed_level() -> None:
             [
                 "--left", "0,0,0,0,0,0,0",
                 "--right", "0,0,0,0,0,0,0",
-                "--velocity", "401",
+                "--velocity", "0",
             ]
         )
 
 
-def test_mit_example_uses_the_same_product_trajectory_speed(monkeypatch) -> None:
+def test_mit_example_uses_the_same_shared_velocity(monkeypatch) -> None:
     captured = {}
 
     class FakeRobot:
-        left = _fake_arm()
-        right = _fake_arm()
-
         def connect(self):
             pass
 
         def enable(self):
             pass
 
-        def move_joint_positions(self, **kwargs):
+        def set_joint_mit(self, **kwargs):
             captured.update(kwargs)
             raise KeyboardInterrupt
 
@@ -195,16 +158,14 @@ def test_mit_example_uses_the_same_product_trajectory_speed(monkeypatch) -> None
             "--right",
             "0,-10,-20,-30,-40,-50,-60",
             "--velocity",
-            "100",
+            "45",
         ]
     )
 
     mit_example.main(args)
 
     assert set(captured) == {"left", "right", "velocity"}
-    assert captured["velocity"] == pytest.approx(
-        tuple(value * 0.25 for value in PRODUCT_VELOCITIES_AT_400)
-    )
+    assert captured["velocity"] == pytest.approx(math.pi / 4.0)
     assert "profile" not in captured
 
 
@@ -216,7 +177,7 @@ def test_dual_position_example_has_no_mode_option(example) -> None:
     assert "mode" not in destinations
 
 
-def test_mit_example_exposes_product_speed_but_not_raw_mit_parameters() -> None:
+def test_mit_example_exposes_shared_speed_but_not_raw_mit_parameters() -> None:
     parser = mit_example.build_parser()
     destinations = {action.dest for action in parser._actions}
 

@@ -25,8 +25,8 @@ def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:
                 right=SimpleNamespace(positions=(3.0, 4.0)),
             )
 
-        def stream_joint_positions(self, *, left, right) -> None:
-            events.append(("stream_joint_positions", left, right))
+        def set_joint_pv(self, *, left, right) -> None:
+            events.append(("set_joint_pv", left, right))
 
         def disable(self) -> None:
             events.append("disable")
@@ -48,7 +48,7 @@ def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:
         "connect",
         "enable",
         "read_cached_state",
-        ("stream_joint_positions", (1.0, 2.0), (3.0, 4.0)),
+        ("set_joint_pv", (1.0, 2.0), (3.0, 4.0)),
         "disable",
         "close",
     ]

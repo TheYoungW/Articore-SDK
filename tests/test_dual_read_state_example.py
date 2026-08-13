@@ -42,14 +42,14 @@ def test_once_mode_reads_one_feedback_sample(monkeypatch) -> None:
             calls.append("read")
             return _state()
 
-        def close(self, *, disable: bool) -> None:
-            calls.append(("close", disable))
+        def close(self) -> None:
+            calls.append("close")
 
     monkeypatch.setattr(example, "ArxDCanDualArm", Robot)
 
     example.main(example.build_parser().parse_args([]))
 
-    assert calls == ["connect", "read", ("close", False)]
+    assert calls == ["connect", "read", "close"]
 
 
 def test_continuous_mode_uses_100_hz_until_interrupted(monkeypatch) -> None:
@@ -69,8 +69,8 @@ def test_continuous_mode_uses_100_hz_until_interrupted(monkeypatch) -> None:
                 raise KeyboardInterrupt
             return _state()
 
-        def close(self, *, disable: bool) -> None:
-            assert disable is False
+        def close(self) -> None:
+            pass
 
     monkeypatch.setattr(example, "ArxDCanDualArm", Robot)
     monkeypatch.setattr(example.time, "perf_counter", lambda: now)

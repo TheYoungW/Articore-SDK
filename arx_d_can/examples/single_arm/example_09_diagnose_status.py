@@ -44,7 +44,7 @@ def main(args: argparse.Namespace) -> None:
             temperature_warning=args.temperature_warning,
         )
     finally:
-        arm.close(disable=False)
+        arm.close()
         print("已断开连接")
 
 
