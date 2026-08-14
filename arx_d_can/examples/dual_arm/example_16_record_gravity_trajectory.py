@@ -21,10 +21,10 @@ def positive_seconds(text: str) -> float:
     return value
 
 
-def recording_hz(text: str) -> float:
-    value = positive_seconds(text)
-    if value > 500.0:
-        raise argparse.ArgumentTypeError("录制频率不能超过 500 Hz")
+def positive_hz(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value) or value <= 0.0:
+        raise argparse.ArgumentTypeError("调用频率必须是有限正数")
     return value
 
 
@@ -38,14 +38,15 @@ def main(args: argparse.Namespace) -> None:
 
     try:
         with gravity:
+            internal_hz = gravity._update_hz
             print(
-                f"正在录制双臂 {args.seconds:g} 秒，采样频率 {args.hz:g} Hz；"
+                f"正在录制双臂 {args.seconds:g} 秒，调用频率 {args.hz:g} Hz；"
                 "按 Ctrl+C 可安全停止"
             )
             timestamps, samples = record(
                 robot,
                 seconds=args.seconds,
-                hz=args.hz,
+                hz=internal_hz,
                 gravity_mode=gravity,
             )
     except KeyboardInterrupt:
@@ -55,7 +56,7 @@ def main(args: argparse.Namespace) -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_trajectory(
         args.output,
-        hz=args.hz,
+        hz=internal_hz,
         timestamps=timestamps,
         samples=samples,
         left_joint_names=robot.left.joint_names,
@@ -80,9 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--hz",
-        type=recording_hz,
+        type=positive_hz,
         default=100.0,
-        help="录制和重力补偿更新频率，范围 (0, 500] Hz；默认 100",
+        help="录制和重力补偿的调用频率，必须大于 0；默认 100",
     )
     return parser
 

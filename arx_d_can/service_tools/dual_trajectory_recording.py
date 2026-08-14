@@ -14,8 +14,6 @@ if TYPE_CHECKING:
 
 
 FORMAT_VERSION = 1
-MAX_HZ = 500.0
-REPLAY_HZ = 500.0
 InterpolationMode = Literal["none", "linear", "quintic"]
 
 
@@ -31,8 +29,8 @@ class DualArmTrajectorySample:
 
 def _frequency(value: float) -> float:
     hz = float(value)
-    if not math.isfinite(hz) or not 0.0 < hz <= MAX_HZ:
-        raise ValueError("hz must be finite, positive, and at most 500")
+    if not math.isfinite(hz) or hz <= 0.0:
+        raise ValueError("hz must be finite and positive")
     return hz
 
 
@@ -203,7 +201,7 @@ def replay(
     interpolation: InterpolationMode = "quintic",
     velocity_limit: float | None = 1.0,
 ) -> None:
-    """将录制轨迹重采样为 500 Hz，并通过 raw PV 原子提交双臂。"""
+    """按 Runtime 实际频率重采样，并通过 raw PV/MIT 原子提交双臂。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
     if interpolation not in {"none", "linear", "quintic"}:
@@ -214,6 +212,9 @@ def replay(
         raise RuntimeError("trajectory requires an active left gripper")
     if any(sample.right_gripper is not None for sample in samples) and not robot.right.has_gripper:
         raise RuntimeError("trajectory requires an active right gripper")
+    replay_hz = float(robot._effective_control_hz)
+    if not math.isfinite(replay_hz) or replay_hz <= 0.0:
+        raise RuntimeError("Runtime returned an invalid control frequency")
 
     started = time.perf_counter()
     first_timestamp = timestamps[0]
@@ -222,7 +223,7 @@ def replay(
     tick = 0
     segment = 0
     while True:
-        elapsed = min(tick / REPLAY_HZ, duration)
+        elapsed = min(tick / replay_hz, duration)
         while (
             segment + 1 < len(samples)
             and relative_timestamps[segment + 1] <= elapsed
@@ -254,7 +255,7 @@ def replay(
         if elapsed >= duration:
             return
         captured_at = time.perf_counter()
-        tick = max(tick + 1, math.floor((captured_at - started) * REPLAY_HZ) + 1)
+        tick = max(tick + 1, math.floor((captured_at - started) * replay_hz) + 1)
 
 
 def _submit_raw_positions(
@@ -331,7 +332,6 @@ def interpolate_sample(
 __all__ = [
     "DualArmTrajectorySample",
     "InterpolationMode",
-    "REPLAY_HZ",
     "interpolate_sample",
     "load_trajectory",
     "record",

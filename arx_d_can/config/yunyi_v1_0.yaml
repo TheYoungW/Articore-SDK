@@ -5,7 +5,7 @@ transport: dm-device
 baud: 1000000
 rate: 500
 
-# ABI 2.0：URDF 限位作为机械硬限位；普通位置 reference 在两端各预留 1°。
+# ABI 2.1：URDF 限位作为机械硬限位；普通位置 reference 在两端各预留 1°。
 joint_safety:
   soft_limit_margin: 0.01745329252
   soft_limit_braking_zone: 0.08726646260
@@ -34,7 +34,7 @@ gripper_mapping:
 
 # 夹爪始终使用 MIT 模式，默认 Kp=4.0；保护逻辑由 motor 原生运行时执行。
 gripper_protection:
-  # ABI 兼容字段；Runtime 2.0 正常运行时实际跟随整机 500 Hz。
+  # ABI 兼容字段；Runtime 2.1 下夹爪跟随整机实际控制频率。
   control_hz: 500.0
   # 张开/闭合双向斜坡的产品最大标定速度；公开 speed=1000 对应 5.0 rad/s。
   close_speed: 5.0

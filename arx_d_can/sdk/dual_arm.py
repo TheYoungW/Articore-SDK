@@ -81,6 +81,14 @@ class ArxDCanDualArm:
         return self.left.connected and self.right.connected
 
     @property
+    def _effective_control_hz(self) -> float:
+        """返回 SDK 内部双臂调度频率，不属于公开控制接口。"""
+        runtime = self._safety_runtime
+        if runtime is not None:
+            return runtime._get_control_hz()
+        return min(self.left.config.control_hz, self.right.config.control_hz)
+
+    @property
     def enabled(self) -> bool:
         """返回左右臂是否都已使能。"""
         if self._safety_runtime is not None:
@@ -168,7 +176,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.2 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.3 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -204,7 +212,7 @@ class ArxDCanDualArm:
                 left.safe_hold_pv_velocity_limit,
                 right.safe_hold_pv_velocity_limit,
             ),
-            # ABI 字段为兼容保留；1.8 正常运行时夹爪跟随机械臂控制频率。
+            # ABI 字段为兼容保留；2.1 正常运行时夹爪跟随机械臂实际控制频率。
             gripper_control_hz=min(left.control_hz, right.control_hz),
             gripper_fault_action=(
                 "disable"
@@ -252,7 +260,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.2 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.9.3 dual-arm safety runtime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -360,7 +368,7 @@ class ArxDCanDualArm:
     def close(self) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
-        ABI 2.0 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
+        ABI 2.1 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
         此方法保留全部底层句柄，以便调用方检查 ``last_disable_report`` 并重试。
         """
         errors: list[Exception] = []

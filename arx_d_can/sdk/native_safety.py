@@ -13,7 +13,7 @@ from motor_drive_layer.abi import get_abi
 
 _UINT64_MAX = (1 << 64) - 1
 _ARTICORE_ABI_MAJOR = 2
-_ARTICORE_ABI_MINOR = 0
+_ARTICORE_ABI_MINOR = 1
 ARTICORE_CAP_COMMAND_LIFETIME = 1 << 11
 ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1 << 13
 ARTICORE_CAP_DETERMINISTIC_DISABLE = 1 << 14
@@ -22,6 +22,7 @@ ARTICORE_CAP_GRIPPER_COMMAND_PROFILES = 1 << 19
 ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS = 1 << 20
 ARTICORE_CAP_JOINT_MIT_POSITION = 1 << 21
 ARTICORE_CAP_JOINT_PV_POSITION = 1 << 22
+ARTICORE_CAP_EFFECTIVE_CONTROL_RATE = 1 << 23
 _REQUIRED_CAPABILITIES = (
     (1 << 0)  # 命令看门狗
     | (1 << 1)  # 安全保持
@@ -39,6 +40,7 @@ _REQUIRED_CAPABILITIES = (
     | ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS
     | ARTICORE_CAP_JOINT_MIT_POSITION
     | ARTICORE_CAP_JOINT_PV_POSITION
+    | ARTICORE_CAP_EFFECTIVE_CONTROL_RATE
 )
 
 
@@ -62,7 +64,7 @@ class GripperControlState(str, Enum):
 
 
 class GripperForceLevel(IntEnum):
-    """Runtime ABI 2.0 的十档夹持力；1 最轻，5 默认，10 最强。"""
+    """Runtime ABI 2.1 的十档夹持力；1 最轻，5 默认，10 最强。"""
 
     LEVEL_1 = 1
     LEVEL_2 = 2
@@ -624,7 +626,7 @@ class NativeSafetyRuntime:
     ) -> None:
         self._lib = ctypes.CDLL(articore_runtime_library_path())
         # 先读取旧 ABI 也具备的版本与能力符号。误装旧版运行库时应给出明确的版本
-        # 错误，而不是因 ABI 2.0 符号不存在而抛出晦涩的 AttributeError。
+        # 错误，而不是因 ABI 2.1 符号不存在而抛出晦涩的 AttributeError。
         self._lib.articore_runtime_abi_version.restype = ctypes.c_uint32
         self._lib.articore_runtime_capabilities.restype = ctypes.c_uint64
         version = int(self._lib.articore_runtime_abi_version())
@@ -648,11 +650,11 @@ class NativeSafetyRuntime:
         motor_lib = self._motor_abi.lib
         if not getattr(self._motor_abi, "has_transport_health", False):
             raise RuntimeError(
-                "motor-drive-layer 0.9.2 must expose structured transport health"
+                "motor-drive-layer 0.9.3 must expose structured transport health"
             )
         if not getattr(self._motor_abi, "has_structured_feedback_report", False):
             raise RuntimeError(
-                "motor-drive-layer 0.9.2 must expose structured feedback reports"
+                "motor-drive-layer 0.9.3 must expose structured feedback reports"
             )
         transport_health_pointer = _function_pointer(
             motor_lib.motor_controller_get_transport_health
@@ -764,6 +766,10 @@ class NativeSafetyRuntime:
         lib = self._lib
         lib.articore_runtime_abi_version.restype = ctypes.c_uint32
         lib.articore_runtime_capabilities.restype = ctypes.c_uint64
+        lib.articore_runtime_get_control_hz.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
         lib.articore_runtime_create_ex.argtypes = [
             ctypes.POINTER(_RuntimeConfig), ctypes.POINTER(_MotorApi), ctypes.c_void_p,
             ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_MotorDescriptor), ctypes.c_uint32,
@@ -838,6 +844,7 @@ class NativeSafetyRuntime:
         lib.articore_runtime_last_error.restype = ctypes.c_char_p
         for name in (
             "articore_runtime_connect", "articore_runtime_enable",
+            "articore_runtime_get_control_hz",
             "articore_runtime_get_last_enable_report",
             "articore_runtime_get_last_disable_report",
             "articore_runtime_configure_joints",
@@ -864,6 +871,20 @@ class NativeSafetyRuntime:
 
     def connect(self) -> None:
         self._ok(self._lib.articore_runtime_connect(self._ptr), "runtime connect")
+
+    def _get_control_hz(self) -> float:
+        """供 SDK 内部调度使用；不作为普通用户控制参数公开。"""
+        value = ctypes.c_uint32()
+        self._ok(
+            self._lib.articore_runtime_get_control_hz(
+                self._ptr,
+                ctypes.byref(value),
+            ),
+            "runtime effective control rate query",
+        )
+        if value.value == 0:
+            raise RuntimeError("runtime returned an invalid zero control rate")
+        return float(value.value)
 
     def _configure_joints(
         self,
@@ -1070,7 +1091,7 @@ class NativeSafetyRuntime:
         *,
         mit: bool,
     ) -> None:
-        """提交完整普通关节位置批次；500 Hz 限步由 Runtime 执行。"""
+        """提交完整普通关节位置批次；实际控制频率下的限步由 Runtime 执行。"""
         values = tuple(targets)
         if not values:
             raise ValueError("ordinary joint position targets must not be empty")
@@ -1286,7 +1307,7 @@ class NativeSafetyRuntime:
     def close(self) -> None:
         if self._ptr:
             if self._lib.articore_runtime_close(self._ptr) != 0:
-                # ABI 2.0 要求关闭失败时保留 Runtime。它仍拥有
+                # ABI 2.1 要求关闭失败时保留 Runtime。它仍拥有
                 # ControllerGroup、Controller 和 Transport 的生命周期前置条件。
                 raise NativeDisableError(
                     self.last_disable_report,

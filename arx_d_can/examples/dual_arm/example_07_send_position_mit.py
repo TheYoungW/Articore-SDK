@@ -21,7 +21,7 @@ def main(args: argparse.Namespace) -> None:
             right=joint_degrees(args.right),
             velocity=args.velocity,
         )
-        print("目标已提交，Runtime 正以 500 Hz 推进；按 Ctrl+C 失能并退出")
+        print("目标已提交，Runtime 正在平滑推进；按 Ctrl+C 失能并退出")
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:

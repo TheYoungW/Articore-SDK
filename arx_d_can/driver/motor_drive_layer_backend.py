@@ -29,6 +29,8 @@ SUPPORTED_TRANSPORTS = (
 )
 
 _DM_DEVICE_TYPE = "usb2canfd-dual"
+# 正式 DM Device 路径使用 CAN-FD+BRS：1 Mbps 仲裁段、5 Mbps 数据段。
+# 5 Mbps 采样点由 motor-drive-layer 固定为 87.5%；电机需预先设置 CAN_BR=9。
 _DM_DEVICE_DATA_BITRATE = 5_000_000
 
 _DAMIAO_MODEL_LIMITS: dict[str, tuple[float, float, float]] = {

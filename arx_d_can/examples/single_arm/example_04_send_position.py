@@ -36,7 +36,7 @@ def main(args: argparse.Namespace) -> None:
         print(f"已进入 {args.mode.upper()} 模式")
         print("目标角度：", [round(math.degrees(value), 2) for value in target])
         getattr(arm, f"set_joint_{args.mode}")(target, velocity=args.velocity)
-        print("目标已提交，Runtime 正以 500 Hz 推进；按 Ctrl+C 失能并退出")
+        print("目标已提交，Runtime 正在平滑推进；按 Ctrl+C 失能并退出")
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:

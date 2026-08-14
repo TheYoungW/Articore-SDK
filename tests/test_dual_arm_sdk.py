@@ -56,6 +56,20 @@ def test_default_dual_arm_uses_two_yunyi_profiles() -> None:
     assert robot.right._mode == "mit"
 
 
+def test_dual_arm_keeps_runtime_effective_control_rate_internal() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    assert not hasattr(robot, "control_hz")
+    assert robot._effective_control_hz == pytest.approx(500.0)
+
+    class Runtime:
+        @staticmethod
+        def _get_control_hz() -> float:
+            return 400.0
+
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    assert robot._effective_control_hz == pytest.approx(400.0)
+
+
 def test_dual_arm_only_exposes_tested_modes() -> None:
     assert ArxDCanDualArm(
         control_mode="pv", left_gripper=False, right_gripper=False

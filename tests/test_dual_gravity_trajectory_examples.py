@@ -20,11 +20,11 @@ from arx_d_can.service_tools.dual_trajectory_recording import (
 
 def test_record_parser_only_exposes_dual_product_inputs() -> None:
     args = record_example.build_parser().parse_args(
-        ["--output", "dual.json", "--seconds", "12", "--hz", "200"]
+        ["--output", "dual.json", "--seconds", "12", "--hz", "1000"]
     )
 
     assert args.seconds == 12.0
-    assert args.hz == 200.0
+    assert args.hz == 1000.0
     assert not hasattr(args, "arm_model")
 
 
@@ -68,7 +68,7 @@ def test_replay_clips_both_sides_to_runtime_soft_limits() -> None:
     assert safe[0].right_positions[5] == pytest.approx(right_expected)
 
 
-def test_move_to_start_uses_only_500_hz_raw_pv(monkeypatch) -> None:
+def test_move_to_start_uses_runtime_effective_rate_for_raw_pv(monkeypatch) -> None:
     now = 0.0
 
     def sleep(seconds: float) -> None:
@@ -113,10 +113,11 @@ def test_move_to_start_uses_only_500_hz_raw_pv(monkeypatch) -> None:
         timeout=1.0,
         position_tolerance=0.01,
         velocity_tolerance=0.01,
+        control_hz=400.0,
     )
 
     assert now >= 0.5
-    assert len(robot.raw_commands) >= 250
+    assert len(robot.raw_commands) >= 200
     assert all(
         command["left_velocity_limits"] == (1.0,)
         and command["right_velocity_limits"] == (1.0,)

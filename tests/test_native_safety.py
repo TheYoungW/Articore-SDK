@@ -9,6 +9,7 @@ from motor_drive_layer import articore_runtime_library_path
 from arx_d_can.sdk.native_safety import (
     ARTICORE_CAP_COMMAND_LIFETIME,
     ARTICORE_CAP_DETERMINISTIC_DISABLE,
+    ARTICORE_CAP_EFFECTIVE_CONTROL_RATE,
     ARTICORE_CAP_GRIPPER_COMMAND_PROFILES,
     ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS,
     ARTICORE_CAP_JOINT_MIT_POSITION,
@@ -38,13 +39,13 @@ from arx_d_can.sdk.native_safety import (
 )
 
 
-def test_packaged_runtime_exposes_required_abi_2_0_capabilities() -> None:
+def test_packaged_runtime_exposes_required_abi_2_1_capabilities() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
     library.articore_runtime_abi_version.restype = ctypes.c_uint32
     library.articore_runtime_capabilities.restype = ctypes.c_uint64
 
     version = int(library.articore_runtime_abi_version())
-    assert (version >> 16, version & 0xFFFF) == (2, 0)
+    assert (version >> 16, version & 0xFFFF) == (2, 1)
     required = (
         ARTICORE_CAP_COMMAND_LIFETIME
         | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
@@ -54,11 +55,12 @@ def test_packaged_runtime_exposes_required_abi_2_0_capabilities() -> None:
         | ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS
         | ARTICORE_CAP_JOINT_MIT_POSITION
         | ARTICORE_CAP_JOINT_PV_POSITION
+        | ARTICORE_CAP_EFFECTIVE_CONTROL_RATE
     )
     assert int(library.articore_runtime_capabilities()) & required == required
 
 
-def test_packaged_runtime_abi_2_0_has_no_native_trajectory_api() -> None:
+def test_packaged_runtime_abi_2_1_has_no_native_trajectory_api() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
 
     for name in (
@@ -108,7 +110,25 @@ def test_native_raw_submit_is_always_streaming() -> None:
     assert calls == [("pv", 1), ("mit", 1)]
 
 
-def test_native_ordinary_joint_positions_use_abi_2_0_entry_points() -> None:
+def test_native_runtime_queries_effective_control_rate() -> None:
+    class Library:
+        @staticmethod
+        def articore_runtime_get_control_hz(_runtime, output) -> int:
+            output._obj.value = 400
+            return 0
+
+        @staticmethod
+        def articore_runtime_last_error():
+            return b"ok"
+
+    runtime = NativeSafetyRuntime.__new__(NativeSafetyRuntime)
+    runtime._lib = Library()
+    runtime._ptr = 1
+
+    assert runtime._get_control_hz() == pytest.approx(400.0)
+
+
+def test_native_ordinary_joint_positions_use_abi_2_1_entry_points() -> None:
     captured: list[tuple[str, list[tuple[int, float]], float]] = []
 
     class Library:
@@ -174,7 +194,7 @@ def test_native_ordinary_joint_positions_use_abi_2_0_entry_points() -> None:
     ]
 
 
-def test_abi_2_0_joint_and_gripper_configuration_structures() -> None:
+def test_abi_2_1_joint_and_gripper_configuration_structures() -> None:
     captured: dict[str, list[ctypes.Structure]] = {"limits": [], "profiles": []}
 
     class Library:
@@ -237,7 +257,7 @@ def test_abi_2_0_joint_and_gripper_configuration_structures() -> None:
     )
 
 
-def test_abi_2_0_gripper_command_is_atomic_profiled_submission() -> None:
+def test_abi_2_1_gripper_command_is_atomic_profiled_submission() -> None:
     captured: list[_GripperCommand] = []
 
     class Library:
@@ -544,6 +564,7 @@ def test_packaged_runtime_creates_a_single_channel_without_python_extension() ->
     )
     try:
         runtime.connect()
+        assert runtime._get_control_hz() == pytest.approx(500.0)
         health = runtime.health
         assert health.state is SafetyState.READY
         assert health.left_transport.connected

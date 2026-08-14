@@ -157,6 +157,16 @@ class ArxDCanArm(_SafetyMixin):
         return self._connected
 
     @property
+    def _effective_control_hz(self) -> float:
+        """返回 SDK 内部调度频率，不属于公开控制接口。"""
+        runtime = self._single_safety_runtime
+        return (
+            self.config.control_hz
+            if runtime is None
+            else runtime._get_control_hz()
+        )
+
+    @property
     def enabled(self) -> bool:
         """返回 SDK 是否认为当前活动电机已使能。"""
         runtime = self._single_safety_runtime
@@ -490,7 +500,7 @@ class ArxDCanArm(_SafetyMixin):
                 feedback_max_age_s=self.config.max_cached_feedback_age_s,
                 safe_hold_failure_threshold=self.config.safe_hold_failure_threshold,
                 safe_pv_velocity_limit=self.config.safe_hold_pv_velocity_limit,
-                # ABI 兼容字段；2.0 正常运行时夹爪跟随机械臂控制频率。
+                # ABI 兼容字段；2.1 正常运行时夹爪跟随机械臂实际控制频率。
                 gripper_control_hz=self.config.control_hz,
                 gripper_fault_action=self.config.gripper_fault_action,
             )
@@ -536,7 +546,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.2 native safety runtime is unavailable"
+                    "motor-drive-layer 0.9.3 native safety runtime is unavailable"
                 )
         except Exception:
             try:
@@ -571,7 +581,7 @@ class ArxDCanArm(_SafetyMixin):
     def close(self) -> None:
         """停止生成控制命令并关闭总线。
 
-        原生 Runtime 的关闭包含 ABI 2.0 确定性失能事务；失败时保留 Runtime、
+        原生 Runtime 的关闭包含 ABI 2.1 确定性失能事务；失败时保留 Runtime、
         ControllerGroup 和 Transport，供调用方读取结构化报告并重试。
         """
         errors: list[Exception] = []
@@ -586,7 +596,7 @@ class ArxDCanArm(_SafetyMixin):
                     self._faulted = True
                     self._fault_reason = f"close failed: {exc}"
                     self._safe_holding = False
-                # ABI 2.0：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
+                # ABI 2.1：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
                 raise
             self._single_safety_runtime = None
             with self._state_lock:
@@ -621,7 +631,7 @@ class ArxDCanArm(_SafetyMixin):
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接；首次使能时，Python 只配置构造时选择的控制模式和电机
-        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 2.0 Runtime
+        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 2.1 Runtime
         完成。操作失败时抛出的
         :class:`NativeEnableError` 携带结构化使能报告。
         """

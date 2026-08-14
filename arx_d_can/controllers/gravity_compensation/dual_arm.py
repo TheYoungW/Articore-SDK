@@ -41,7 +41,7 @@ class DualArmGravityCompensationMode:
         left_gravity_provider: GravityProvider | None = None,
         right_gravity_provider: GravityProvider | None = None,
     ) -> None:
-        update_hz = (
+        initial_hz = (
             min(
                 robot.left.config.control_hz,
                 robot.right.config.control_hz,
@@ -49,20 +49,14 @@ class DualArmGravityCompensationMode:
             if hz is None
             else float(hz)
         )
-        if not math.isfinite(update_hz) or update_hz <= 0.0:
-            raise ValueError("hz 必须是有限正数")
-        command_timeout = min(
-            robot.left.config.command_timeout_s,
-            robot.right.config.command_timeout_s,
-        )
-        if 1.0 / update_hz >= command_timeout * 0.5:
-            raise ValueError("hz 过低，无法在 Runtime 命令超时前稳定更新重力矩")
+        self._requested_hz = None if hz is None else float(hz)
         if not math.isfinite(transition_seconds) or transition_seconds < 0.0:
             raise ValueError("transition_seconds 必须是有限非负数")
         self.robot = robot
-        self.hz = float(update_hz)
+        self._update_hz = 0.0
+        self._period = 0.0
+        self._set_update_hz(initial_hz)
         self.transition_seconds = float(transition_seconds)
-        self._period = 1.0 / self.hz
         common = {
             "gravity_scale": gravity_scale,
             "damping": damping,
@@ -83,6 +77,19 @@ class DualArmGravityCompensationMode:
         self._owns_connection = False
         self._active_started = 0.0
         self._last_sample: DualArmGravityCompensationSample | None = None
+
+    def _set_update_hz(self, value: float) -> None:
+        update_hz = float(value)
+        if not math.isfinite(update_hz) or update_hz <= 0.0:
+            raise ValueError("hz 必须是有限正数")
+        command_timeout = min(
+            self.robot.left.config.command_timeout_s,
+            self.robot.right.config.command_timeout_s,
+        )
+        if 1.0 / update_hz >= command_timeout * 0.5:
+            raise ValueError("hz 过低，无法在 Runtime 命令超时前稳定更新重力矩")
+        self._update_hz = update_hz
+        self._period = 1.0 / update_hz
 
     @property
     def active(self) -> bool:
@@ -185,7 +192,7 @@ class DualArmGravityCompensationMode:
         *,
         entering: bool,
     ) -> None:
-        steps = max(1, math.ceil(self.transition_seconds * self.hz))
+        steps = max(1, math.ceil(self.transition_seconds * self._update_hz))
         if self.transition_seconds == 0.0:
             steps = 1
         next_tick = time.monotonic()
@@ -222,6 +229,8 @@ class DualArmGravityCompensationMode:
         try:
             if self._owns_connection:
                 self.robot.connect()
+            if self._requested_hz is None:
+                self._set_update_hz(self.robot._effective_control_hz)
             if self.robot.enabled:
                 raise RuntimeError("进入重力补偿前双臂必须处于失能状态")
             left_state, right_state = self._checked_state(fresh=True)

@@ -1,4 +1,4 @@
-"""Yunyi 双臂 raw MIT 500 Hz发送与自然反馈频率真机测试。"""
+"""Yunyi 双臂 raw MIT 按 Runtime 实际频率发送与反馈频率真机测试。"""
 from __future__ import annotations
 
 import math
@@ -12,7 +12,7 @@ from arx_d_can import ArxDCanDualArm
 from arx_d_can.driver import damiao_model_limits
 
 
-CONTROL_HZ = 500.0
+EXPECTED_DUAL_CONTROL_HZ = 400.0
 TARGET_SPEED = math.radians(30.0)
 SETTLE_SECONDS = 1.0
 
@@ -70,6 +70,7 @@ def _run_raw_mit_motion(
     right_start: tuple[float, ...],
     left_target: tuple[float, ...],
     right_target: tuple[float, ...],
+    control_hz: float,
 ) -> tuple[int, int, float]:
     largest_move = max(
         *(abs(end - start) for start, end in zip(left_start, left_target)),
@@ -78,7 +79,7 @@ def _run_raw_mit_motion(
     # 五次smoothstep的最大归一化速度为1.875。
     move_seconds = 1.875 * largest_move / TARGET_SPEED
     total_seconds = move_seconds + SETTLE_SECONDS
-    period = 1.0 / CONTROL_HZ
+    period = 1.0 / control_hz
     started = time.perf_counter()
     tick = 0
     skipped = 0
@@ -103,21 +104,23 @@ def _run_raw_mit_motion(
             return submitted, skipped, elapsed
 
         next_tick = tick + 1
-        expected_tick = math.floor((time.perf_counter() - started) * CONTROL_HZ) + 1
+        expected_tick = math.floor((time.perf_counter() - started) * control_hz) + 1
         if expected_tick > next_tick:
             skipped += expected_tick - next_tick
             next_tick = expected_tick
         tick = next_tick
 
 
-def test_dual_raw_mit_natural_feedback_is_500_hz() -> None:
+def test_dual_raw_mit_uses_runtime_effective_control_rate() -> None:
     if os.environ.get("ARX_D_CAN_RUN_HARDWARE_TEST") != "1":
         pytest.skip("set ARX_D_CAN_RUN_HARDWARE_TEST=1 to move real hardware")
 
     robot = ArxDCanDualArm(control_mode="mit")
     robot.connect()
-    print("\n机器人连接成功：即将以raw MIT控制双臂")
+    control_hz = robot._effective_control_hz
+    print("\n机器人连接成功：即将以 raw MIT 控制双臂")
     try:
+        assert control_hz == pytest.approx(EXPECTED_DUAL_CONTROL_HZ)
         robot.enable()
         initial = robot.read_cached_state()
         left_start = _soft_clamp(robot.left, initial.left.arm.positions)
@@ -132,6 +135,7 @@ def test_dual_raw_mit_natural_feedback_is_500_hz() -> None:
             right_start=right_start,
             left_target=left_target,
             right_target=right_target,
+            control_hz=control_hz,
         )
         after = _feedback_stats(robot)
         final = robot.read_cached_state()
@@ -164,9 +168,9 @@ def test_dual_raw_mit_natural_feedback_is_500_hz() -> None:
         print("左臂最终误差(°)：", [round(value, 3) for value in left_error])
         print("右臂最终误差(°)：", [round(value, 3) for value in right_error])
 
-        assert submitted / elapsed >= CONTROL_HZ * 0.95
-        assert min(rates.values()) >= CONTROL_HZ * 0.90
-        assert max(rates.values()) <= CONTROL_HZ * 1.10
+        assert submitted / elapsed >= control_hz * 0.95
+        assert min(rates.values()) >= control_hz * 0.90
+        assert max(rates.values()) <= control_hz * 1.10
     finally:
         robot.close()
         print("双臂已失能并断开连接")

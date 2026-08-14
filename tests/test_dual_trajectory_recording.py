@@ -71,6 +71,7 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
     commands: list[tuple] = []
 
     class Robot:
+        _effective_control_hz = 400.0
         left = type(
             "Side",
             (),
@@ -132,6 +133,7 @@ def test_dual_replay_refreshes_raw_target_across_long_sample_gap(
         now += seconds
 
     class Robot:
+        _effective_control_hz = 400.0
         left = type(
             "Side",
             (),
@@ -163,9 +165,9 @@ def test_dual_replay_refreshes_raw_target_across_long_sample_gap(
         ],
     )
 
-    assert len(positions) == 176
+    assert len(positions) == 141
     assert [command[0] for command in positions[:3]] == pytest.approx(
-        [0.0, 0.002, 0.004]
+        [0.0, 0.0025, 0.005]
     )
     assert positions[-1][0] == pytest.approx(0.35)
     assert positions[-1][1:] == ((0.3,), (0.4,))
@@ -197,6 +199,7 @@ def test_dual_mit_replay_uses_yaml_gains_and_zero_dynamic_targets(
     commands = []
 
     class Robot:
+        _effective_control_hz = 400.0
         left = type("Side", (), {"has_gripper": False, "_mode": "mit"})()
         right = type("Side", (), {"has_gripper": False, "_mode": "mit"})()
 

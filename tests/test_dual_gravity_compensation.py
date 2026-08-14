@@ -54,6 +54,10 @@ class _Robot:
         self.left_position = 0.1
         self.right_position = -0.2
 
+    @property
+    def _effective_control_hz(self) -> float:
+        return 400.0 if self.connected else 500.0
+
     @staticmethod
     def _side(position: float):
         return SimpleNamespace(
@@ -104,9 +108,14 @@ class _Robot:
         self.calls.append(("close", None))
 
 
-def _mode(robot: _Robot) -> DualArmGravityCompensationMode:
+def _mode(
+    robot: _Robot,
+    *,
+    hz: float | None = None,
+) -> DualArmGravityCompensationMode:
     return DualArmGravityCompensationMode(
         robot,
+        hz=hz,
         transition_seconds=0.0,
         left_gravity_provider=lambda _positions: np.array([1.0]),
         right_gravity_provider=lambda _positions: np.array([-2.0]),
@@ -119,7 +128,7 @@ def test_dual_gravity_uses_one_atomic_runtime_submission() -> None:
 
     sample = gravity.start()
 
-    assert gravity.hz == pytest.approx(500.0)
+    assert gravity._update_hz == pytest.approx(400.0)
     enable_kwargs = next(value for name, value in robot.calls if name == "enable")
     assert enable_kwargs == {}
     assert len(robot.commands) == 1
@@ -136,6 +145,17 @@ def test_dual_gravity_uses_one_atomic_runtime_submission() -> None:
     assert not robot.connected
     assert not robot.enabled
     assert robot.calls[-1] == ("close", None)
+
+
+def test_dual_gravity_does_not_cap_user_call_frequency() -> None:
+    robot = _Robot()
+    gravity = _mode(robot, hz=1000.0)
+
+    gravity.start()
+    try:
+        assert gravity._update_hz == pytest.approx(1000.0)
+    finally:
+        gravity.stop()
 
 
 def test_dual_gravity_clips_each_feedback_hold_target() -> None:
