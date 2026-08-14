@@ -112,15 +112,15 @@ robot = ArxDCanDualArm(
 
 ## 重力补偿
 
-重力补偿只要求用户创建 MIT 模式机械臂，增益过渡、反馈缓存和安全退出由控制器处理：
+Yunyi 重力补偿始终同时管理左右臂，并通过双臂 Runtime 原子使能和提交 14 轴命令：
 
 ```python
-from arx_d_can import ArxDCanArm, GravityCompensationMode
+from arx_d_can import ArxDCanDualArm, DualArmGravityCompensationMode
 
-arm = ArxDCanArm(model="yunyi_v1_0_right", control_mode="mit")
+robot = ArxDCanDualArm(control_mode="mit")
 
-with GravityCompensationMode(arm) as gravity:
-    gravity.run()  # 按 Ctrl+C 后恢复当前位置保持并失能
+with DualArmGravityCompensationMode(robot) as gravity:
+    gravity.run()  # 按 Ctrl+C 后原子停止并失能双臂
 ```
 
 Python 默认跟随机型的 500 Hz 控制频率，根据每次 MIT 发送所更新的原生反馈缓存计算
@@ -133,7 +133,6 @@ URDF 重力矩；motor Runtime 同样以 500 Hz 发送最新完整 MIT 目标，
 补偿比例或发送频率：
 
 ```bash
-python -m arx_d_can.examples.single_arm.example_12_gravity_compensation
 python -m arx_d_can.examples.dual_arm.example_15_gravity_compensation
 ```
 
@@ -152,8 +151,7 @@ arx_d_can/examples/
 │   ├── example_06_benchmark_read_rate.py
 │   ├── example_08_return_zero.py
 │   ├── example_09_diagnose_status.py
-│   ├── example_10_set_zero_current_position.py
-│   └── example_12_gravity_compensation.py
+│   └── example_10_set_zero_current_position.py
 └── dual_arm/               # 对应的双臂示例，当前默认 Yunyi
     ├── example_01_scan_ids.py
     ├── example_02_switch_control_mode.py
@@ -167,8 +165,17 @@ arx_d_can/examples/
     ├── example_11_return_zero.py
     ├── example_12_diagnose_status.py
     ├── example_13_set_zero_current_position.py
-    └── example_15_gravity_compensation.py
+    ├── example_15_gravity_compensation.py
+    ├── example_16_record_gravity_trajectory.py
+    └── example_17_replay_trajectory.py
 ```
+
+双臂重力示教回放从使能开始始终使用同一种 raw PV 或 raw MIT，以 500 Hz 提交完整
+左右臂目标，不在普通接口与 raw 接口之间切换。回放提供 `none`、`linear`、
+`quintic` 三种插值方式；MIT 使用插值位置、`dq=0`、产品 YAML Kp/Kd 和
+`tau_ff=0`；
+其中 `none` 是 500 Hz 重发的零阶保持，`quintic` 使用
+`10u³ - 15u⁴ + 6u⁵` 五次 S 曲线。
 
 单臂示例继续支持 `--arm-model`，因此同一套示例可以用于其他机械臂：
 

@@ -52,16 +52,8 @@ def test_yunyi_motor_models_and_ids_match_each_single_can_bus() -> None:
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         joints = load_cfg(model=model)["joints"]
         assert [joint.model for joint in joints] == expected_models
-        expected_motor_ids = (
-            [*range(0x09, 0x10), 0x01]
-            if model == "yunyi_v1_0_left"
-            else list(range(1, 9))
-        )
-        expected_feedback_ids = (
-            [*range(0x19, 0x20), 0x11]
-            if model == "yunyi_v1_0_left"
-            else list(range(0x11, 0x19))
-        )
+        expected_motor_ids = list(range(0x01, 0x09))
+        expected_feedback_ids = list(range(0x11, 0x19))
         assert [joint.motor_id for joint in joints] == expected_motor_ids
         assert [joint.feedback_id for joint in joints] == expected_feedback_ids
 

@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from ...sdk import ArxDCanDualArm
-from .single_arm import (
+from .core import (
     GravityCompensationSample,
     GravityProvider,
     _GravityTorqueCalculator,

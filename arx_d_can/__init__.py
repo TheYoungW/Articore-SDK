@@ -67,16 +67,6 @@ def __getattr__(name: str) -> Any:
         from .controllers import ArxDCanEndPose
 
         return ArxDCanEndPose
-    if name in {"GravityCompensationMode", "GravityCompensationSample"}:
-        from .controllers import (
-            GravityCompensationMode,
-            GravityCompensationSample,
-        )
-
-        return {
-            "GravityCompensationMode": GravityCompensationMode,
-            "GravityCompensationSample": GravityCompensationSample,
-        }[name]
     if name in {
         "DualArmGravityCompensationMode",
         "DualArmGravityCompensationSample",
@@ -113,8 +103,6 @@ __all__ = [
     "DualArmGravityCompensationSample",
     "FeedbackError",
     "FeedbackTimeoutError",
-    "GravityCompensationMode",
-    "GravityCompensationSample",
     "GripperState",
     "GripperControlState",
     "GripperForceLevel",

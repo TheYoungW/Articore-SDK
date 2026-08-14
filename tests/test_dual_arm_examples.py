@@ -19,4 +19,6 @@ def test_dual_arm_examples_exclude_removed_runtime_trajectory_demo() -> None:
         "example_12_diagnose_status.py",
         "example_13_set_zero_current_position.py",
         "example_15_gravity_compensation.py",
+        "example_16_record_gravity_trajectory.py",
+        "example_17_replay_trajectory.py",
     ]

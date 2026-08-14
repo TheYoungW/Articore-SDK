@@ -64,7 +64,8 @@ gripper_protection:
     level_9:  {contact_torque: 1.12,  overload_torque: 1.9,   moving_kp: 5.6,  moving_kd: 0.74, hold_kp: 2.8,  hold_kd: 0.66}
     level_10: {contact_torque: 1.2,   overload_torque: 2.0,   moving_kp: 6.0,  moving_kd: 0.8,  hold_kp: 3.0,  hold_kd: 0.7}
 
-# 左右臂是两条独立 CAN 通道，各自固定 7 个关节；双臂命令不会展平成 14 轴。
+# 左右臂是两条独立 CAN 通道，因此可以复用相同 CAN ID：关节 0x01～0x07，夹爪 0x08。
+# 两侧各自固定 7 个关节；双臂命令不会展平成 14 轴。
 # PV 增益按双臂伸展姿态真机标定：禁用两级积分，避免固定目标附近的持续振荡；
 # J1/J2/J5-J7 降低位置环比例，限制追赶和制动过冲。左右臂保持镜像同参。
 # 机械臂 MIT 增益使用 OpenArm 默认安全组；夹爪仍使用 Yunyi 独立安全策略。
@@ -81,8 +82,8 @@ arms:
         joints: [l-gripper]
     joints:
       - name: l-joint1
-        motor_id: 0x09
-        feedback_id: 0x19
+        motor_id: 0x01
+        feedback_id: 0x11
         model: "8009"
         torque_range: 40.0
         velocity_range: 20.0
@@ -90,24 +91,24 @@ arms:
         MIT: {kp: 190.0, kd: 4.55}
         POS_VEL: {vel_kp: 0.010, vel_ki: 0.0, pos_kp: 60.0, pos_ki: 0.0, vlim: 16.0}
       - name: l-joint2
-        motor_id: 0x0A
-        feedback_id: 0x1A
+        motor_id: 0x02
+        feedback_id: 0x12
         model: "8009"
         torque_range: 40.0
         velocity_range: 20.0
         MIT: {kp: 190.0, kd: 4.5}
         POS_VEL: {vel_kp: 0.008, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 16.0}
       - name: l-joint3
-        motor_id: 0x0B
-        feedback_id: 0x1B
+        motor_id: 0x03
+        feedback_id: 0x13
         model: "4340P"
         torque_range: 27.0
         velocity_range: 10.0
         MIT: {kp: 70.0, kd: 2.0}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.0, pos_kp: 165.0, pos_ki: 0.0, vlim: 5.0}
       - name: l-joint4
-        motor_id: 0x0C
-        feedback_id: 0x1C
+        motor_id: 0x04
+        feedback_id: 0x14
         model: "4340P"
         torque_range: 27.0
         velocity_range: 10.0
@@ -115,8 +116,8 @@ arms:
         MIT: {kp: 125.0, kd: 2.9}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.0, pos_kp: 180.0, pos_ki: 0.0, vlim: 5.0}
       - name: l-joint5
-        motor_id: 0x0D
-        feedback_id: 0x1D
+        motor_id: 0x05
+        feedback_id: 0x15
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
@@ -124,24 +125,24 @@ arms:
         MIT: {kp: 10.0, kd: 0.7}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 20.0}
       - name: l-joint6
-        motor_id: 0x0E
-        feedback_id: 0x1E
+        motor_id: 0x06
+        feedback_id: 0x16
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
         MIT: {kp: 22.0, kd: 0.89}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 20.0}
       - name: l-joint7
-        motor_id: 0x0F
-        feedback_id: 0x1F
+        motor_id: 0x07
+        feedback_id: 0x17
         model: "4310"
         torque_range: 7.0
         velocity_range: 10.0
         MIT: {kp: 28.0, kd: 0.84}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 20.0}
       - name: l-gripper
-        motor_id: 0x01
-        feedback_id: 0x11
+        motor_id: 0x08
+        feedback_id: 0x18
         model: "4310"
         velocity_range: 30.0
         MIT: {kp: 4.0, kd: 0.5}

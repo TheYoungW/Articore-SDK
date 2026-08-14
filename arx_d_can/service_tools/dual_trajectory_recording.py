@@ -6,14 +6,17 @@ import json
 import math
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING
+from typing import Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..controllers.gravity_compensation import DualArmGravityCompensationMode
     from ..sdk.dual_arm import ArxDCanDualArm
 
 
 FORMAT_VERSION = 1
 MAX_HZ = 500.0
+REPLAY_HZ = 500.0
+InterpolationMode = Literal["none", "linear", "quintic"]
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,8 +48,9 @@ def record(
     *,
     seconds: float,
     hz: float,
+    gravity_mode: DualArmGravityCompensationMode | None = None,
 ) -> tuple[list[float], list[DualArmTrajectorySample]]:
-    """按固定频率录制双臂反馈。"""
+    """按固定频率录制双臂反馈，可由双臂重力补偿同步推进。"""
     duration = _duration(seconds)
     frequency = _frequency(hz)
     timestamps: list[float] = []
@@ -63,11 +67,19 @@ def record(
             time.sleep(remaining)
         if time.perf_counter() >= deadline:
             break
-        state = robot.read_state()
+        if gravity_mode is None:
+            state = robot.read_state()
+            left_positions = state.left.arm.positions
+            right_positions = state.right.arm.positions
+        else:
+            gravity_sample = gravity_mode.step()
+            state = robot.read_cached_state()
+            left_positions = gravity_sample.left.positions
+            right_positions = gravity_sample.right.positions
         samples.append(
             DualArmTrajectorySample(
-                left_positions=tuple(state.left.arm.positions),
-                right_positions=tuple(state.right.arm.positions),
+                left_positions=tuple(left_positions),
+                right_positions=tuple(right_positions),
                 left_gripper=(
                     None
                     if state.left.gripper is None
@@ -188,33 +200,139 @@ def replay(
     *,
     timestamps: list[float],
     samples: list[DualArmTrajectorySample],
+    interpolation: InterpolationMode = "quintic",
+    velocity_limit: float | None = 1.0,
 ) -> None:
-    """按照录制时间戳发送双臂轨迹。"""
+    """将录制轨迹重采样为 500 Hz，并通过 raw PV 原子提交双臂。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
+    if interpolation not in {"none", "linear", "quintic"}:
+        raise ValueError("interpolation must be none, linear, or quintic")
+    if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
+        raise ValueError("timestamps must be strictly increasing")
     if any(sample.left_gripper is not None for sample in samples) and not robot.left.has_gripper:
         raise RuntimeError("trajectory requires an active left gripper")
     if any(sample.right_gripper is not None for sample in samples) and not robot.right.has_gripper:
         raise RuntimeError("trajectory requires an active right gripper")
+
     started = time.perf_counter()
     first_timestamp = timestamps[0]
-    for timestamp, sample in zip(timestamps, samples):
-        remaining = started + timestamp - first_timestamp - time.perf_counter()
+    relative_timestamps = [value - first_timestamp for value in timestamps]
+    duration = relative_timestamps[-1]
+    tick = 0
+    segment = 0
+    while True:
+        elapsed = min(tick / REPLAY_HZ, duration)
+        while (
+            segment + 1 < len(samples)
+            and relative_timestamps[segment + 1] <= elapsed
+        ):
+            segment += 1
+        if segment + 1 >= len(samples):
+            sample = samples[-1]
+        else:
+            segment_duration = (
+                relative_timestamps[segment + 1] - relative_timestamps[segment]
+            )
+            progress = (elapsed - relative_timestamps[segment]) / segment_duration
+            sample = interpolate_sample(
+                samples[segment],
+                samples[segment + 1],
+                progress=progress,
+                mode=interpolation,
+            )
+
+        remaining = started + elapsed - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        robot._submit_joint_positions(
-            left=sample.left_positions,
-            right=sample.right_positions,
-        )
+        _submit_raw_positions(robot, sample, velocity_limit=velocity_limit)
         if sample.left_gripper is not None or sample.right_gripper is not None:
             robot.set_gripper_openings(
                 left=0.0 if sample.left_gripper is None else sample.left_gripper,
                 right=0.0 if sample.right_gripper is None else sample.right_gripper,
             )
+        if elapsed >= duration:
+            return
+        captured_at = time.perf_counter()
+        tick = max(tick + 1, math.floor((captured_at - started) * REPLAY_HZ) + 1)
+
+
+def _submit_raw_positions(
+    robot: ArxDCanDualArm,
+    sample: DualArmTrajectorySample,
+    *,
+    velocity_limit: float | None,
+) -> None:
+    """按机器人构造模式提交一帧 raw PV 或 raw MIT 双臂目标。"""
+    left_mode = str(robot.left._mode).lower()
+    right_mode = str(robot.right._mode).lower()
+    if left_mode != right_mode:
+        raise RuntimeError("left and right replay control modes must match")
+    kwargs = {
+        "left": sample.left_positions,
+        "right": sample.right_positions,
+    }
+    if left_mode in {"pv", "posvel"}:
+        if (
+            velocity_limit is None
+            or not math.isfinite(velocity_limit)
+            or velocity_limit <= 0.0
+        ):
+            raise ValueError("PV velocity_limit must be finite and positive")
+        kwargs["left_velocity_limits"] = (velocity_limit,) * len(
+            sample.left_positions
+        )
+        kwargs["right_velocity_limits"] = (velocity_limit,) * len(
+            sample.right_positions
+        )
+    elif left_mode != "mit":
+        raise RuntimeError("trajectory replay requires PV or MIT mode")
+    # MIT 不传高级字段时，SDK 使用 YAML Kp/Kd，并令 dq=0、tau_ff=0。
+    robot._submit_joint_positions(**kwargs)
+
+
+def interpolate_sample(
+    start: DualArmTrajectorySample,
+    end: DualArmTrajectorySample,
+    *,
+    progress: float,
+    mode: InterpolationMode,
+) -> DualArmTrajectorySample:
+    """在两条录制样本之间执行零阶、线性或五次 S 曲线插值。"""
+    u = max(0.0, min(1.0, float(progress)))
+    if mode == "none":
+        alpha = 0.0 if u < 1.0 else 1.0
+    elif mode == "linear":
+        alpha = u
+    elif mode == "quintic":
+        alpha = 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
+    else:
+        raise ValueError("mode must be none, linear, or quintic")
+
+    def vector(first, second) -> tuple[float, ...]:
+        return tuple(
+            float(left + (right - left) * alpha)
+            for left, right in zip(first, second)
+        )
+
+    def optional(first: float | None, second: float | None) -> float | None:
+        if first is None or second is None:
+            return first if u < 1.0 else second
+        return float(first + (second - first) * alpha)
+
+    return DualArmTrajectorySample(
+        left_positions=vector(start.left_positions, end.left_positions),
+        right_positions=vector(start.right_positions, end.right_positions),
+        left_gripper=optional(start.left_gripper, end.left_gripper),
+        right_gripper=optional(start.right_gripper, end.right_gripper),
+    )
 
 
 __all__ = [
     "DualArmTrajectorySample",
+    "InterpolationMode",
+    "REPLAY_HZ",
+    "interpolate_sample",
     "load_trajectory",
     "record",
     "replay",

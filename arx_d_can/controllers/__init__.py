@@ -12,21 +12,15 @@ def __getattr__(name: str) -> Any:
     if name in {
         "DualArmGravityCompensationMode",
         "DualArmGravityCompensationSample",
-        "GravityCompensationMode",
-        "GravityCompensationSample",
     }:
         from .gravity_compensation import (
             DualArmGravityCompensationMode,
             DualArmGravityCompensationSample,
-            GravityCompensationMode,
-            GravityCompensationSample,
         )
 
         return {
             "DualArmGravityCompensationMode": DualArmGravityCompensationMode,
             "DualArmGravityCompensationSample": DualArmGravityCompensationSample,
-            "GravityCompensationMode": GravityCompensationMode,
-            "GravityCompensationSample": GravityCompensationSample,
         }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -35,6 +29,4 @@ __all__ = [
     "ArxDCanEndPose",
     "DualArmGravityCompensationMode",
     "DualArmGravityCompensationSample",
-    "GravityCompensationMode",
-    "GravityCompensationSample",
 ]
