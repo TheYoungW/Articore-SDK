@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 
+from ...driver import damiao_model_limits
 from ...sdk import ArxDCanArm
 
 
@@ -102,18 +103,33 @@ class _GravityTorqueCalculator:
             ],
             dtype=np.float64,
         )
-        self.lower_position_limits = np.asarray(
-            [
-                -math.inf if joint.lower_limit is None else joint.lower_limit
-                for joint in arm.config.arm_joints
-            ],
+        margin = float(arm.config.soft_limit_margin)
+        if not math.isfinite(margin) or margin < 0.0:
+            raise ValueError("soft_limit_margin 必须是有限非负数")
+        lower_command_limits = []
+        upper_command_limits = []
+        for joint in arm.config.arm_joints:
+            position_range, _, _ = damiao_model_limits(joint.model)
+            hard_lower = (
+                -position_range if joint.lower_limit is None else joint.lower_limit
+            )
+            hard_upper = (
+                position_range if joint.upper_limit is None else joint.upper_limit
+            )
+            soft_lower = hard_lower + margin
+            soft_upper = hard_upper - margin
+            if soft_lower >= soft_upper:
+                raise ValueError(
+                    f"{joint.name}: soft limit margin leaves no valid joint range"
+                )
+            lower_command_limits.append(soft_lower)
+            upper_command_limits.append(soft_upper)
+        self.lower_command_limits = np.asarray(
+            lower_command_limits,
             dtype=np.float64,
         )
-        self.upper_position_limits = np.asarray(
-            [
-                math.inf if joint.upper_limit is None else joint.upper_limit
-                for joint in arm.config.arm_joints
-            ],
+        self.upper_command_limits = np.asarray(
+            upper_command_limits,
             dtype=np.float64,
         )
         self.provider = gravity_provider or self._build_provider()
@@ -166,14 +182,14 @@ class _GravityTorqueCalculator:
         self,
         positions: np.ndarray,
     ) -> tuple[np.ndarray, tuple[str, ...]]:
-        """将反馈生成的保持目标裁剪到 URDF 命令限位内。"""
+        """将反馈生成的保持目标裁剪到 Runtime 软命令限位内。"""
         values = np.asarray(positions, dtype=np.float64).reshape(-1)
         if len(values) != self.joint_count or np.any(~np.isfinite(values)):
             raise RuntimeError("重力补偿保持目标无效")
         clipped = np.clip(
             values,
-            self.lower_position_limits,
-            self.upper_position_limits,
+            self.lower_command_limits,
+            self.upper_command_limits,
         )
         clipped_joints = tuple(
             name

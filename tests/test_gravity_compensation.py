@@ -36,10 +36,17 @@ def joint(name: str, *, effort_limit: float | None = None) -> JointMotorConfig:
 
 
 class FakeArm:
-    def __init__(self, *, mode: str = "mit", effort_limit: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        mode: str = "mit",
+        effort_limit: float | None = None,
+        soft_limit_margin: float = 0.0,
+    ) -> None:
         self.config = ArxDCanConfig(
             arm_control_mode=mode,
             feedback_check_hz=100.0,
+            soft_limit_margin=soft_limit_margin,
             arm_joints=(
                 joint("joint1", effort_limit=effort_limit),
                 joint("joint2", effort_limit=effort_limit),
@@ -142,18 +149,19 @@ def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     assert arm.calls[-1] == ("close", None)
 
 
-def test_mode_clips_feedback_hold_target_to_urdf_limits() -> None:
-    arm = FakeArm()
+def test_mode_clips_feedback_hold_target_to_runtime_soft_limits() -> None:
+    arm = FakeArm(soft_limit_margin=0.1)
     arm.positions = (2.1, -2.2)
     mode = make_mode(arm)
 
     sample = mode.start()
     try:
-        np.testing.assert_allclose(arm.commands[-1]["positions"], [2.0, -2.0])
+        np.testing.assert_allclose(arm.commands[-1]["positions"], [1.9, -1.9])
         assert sample.positions == pytest.approx((2.1, -2.2))
         assert sample.clipped_joints == ("joint1", "joint2")
     finally:
         mode.stop()
+    np.testing.assert_allclose(arm.commands[-1]["positions"], [1.9, -1.9])
 
 
 def test_mode_uses_native_cache_without_python_feedback_thread() -> None:

@@ -34,6 +34,7 @@ class _Arm:
         self.config = ArxDCanConfig(
             arm_control_mode=mode,
             feedback_check_hz=100.0,
+            soft_limit_margin=0.1,
             arm_joints=(_joint(name),),
         )
 
@@ -145,14 +146,16 @@ def test_dual_gravity_clips_each_feedback_hold_target() -> None:
 
     sample = gravity.start()
     try:
-        np.testing.assert_allclose(robot.commands[-1]["left"], [1.0])
-        np.testing.assert_allclose(robot.commands[-1]["right"], [-1.0])
+        np.testing.assert_allclose(robot.commands[-1]["left"], [0.9])
+        np.testing.assert_allclose(robot.commands[-1]["right"], [-0.9])
         assert sample.left.positions == pytest.approx((1.1,))
         assert sample.right.positions == pytest.approx((-1.2,))
         assert sample.left.clipped_joints == ("left_joint",)
         assert sample.right.clipped_joints == ("right_joint",)
     finally:
         gravity.stop()
+    np.testing.assert_allclose(robot.commands[-1]["left"], [0.9])
+    np.testing.assert_allclose(robot.commands[-1]["right"], [-0.9])
 
 
 def test_dual_gravity_requires_mit_mode() -> None:
