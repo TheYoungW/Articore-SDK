@@ -29,15 +29,6 @@ class _SafetyMixin:
                     raise ValueError(
                         f"{joint.name}.MIT.{name.lower()} must be in [0, {maximum:g}]"
                     )
-        if self.config.gripper is not None:
-            endpoints = (
-                self.config.gripper_closed_value,
-                self.config.gripper_open_value,
-            )
-            if not all(math.isfinite(value) for value in endpoints):
-                raise ValueError("gripper endpoints must be finite")
-            if math.isclose(*endpoints):
-                raise ValueError("gripper open and closed values must differ")
         positive_values = {
             "control_hz": self.config.control_hz,
             "command_timeout_s": self.config.command_timeout_s,

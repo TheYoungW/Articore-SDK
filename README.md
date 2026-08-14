@@ -18,7 +18,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时固定使用 `motor-drive-layer==0.9.3`（Runtime ABI 2.1）。平台 wheel 已包含对应的
+底层通信与原生安全运行时固定使用 `motor-drive-layer==0.9.4`（Runtime ABI 2.2）。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -198,7 +198,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.9.3 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.9.4 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -244,16 +244,15 @@ python -m arx_d_can.examples.dual_arm.example_08_set_gripper_openings \
   --right-gripper 500
 ```
 
-Yunyi 夹爪固定使用 MIT 模式，默认 `Kp=4.0`。堵转检测、接触后的低刚度保持和持续
-过载回退由单臂或双臂 C++ 安全运行时的常驻线程执行，不需要 Python 控制线程。双臂原生
+Yunyi 夹爪在连接前绑定 motor 内置的 `yunyi_gripper_v1` 产品 profile。开合映射、
+最大速度、十档力控、接触/堵转/过载检测、保持增益和回退策略均由底层统一标定，SDK
+不再保存或传递这些参数。双臂原生
 运行时启用后，单侧原始夹爪命令会被拒绝，避免绕过整机安全状态机。更换自定义末端时
 可用 `ArxDCanArm(enable_gripper=False)`，或
 `ArxDCanDualArm(left_gripper=False, right_gripper=False)` 关闭产品夹爪。
 
-Yunyi 产品的最大标定速度为 `5.0 rad/s`，公开 `speed=1000` 与之对应；张开和闭合均由
-Runtime 生成受控速度斜坡。正常夹爪控制跟随整机底层调度，不使用 Python 控制线程。
-该速度已完成双臂夹爪空载真机验证，空载闭合约 1.0 秒；软物体、硬物体接触和
-持续过载回退仍需作为带载验证项。
+公开 `speed=1000` 表示所绑定产品 profile 的最大标定速度；张开和闭合均由 Runtime
+生成受控速度斜坡。正常夹爪控制跟随整机底层调度，不使用 Python 控制线程。
 
 `read_state()` 同时公开结构化夹爪控制状态：
 
@@ -280,6 +279,7 @@ Yunyi 左右臂使用一份产品级配置：
 
 ```text
 arx_d_can/config/yunyi_v1_0.yaml
+├── gripper_profile: yunyi_gripper_v1
 ├── arms.left
 └── arms.right
 ```
@@ -298,7 +298,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer==0.9.3` 的平台 wheel 会自动加载随包提供的运行库；
+厂商动态库。`motor-drive-layer==0.9.4` 的平台 wheel 会自动加载随包提供的运行库；
 `MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -338,9 +338,10 @@ SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.9.3 提供的 ABI 2.1 `libarticore_runtime`。SDK 初始化时同时要求
+motor-drive-layer 0.9.4 提供的 ABI 2.2 `libarticore_runtime`。SDK 初始化时同时要求
 `deterministic_disable`、`layered_joint_limits`、`gripper_command_profiles`、
-`gripper_force_10_levels`、`joint_mit_position` 和 `joint_pv_position` 能力。
+`gripper_force_10_levels`、`builtin_gripper_product_profiles`、`joint_mit_position` 和
+`joint_pv_position` 能力。
 本仓库不再编译 C++；Python 只校验
 和提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
@@ -361,7 +362,7 @@ joint_safety:
   braking_acceleration: 2.0              # rad/s²
 ```
 
-Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.9.3 不再把反馈
+Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.9.4 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。重力补偿使用真实反馈计算和录制，但会把由反馈生成的 MIT 保持
 位置裁剪到 URDF 上下限后再提交。首次普通 MIT/PV 命令即使从超出配置硬限位的实际
@@ -384,10 +385,10 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程自动调度，安全保持同样由底层管理。调度周期会根据实际控制器拓扑自动选择，
-但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.9.3 承担。
+但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.9.4 承担。
 
 使能时，SDK 先完成控制模式和电机参数配置，然后只调用一次原生 `runtime.enable()`。
-ABI 2.1 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
+ABI 2.2 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
 目标，并行使能左右通道并确认所有电机均返回新鲜 `ENABLED` 反馈。失败时 Runtime 会
 回滚失能全部电机。SDK 不再提前调用左右臂或夹爪的物理使能接口。
 
@@ -415,7 +416,7 @@ except NativeEnableError as exc:
 状态下仍会尝试物理失能全部电机，但不会清除故障锁存；`recover()` 只有在物理失能、
 反馈新鲜且通信健康均得到确认后才会回到 `READY`。
 
-ABI 2.1 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
+ABI 2.2 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
 在途批次完成，建立 ControllerGroup 与 USB/CAN 队列屏障，并行失能 CH0/CH1 并确认
 所有电机的新鲜失能反馈；第一轮未确认的电机只会被定向重发一次。正常关闭不再依赖
 电机通信超时。失能确认失败时会抛出携带 `DisableReport` 的 `NativeDisableError`：
@@ -455,8 +456,7 @@ PV 的 `--velocity` 是双臂所有关节共用的最大参考速度，命令行
 MIT 示例只接收左右臂目标角度，控制参数由机型配置统一管理：
 
 ```bash
-conda run --no-capture-output -n at python -m \
-  arx_d_can.examples.dual_arm.example_07_send_position_mit \
+python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
   --velocity 60
@@ -469,9 +469,8 @@ MIT 示例同样使用统一的实际速度（命令行单位为度/秒），Kp/
 中断，使 Python 的 `finally` 清理逻辑没有机会完成。运动控制不能依赖这种运行方式。
 
 - 单次双通道批量发送失败、命令超时或连续反馈失败会进入 `SAFE_HOLD`；
-- 安全保持失败、设备掉线、反馈严重过期、电机故障或意外失能会锁存 `FAULT`；左右臂
-  联动失能，夹爪按产品配置的 `gripper_fault_action: hold | disable` 保持物体或失能，
-  保持失败时会继续尝试失能；
+- 安全保持失败、设备掉线、反馈严重过期、电机故障或意外失能会锁存 `FAULT`；夹爪
+  故障默认执行 motor 产品 profile 内置的保持策略；
 - `read_state()` 只返回新鲜、完整反馈；
 - `read_cached_state()` 明确读取最近一次成功反馈；
 - `communication_health` 提供结构化通信状态；

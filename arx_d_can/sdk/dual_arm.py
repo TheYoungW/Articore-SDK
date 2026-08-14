@@ -1,7 +1,7 @@
 """两条独立 CAN 通道组成的双臂控制接口。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Sequence
 
@@ -164,10 +164,10 @@ class ArxDCanDualArm:
             *self.right._native_joint_safety_limits(),
         )
 
-    def _native_gripper_force_profiles(self):
+    def _native_gripper_product_bindings(self):
         return (
-            *self.left._native_gripper_force_profiles(),
-            *self.right._native_gripper_force_profiles(),
+            *self.left._native_gripper_product_bindings(),
+            *self.right._native_gripper_product_bindings(),
         )
 
     def _create_safety_runtime(
@@ -176,7 +176,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.3 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.4 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -191,7 +191,7 @@ class ArxDCanDualArm:
             motors=self._native_motor_descriptors(),
             joints=self._native_joint_control_configs(),
             joint_safety_limits=self._native_joint_safety_limits(),
-            gripper_force_profiles=self._native_gripper_force_profiles(),
+            gripper_products=self._native_gripper_product_bindings(),
             control_hz=min(left.control_hz, right.control_hz),
             command_timeout_s=min(left.command_timeout_s, right.command_timeout_s),
             enable_grace_s=min(left.enable_grace_s, right.enable_grace_s),
@@ -211,16 +211,6 @@ class ArxDCanDualArm:
             safe_pv_velocity_limit=min(
                 left.safe_hold_pv_velocity_limit,
                 right.safe_hold_pv_velocity_limit,
-            ),
-            # ABI 字段为兼容保留；2.1 正常运行时夹爪跟随机械臂实际控制频率。
-            gripper_control_hz=min(left.control_hz, right.control_hz),
-            gripper_fault_action=(
-                "disable"
-                if "disable" in {
-                    left.gripper_fault_action.strip().lower(),
-                    right.gripper_fault_action.strip().lower(),
-                }
-                else "hold"
             ),
         )
         runtime.connect()
@@ -260,7 +250,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.3 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.9.4 dual-arm safety runtime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -368,7 +358,7 @@ class ArxDCanDualArm:
     def close(self) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
-        ABI 2.1 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
+        ABI 2.2 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
         此方法保留全部底层句柄，以便调用方检查 ``last_disable_report`` 并重试。
         """
         errors: list[Exception] = []
@@ -414,8 +404,12 @@ class ArxDCanDualArm:
             raise errors[0]
         health = self._safety_runtime.health if self._safety_runtime else None
         return ArxDCanDualArmState(
-            left=states[0],
-            right=states[1],
+            left=self._state_with_runtime_gripper(
+                states[0], health.left_gripper if health else None
+            ),
+            right=self._state_with_runtime_gripper(
+                states[1], health.right_gripper if health else None
+            ),
             left_gripper=health.left_gripper if health else None,
             right_gripper=health.right_gripper if health else None,
         )
@@ -424,11 +418,27 @@ class ArxDCanDualArm:
         """分别返回左右臂最近一次成功反馈，不发送新的查询帧。"""
         health = self._safety_runtime.health if self._safety_runtime else None
         return ArxDCanDualArmState(
-            left=self.left.read_cached_state(),
-            right=self.right.read_cached_state(),
+            left=self._state_with_runtime_gripper(
+                self.left.read_cached_state(),
+                health.left_gripper if health else None,
+            ),
+            right=self._state_with_runtime_gripper(
+                self.right.read_cached_state(),
+                health.right_gripper if health else None,
+            ),
             left_gripper=health.left_gripper if health else None,
             right_gripper=health.right_gripper if health else None,
         )
+
+    @staticmethod
+    def _state_with_runtime_gripper(
+        state: ArxDCanState,
+        health: GripperSafetyHealth | None,
+    ) -> ArxDCanState:
+        """用 Runtime 产品 profile 计算的开合度补全公开夹爪状态。"""
+        if state.gripper is None or health is None:
+            return state
+        return replace(state, gripper=replace(state.gripper, opening=health.opening))
 
     def _submit_joint_positions(
         self,

@@ -13,7 +13,7 @@ from motor_drive_layer.abi import get_abi
 
 _UINT64_MAX = (1 << 64) - 1
 _ARTICORE_ABI_MAJOR = 2
-_ARTICORE_ABI_MINOR = 1
+_ARTICORE_ABI_MINOR = 2
 ARTICORE_CAP_COMMAND_LIFETIME = 1 << 11
 ARTICORE_CAP_PROTECTIVE_FAULT_HOLD = 1 << 13
 ARTICORE_CAP_DETERMINISTIC_DISABLE = 1 << 14
@@ -23,6 +23,7 @@ ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS = 1 << 20
 ARTICORE_CAP_JOINT_MIT_POSITION = 1 << 21
 ARTICORE_CAP_JOINT_PV_POSITION = 1 << 22
 ARTICORE_CAP_EFFECTIVE_CONTROL_RATE = 1 << 23
+ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES = 1 << 24
 _REQUIRED_CAPABILITIES = (
     (1 << 0)  # 命令看门狗
     | (1 << 1)  # 安全保持
@@ -41,6 +42,7 @@ _REQUIRED_CAPABILITIES = (
     | ARTICORE_CAP_JOINT_MIT_POSITION
     | ARTICORE_CAP_JOINT_PV_POSITION
     | ARTICORE_CAP_EFFECTIVE_CONTROL_RATE
+    | ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES
 )
 
 
@@ -64,7 +66,7 @@ class GripperControlState(str, Enum):
 
 
 class GripperForceLevel(IntEnum):
-    """Runtime ABI 2.1 的十档夹持力；1 最轻，5 默认，10 最强。"""
+    """Runtime ABI 2.2 的十档夹持力；1 最轻，5 默认，10 最强。"""
 
     LEVEL_1 = 1
     LEVEL_2 = 2
@@ -155,23 +157,6 @@ class NativeMotorDescriptor:
     is_gripper: bool = False
     safe_kp: float = 5.0
     safe_kd: float = 1.0
-    overload_torque: float = 0.0
-    retreat_distance: float = 0.0
-    contact_torque: float = 0.0
-    motion_window_s: float = 0.0
-    stall_movement: float = 0.0
-    min_position_error: float = 0.0
-    contact_hold_s: float = 0.0
-    overload_hold_s: float = 0.0
-    hold_offset: float = 0.0
-    retreat_retry_s: float = 0.0
-    open_position: float = 0.0
-    closed_position: float = 0.0
-    normal_kp: float = 0.0
-    normal_kd: float = 0.0
-    close_speed: float = 0.0
-    max_step_interval_s: float = 0.0
-    closing_direction: float = 0.0
     lower_position: float = -math.inf
     upper_position: float = math.inf
 
@@ -204,17 +189,11 @@ class NativeJointSafetyLimits:
 
 
 @dataclass(slots=True, frozen=True)
-class NativeGripperForceProfile:
-    """一个实际安装夹爪的一档产品力矩与增益标定。"""
+class NativeGripperProductBinding:
+    """把一个实际安装的夹爪绑定到 motor 内置产品标定。"""
 
     motor: object
-    force_level: GripperForceLevel
-    contact_torque: float
-    overload_torque: float
-    moving_kp: float
-    moving_kd: float
-    hold_kp: float
-    hold_kd: float
+    profile_id: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -417,17 +396,11 @@ class _GripperCommand(ctypes.Structure):
     ]
 
 
-class _GripperForceProfile(ctypes.Structure):
+class _GripperProductBinding(ctypes.Structure):
     _fields_ = [
         ("struct_size", ctypes.c_uint32),
         ("motor", ctypes.c_void_p),
-        ("force_level", ctypes.c_int32),
-        ("contact_torque", ctypes.c_float),
-        ("overload_torque", ctypes.c_float),
-        ("moving_kp", ctypes.c_float),
-        ("moving_kd", ctypes.c_float),
-        ("hold_kp", ctypes.c_float),
-        ("hold_kd", ctypes.c_float),
+        ("profile_id", ctypes.c_char * 64),
     ]
 
 
@@ -610,7 +583,7 @@ class NativeSafetyRuntime:
         motors: Sequence[NativeMotorDescriptor],
         joints: Sequence[NativeJointControlConfig],
         joint_safety_limits: Sequence[NativeJointSafetyLimits],
-        gripper_force_profiles: Sequence[NativeGripperForceProfile] = (),
+        gripper_products: Sequence[NativeGripperProductBinding] = (),
         control_hz: float = 500.0,
         command_timeout_s: float = 0.25,
         enable_grace_s: float = 2.0,
@@ -621,12 +594,10 @@ class NativeSafetyRuntime:
         safe_hold_failure_threshold: int = 1,
         disable_feedback_timeout_ms: int = 50,
         safe_pv_velocity_limit: float = 0.2,
-        gripper_control_hz: float = 500.0,
-        gripper_fault_action: str = "hold",
     ) -> None:
         self._lib = ctypes.CDLL(articore_runtime_library_path())
         # 先读取旧 ABI 也具备的版本与能力符号。误装旧版运行库时应给出明确的版本
-        # 错误，而不是因 ABI 2.1 符号不存在而抛出晦涩的 AttributeError。
+        # 错误，而不是因 ABI 2.2 符号不存在而抛出晦涩的 AttributeError。
         self._lib.articore_runtime_abi_version.restype = ctypes.c_uint32
         self._lib.articore_runtime_capabilities.restype = ctypes.c_uint64
         version = int(self._lib.articore_runtime_abi_version())
@@ -650,11 +621,11 @@ class NativeSafetyRuntime:
         motor_lib = self._motor_abi.lib
         if not getattr(self._motor_abi, "has_transport_health", False):
             raise RuntimeError(
-                "motor-drive-layer 0.9.3 must expose structured transport health"
+                "motor-drive-layer 0.9.4 must expose structured transport health"
             )
         if not getattr(self._motor_abi, "has_structured_feedback_report", False):
             raise RuntimeError(
-                "motor-drive-layer 0.9.3 must expose structured feedback reports"
+                "motor-drive-layer 0.9.4 must expose structured feedback reports"
             )
         transport_health_pointer = _function_pointer(
             motor_lib.motor_controller_get_transport_health
@@ -686,31 +657,9 @@ class NativeSafetyRuntime:
             native.name = encoded_name
             native.safe_kp = descriptor.safe_kp
             native.safe_kd = descriptor.safe_kd
-            native.overload_torque = descriptor.overload_torque
-            native.retreat_distance = descriptor.retreat_distance
-            native.contact_torque = descriptor.contact_torque
-            native.motion_window_ms = max(0, round(descriptor.motion_window_s * 1000.0))
-            native.stall_movement = descriptor.stall_movement
-            native.min_position_error = descriptor.min_position_error
-            native.contact_hold_ms = max(0, round(descriptor.contact_hold_s * 1000.0))
-            native.overload_hold_ms = max(0, round(descriptor.overload_hold_s * 1000.0))
-            native.hold_offset = descriptor.hold_offset
-            native.retreat_retry_ms = max(0, round(descriptor.retreat_retry_s * 1000.0))
-            native.open_position = descriptor.open_position
-            native.closed_position = descriptor.closed_position
-            native.normal_kp = descriptor.normal_kp
-            native.normal_kd = descriptor.normal_kd
-            native.close_speed = descriptor.close_speed
-            native.max_step_interval_ms = max(
-                0, round(descriptor.max_step_interval_s * 1000.0)
-            )
-            native.closing_direction = descriptor.closing_direction
             native.lower_position = descriptor.lower_position
             native.upper_position = descriptor.upper_position
         self._native_descriptors = native_descriptors
-        normalized_fault_action = str(gripper_fault_action).strip().lower()
-        if normalized_fault_action not in {"hold", "disable"}:
-            raise ValueError("gripper_fault_action must be 'hold' or 'disable'")
         config = _RuntimeConfig(
             max(1, round(control_hz)),
             max(1, round(command_timeout_s * 1000.0)),
@@ -722,8 +671,8 @@ class NativeSafetyRuntime:
             int(safe_hold_failure_threshold),
             int(disable_feedback_timeout_ms),
             float(safe_pv_velocity_limit),
-            max(1, round(gripper_control_hz)),
-            1 if normalized_fault_action == "hold" else 2,
+            max(1, round(control_hz)),  # ABI 兼容字段；内置 profile 会覆盖。
+            1,  # ABI 兼容字段；内置 profile 固定 fault_action=hold。
         )
         self._ptr = self._lib.articore_runtime_create_ex(
             ctypes.byref(config),
@@ -745,13 +694,7 @@ class NativeSafetyRuntime:
         try:
             self._configure_joints(joints)
             self._configure_joint_safety_limits(joint_safety_limits)
-            active_grippers = tuple(
-                descriptor for descriptor in descriptors if descriptor.is_gripper
-            )
-            if active_grippers:
-                self._configure_gripper_force_profiles(gripper_force_profiles)
-            elif gripper_force_profiles:
-                raise ValueError("gripper force profiles require an installed gripper")
+            self._configure_gripper_products(gripper_products)
         except Exception:
             self._lib.articore_runtime_free(self._ptr)
             self._ptr = None
@@ -821,9 +764,9 @@ class NativeSafetyRuntime:
             ctypes.c_uint32,
             ctypes.c_float,
         ]
-        lib.articore_runtime_configure_gripper_force_profiles.argtypes = [
+        lib.articore_runtime_configure_gripper_products.argtypes = [
             ctypes.c_void_p,
-            ctypes.POINTER(_GripperForceProfile),
+            ctypes.POINTER(_GripperProductBinding),
             ctypes.c_uint32,
         ]
         lib.articore_runtime_set_gripper_commands.argtypes = [
@@ -853,7 +796,7 @@ class NativeSafetyRuntime:
             "articore_runtime_submit_mit_ex",
             "articore_runtime_set_joint_mit",
             "articore_runtime_set_joint_pv",
-            "articore_runtime_configure_gripper_force_profiles",
+            "articore_runtime_configure_gripper_products",
             "articore_runtime_set_gripper_commands",
             "articore_runtime_report_feedback_failure", "articore_runtime_disable",
             "articore_runtime_estop", "articore_runtime_recover",
@@ -945,36 +888,35 @@ class NativeSafetyRuntime:
         )
         self._native_joint_safety_limits = native
 
-    def _configure_gripper_force_profiles(
+    def _configure_gripper_products(
         self,
-        profiles: Sequence[NativeGripperForceProfile],
+        bindings: Sequence[NativeGripperProductBinding],
     ) -> None:
-        """在 connect 前为每个实际安装夹爪配置完整十档产品标定。"""
-        values = tuple(profiles)
-        if not values:
-            raise ValueError("gripper force profiles must not be empty")
-        native = (_GripperForceProfile * len(values))()
+        """在 connect 前把每个实际安装夹爪绑定到 motor 内置产品标定。"""
+        values = tuple(bindings)
+        native = (_GripperProductBinding * len(values))()
         for index, value in enumerate(values):
-            native[index] = _GripperForceProfile(
-                ctypes.sizeof(_GripperForceProfile),
-                _pointer(value.motor, name="gripper force profile motor"),
-                int(GripperForceLevel(value.force_level)),
-                float(value.contact_torque),
-                float(value.overload_torque),
-                float(value.moving_kp),
-                float(value.moving_kd),
-                float(value.hold_kp),
-                float(value.hold_kd),
+            profile_id = str(value.profile_id).strip().encode("utf-8")
+            if not profile_id:
+                raise ValueError("gripper product profile_id must not be empty")
+            if len(profile_id) >= 64:
+                raise ValueError(
+                    "gripper product profile_id must be under 64 UTF-8 bytes"
+                )
+            native[index] = _GripperProductBinding(
+                ctypes.sizeof(_GripperProductBinding),
+                _pointer(value.motor, name="gripper product motor"),
+                profile_id,
             )
         self._ok(
-            self._lib.articore_runtime_configure_gripper_force_profiles(
+            self._lib.articore_runtime_configure_gripper_products(
                 self._ptr,
-                native,
+                native if values else None,
                 len(values),
             ),
-            "runtime gripper force profile configuration",
+            "runtime gripper product configuration",
         )
-        self._native_gripper_force_profiles = native
+        self._native_gripper_products = native
 
     def enable(self, mode: str) -> None:
         normalized = mode.strip().lower().replace("_", "")
@@ -1307,7 +1249,7 @@ class NativeSafetyRuntime:
     def close(self) -> None:
         if self._ptr:
             if self._lib.articore_runtime_close(self._ptr) != 0:
-                # ABI 2.1 要求关闭失败时保留 Runtime。它仍拥有
+                # ABI 2.2 要求关闭失败时保留 Runtime。它仍拥有
                 # ControllerGroup、Controller 和 Transport 的生命周期前置条件。
                 raise NativeDisableError(
                     self.last_disable_report,
@@ -1325,6 +1267,7 @@ class NativeSafetyRuntime:
 
 __all__ = [
     "ARTICORE_CAP_DETERMINISTIC_DISABLE",
+    "ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES",
     "ARTICORE_CAP_GRIPPER_COMMAND_PROFILES",
     "ARTICORE_CAP_GRIPPER_FORCE_10_LEVELS",
     "ARTICORE_CAP_JOINT_MIT_POSITION",
@@ -1343,7 +1286,7 @@ __all__ = [
     "NativeEnableError",
     "NativeJointControlConfig",
     "NativeJointSafetyLimits",
-    "NativeGripperForceProfile",
+    "NativeGripperProductBinding",
     "NativeMotorDescriptor",
     "NativeSafetyRuntime",
     "SafetyHealth",

@@ -8,6 +8,7 @@ from motor_drive_layer import articore_runtime_library_path
 
 from arx_d_can.sdk.native_safety import (
     ARTICORE_CAP_COMMAND_LIFETIME,
+    ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES,
     ARTICORE_CAP_DETERMINISTIC_DISABLE,
     ARTICORE_CAP_EFFECTIVE_CONTROL_RATE,
     ARTICORE_CAP_GRIPPER_COMMAND_PROFILES,
@@ -20,7 +21,7 @@ from arx_d_can.sdk.native_safety import (
     EnableReport,
     GripperControlState,
     GripperForceLevel,
-    NativeGripperForceProfile,
+    NativeGripperProductBinding,
     NativeDisableError,
     NativeJointControlConfig,
     NativeJointSafetyLimits,
@@ -32,20 +33,20 @@ from arx_d_can.sdk.native_safety import (
     _EnableReport,
     _SafetyHealth,
     _GripperCommand,
-    _GripperForceProfile,
+    _GripperProductBinding,
     _JointSafetyLimits,
     _JointMitTarget,
     _JointPvTarget,
 )
 
 
-def test_packaged_runtime_exposes_required_abi_2_1_capabilities() -> None:
+def test_packaged_runtime_exposes_required_abi_2_2_capabilities() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
     library.articore_runtime_abi_version.restype = ctypes.c_uint32
     library.articore_runtime_capabilities.restype = ctypes.c_uint64
 
     version = int(library.articore_runtime_abi_version())
-    assert (version >> 16, version & 0xFFFF) == (2, 1)
+    assert (version >> 16, version & 0xFFFF) == (2, 2)
     required = (
         ARTICORE_CAP_COMMAND_LIFETIME
         | ARTICORE_CAP_PROTECTIVE_FAULT_HOLD
@@ -56,11 +57,12 @@ def test_packaged_runtime_exposes_required_abi_2_1_capabilities() -> None:
         | ARTICORE_CAP_JOINT_MIT_POSITION
         | ARTICORE_CAP_JOINT_PV_POSITION
         | ARTICORE_CAP_EFFECTIVE_CONTROL_RATE
+        | ARTICORE_CAP_BUILTIN_GRIPPER_PRODUCT_PROFILES
     )
     assert int(library.articore_runtime_capabilities()) & required == required
 
 
-def test_packaged_runtime_abi_2_1_has_no_native_trajectory_api() -> None:
+def test_packaged_runtime_abi_2_2_has_no_native_trajectory_api() -> None:
     library = ctypes.CDLL(articore_runtime_library_path())
 
     for name in (
@@ -128,7 +130,7 @@ def test_native_runtime_queries_effective_control_rate() -> None:
     assert runtime._get_control_hz() == pytest.approx(400.0)
 
 
-def test_native_ordinary_joint_positions_use_abi_2_1_entry_points() -> None:
+def test_native_ordinary_joint_positions_use_abi_2_2_entry_points() -> None:
     captured: list[tuple[str, list[tuple[int, float]], float]] = []
 
     class Library:
@@ -194,8 +196,8 @@ def test_native_ordinary_joint_positions_use_abi_2_1_entry_points() -> None:
     ]
 
 
-def test_abi_2_1_joint_and_gripper_configuration_structures() -> None:
-    captured: dict[str, list[ctypes.Structure]] = {"limits": [], "profiles": []}
+def test_abi_2_2_joint_limits_and_gripper_product_binding_structures() -> None:
+    captured: dict[str, list[ctypes.Structure]] = {"limits": [], "products": []}
 
     class Library:
         @staticmethod
@@ -207,11 +209,11 @@ def test_abi_2_1_joint_and_gripper_configuration_structures() -> None:
             return 0
 
         @staticmethod
-        def articore_runtime_configure_gripper_force_profiles(
+        def articore_runtime_configure_gripper_products(
             _runtime, values, count
         ) -> int:
             for index in range(int(count)):
-                captured["profiles"].append(values[index])
+                captured["products"].append(values[index])
             return 0
 
         @staticmethod
@@ -230,34 +232,22 @@ def test_abi_2_1_joint_and_gripper_configuration_structures() -> None:
             ),
         ),
     )
-    runtime._configure_gripper_force_profiles(
-        tuple(
-            NativeGripperForceProfile(
-                gripper,
-                level,
-                0.3 + 0.2 * int(level),
-                1.2 + 0.2 * int(level),
-                4.0,
-                0.5,
-                2.0,
-                0.5,
-            )
-            for level in GripperForceLevel
-        ),
+    runtime._configure_gripper_products(
+        (NativeGripperProductBinding(gripper, "yunyi_gripper_v1"),),
     )
 
     assert captured["limits"][0].struct_size == ctypes.sizeof(_JointSafetyLimits)
     assert captured["limits"][0].soft_upper_position == pytest.approx(0.9)
-    assert [value.force_level for value in captured["profiles"]] == list(
-        range(1, 11)
+    assert captured["products"][0].struct_size == ctypes.sizeof(
+        _GripperProductBinding
     )
-    assert all(
-        value.struct_size == ctypes.sizeof(_GripperForceProfile)
-        for value in captured["profiles"]
+    assert captured["products"][0].motor == gripper._ptr
+    assert bytes(captured["products"][0].profile_id).rstrip(b"\0") == (
+        b"yunyi_gripper_v1"
     )
 
 
-def test_abi_2_1_gripper_command_is_atomic_profiled_submission() -> None:
+def test_abi_2_2_gripper_command_is_atomic_profiled_submission() -> None:
     captured: list[_GripperCommand] = []
 
     class Library:
@@ -571,3 +561,28 @@ def test_packaged_runtime_creates_a_single_channel_without_python_extension() ->
         assert not health.right_transport.connected
     finally:
         runtime.close()
+
+
+def test_packaged_runtime_accepts_builtin_yunyi_gripper_profile_before_connect() -> None:
+    class Handle:
+        def __init__(self, pointer: int) -> None:
+            self._ptr = pointer
+
+    joint = Handle(0x301)
+    gripper = Handle(0x302)
+    runtime = NativeSafetyRuntime(
+        controller_group=Handle(0x300),
+        left_controller=Handle(0x303),
+        motors=(
+            NativeMotorDescriptor(joint, 0, "joint1"),
+            NativeMotorDescriptor(gripper, 0, "gripper", is_gripper=True),
+        ),
+        joints=(NativeJointControlConfig(joint, -1.0, 1.0, 2.0, 5.0, 20.0, 1.0),),
+        joint_safety_limits=(
+            NativeJointSafetyLimits(joint, -1.0, 1.0, -0.9, 0.9, 0.1, 2.0),
+        ),
+        gripper_products=(
+            NativeGripperProductBinding(gripper, "yunyi_gripper_v1"),
+        ),
+    )
+    runtime.close()

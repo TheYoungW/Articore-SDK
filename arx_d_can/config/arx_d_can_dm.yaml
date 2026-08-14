@@ -19,26 +19,6 @@ groups:
   gripper:
     joints: [gripper]
 
-gripper_mapping:
-  closed_value: 0.0
-  open_value: 2.64
-
-gripper_protection:
-  close_speed: 1.0
-  contact_torque: 0.8
-  overload_torque: 1.5
-  motion_window_s: 0.2
-  stall_movement: 0.01
-  min_position_error: 0.05
-  contact_hold_s: 0.2
-  overload_hold_s: 0.05
-  hold_offset: 0.08
-  retreat_distance: 0.15
-  max_step_interval_s: 0.05
-  overload_retreat_interval_s: 0.1
-  hold_kp: 2.0
-  hold_kd: 0.5
-
 joints:
   - name: joint1
     motor_id: 0x01

@@ -32,7 +32,7 @@ from .native_safety import (
     EnableReport,
     GripperForceLevel,
     GripperSafetyHealth,
-    NativeGripperForceProfile,
+    NativeGripperProductBinding,
     NativeJointControlConfig,
     NativeJointSafetyLimits,
     NativeMotorDescriptor,
@@ -306,36 +306,12 @@ class ArxDCanArm(_SafetyMixin):
             )
         if self.enable_gripper and self.config.gripper is not None:
             gripper = self.config.gripper
-            protection = self.config.gripper_protection
-            closed = self.config.gripper_closed_value
-            opened = self.config.gripper_open_value
             descriptors.append(
                 NativeMotorDescriptor(
                     motor=self.robot._motor_map[gripper.name],
                     side=side,
                     name=f"{prefix}{gripper.name}",
                     is_gripper=True,
-                    safe_kp=protection.hold_kp,
-                    safe_kd=protection.hold_kd,
-                    overload_torque=protection.overload_torque,
-                    retreat_distance=protection.retreat_distance,
-                    contact_torque=protection.contact_torque,
-                    motion_window_s=protection.motion_window_s,
-                    stall_movement=protection.stall_movement,
-                    min_position_error=protection.min_position_error,
-                    contact_hold_s=protection.contact_hold_s,
-                    overload_hold_s=protection.overload_hold_s,
-                    hold_offset=protection.hold_offset,
-                    retreat_retry_s=protection.overload_retreat_interval_s,
-                    open_position=opened,
-                    closed_position=closed,
-                    normal_kp=gripper.mit_kp,
-                    normal_kd=gripper.mit_kd,
-                    close_speed=protection.close_speed,
-                    max_step_interval_s=protection.max_step_interval_s,
-                    closing_direction=1.0 if closed > opened else -1.0,
-                    lower_position=min(closed, opened),
-                    upper_position=max(closed, opened),
                 )
             )
         return tuple(descriptors)
@@ -441,29 +417,22 @@ class ArxDCanArm(_SafetyMixin):
             )
         return tuple(limits)
 
-    def _native_gripper_force_profiles(
+    def _native_gripper_product_bindings(
         self,
-    ) -> tuple[NativeGripperForceProfile, ...]:
-        """把产品 1～10 档标定绑定到当前实际安装的夹爪。"""
+    ) -> tuple[NativeGripperProductBinding, ...]:
+        """把实际安装的夹爪绑定到 motor 内置产品标定。"""
         gripper = self.config.gripper
         if not self.enable_gripper or gripper is None:
             return ()
-        motor = self.robot._motor_map[gripper.name]
-        return tuple(
-            NativeGripperForceProfile(
-                motor=motor,
-                force_level=level,
-                contact_torque=profile[0],
-                overload_torque=profile[1],
-                moving_kp=profile[2],
-                moving_kd=profile[3],
-                hold_kp=profile[4],
-                hold_kd=profile[5],
+        if not self.config.gripper_profile:
+            raise ValueError(
+                f"{self.config.model}: installed gripper requires gripper_profile"
             )
-            for level, profile in zip(
-                GripperForceLevel,
-                self.config.gripper_protection.force_profiles,
-            )
+        return (
+            NativeGripperProductBinding(
+                motor=self.robot._motor_map[gripper.name],
+                profile_id=self.config.gripper_profile,
+            ),
         )
 
     def _create_single_safety_runtime(self) -> None:
@@ -490,7 +459,7 @@ class ArxDCanArm(_SafetyMixin):
                 motors=descriptors,
                 joints=self._native_joint_control_configs(),
                 joint_safety_limits=self._native_joint_safety_limits(),
-                gripper_force_profiles=self._native_gripper_force_profiles(),
+                gripper_products=self._native_gripper_product_bindings(),
                 control_hz=self.config.control_hz,
                 command_timeout_s=self.config.command_timeout_s,
                 enable_grace_s=self.config.enable_grace_s,
@@ -500,9 +469,6 @@ class ArxDCanArm(_SafetyMixin):
                 feedback_max_age_s=self.config.max_cached_feedback_age_s,
                 safe_hold_failure_threshold=self.config.safe_hold_failure_threshold,
                 safe_pv_velocity_limit=self.config.safe_hold_pv_velocity_limit,
-                # ABI 兼容字段；2.1 正常运行时夹爪跟随机械臂实际控制频率。
-                gripper_control_hz=self.config.control_hz,
-                gripper_fault_action=self.config.gripper_fault_action,
             )
             runtime.connect()
         except Exception:
@@ -546,7 +512,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.3 native safety runtime is unavailable"
+                    "motor-drive-layer 0.9.4 native safety runtime is unavailable"
                 )
         except Exception:
             try:
@@ -581,7 +547,7 @@ class ArxDCanArm(_SafetyMixin):
     def close(self) -> None:
         """停止生成控制命令并关闭总线。
 
-        原生 Runtime 的关闭包含 ABI 2.1 确定性失能事务；失败时保留 Runtime、
+        原生 Runtime 的关闭包含 ABI 2.2 确定性失能事务；失败时保留 Runtime、
         ControllerGroup 和 Transport，供调用方读取结构化报告并重试。
         """
         errors: list[Exception] = []
@@ -596,7 +562,7 @@ class ArxDCanArm(_SafetyMixin):
                     self._faulted = True
                     self._fault_reason = f"close failed: {exc}"
                     self._safe_holding = False
-                # ABI 2.1：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
+                # ABI 2.2：关闭失败时不能继续释放任何被 Runtime 引用的句柄。
                 raise
             self._single_safety_runtime = None
             with self._state_lock:
@@ -631,7 +597,7 @@ class ArxDCanArm(_SafetyMixin):
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接；首次使能时，Python 只配置构造时选择的控制模式和电机
-        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 2.1 Runtime
+        参数，物理使能、当前位置保持、反馈确认和失败回滚均由 ABI 2.2 Runtime
         完成。操作失败时抛出的
         :class:`NativeEnableError` 携带结构化使能报告。
         """
@@ -831,11 +797,13 @@ class ArxDCanArm(_SafetyMixin):
         gripper_state = None
         if self.config.gripper is not None and len(pos) > arm_count:
             motor_position = float(pos[arm_count])
+            runtime = self._single_safety_runtime
+            health = None if runtime is None else runtime.health.left_gripper
             gripper_state = GripperState(
                 name=self.config.gripper.name,
                 motor_id=self.config.gripper.motor_id,
                 feedback_id=self.config.gripper.feedback_id,
-                opening=self._gripper_opening_from_motor_position(motor_position),
+                opening=0.0 if health is None else health.opening,
                 motor_position=motor_position,
                 motor_velocity=float(vel[arm_count]),
                 torque=float(tau[arm_count]),
@@ -1244,18 +1212,6 @@ class ArxDCanArm(_SafetyMixin):
             runtime.set_gripper_commands(((motor, opening, normalized_speed, level),))
         finally:
             self._sync_native_safety_flags(runtime.health)
-
-    def _gripper_opening_from_motor_position(self, position: float) -> float:
-        ratio = (
-            float(position) - self.config.gripper_closed_value
-        ) / (
-            self.config.gripper_open_value - self.config.gripper_closed_value
-        )
-        return 1000.0 * max(0.0, min(1.0, ratio))
-
-    def _set_gripper_motor_value(self, value: float) -> None:
-        """仅供旧录制文件回放，将电机位置换算为公开开合度。"""
-        self.set_gripper_opening(self._gripper_opening_from_motor_position(value))
 
     def _set_dual_runtime_managed(self, managed: bool) -> None:
         """禁止绕过双臂原生状态机直接提交单侧关节命令。"""

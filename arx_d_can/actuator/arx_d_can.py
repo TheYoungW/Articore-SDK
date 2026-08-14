@@ -143,7 +143,7 @@ def _complete_feedback_error(
         return MotorFaultError(
             f"fresh feedback failed after {attempts} {attempt_label}: {detail}"
         )
-    # 0.9.3 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
+    # 0.9.4 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
     # 基础 CallError；这种情况保守地按“不完整”处理，而不是猜测成超时。
     error_type = (
         FeedbackTimeoutError
@@ -167,7 +167,7 @@ def _feedback_request_error(
     *,
     motor_names: tuple[str, ...],
 ) -> Exception:
-    """把 motor 0.9.3 的稳定反馈分类映射为 SDK 公共异常。"""
+    """把 motor 0.9.4 的稳定反馈分类映射为 SDK 公共异常。"""
     context = {
         "operation": "request_feedback",
         "motor_names": motor_names,
@@ -599,8 +599,11 @@ def load_cfg(
         "joints": joints,
         "motion": _optional_mapping(data, "motion"),
         "joint_safety": _optional_mapping(data, "joint_safety"),
-        "gripper_mapping": _optional_mapping(data, "gripper_mapping"),
-        "gripper_protection": _optional_mapping(data, "gripper_protection"),
+        "gripper_profile": (
+            None
+            if data.get("gripper_profile") is None
+            else str(data["gripper_profile"]).strip()
+        ),
         "safety": _optional_mapping(data, "safety"),
     }
 
