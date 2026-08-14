@@ -49,6 +49,9 @@ from .state import (
 )
 
 
+MAX_ORDINARY_MIT_VELOCITY = math.radians(200.0)
+
+
 def _load_profile(config_path: str | Path | None, *, model: str | None) -> dict:
     """从包级入口解析配置加载器，保持现有 monkeypatch 钩子有效。"""
     sdk_package = sys.modules[__package__]
@@ -533,7 +536,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.0 native safety runtime is unavailable"
+                    "motor-drive-layer 0.9.2 native safety runtime is unavailable"
                 )
         except Exception:
             try:
@@ -1097,12 +1100,24 @@ class ArxDCanArm(_SafetyMixin):
             for joint, position in zip(self.config.arm_joints, values)
         )
 
-    def _ordinary_joint_velocity(self, velocity: float) -> float:
+    def _ordinary_joint_velocity(self, velocity: float, *, mode: str) -> float:
         value = float(velocity)
-        maximum = min(joint.pv_vlim for joint in self.config.arm_joints)
+        hardware_maximum = min(
+            joint.pv_vlim for joint in self.config.arm_joints
+        )
+        maximum = (
+            min(hardware_maximum, MAX_ORDINARY_MIT_VELOCITY)
+            if mode == "mit"
+            else hardware_maximum
+        )
         if not math.isfinite(value) or not 0.0 < value <= maximum:
+            limit = (
+                f"{maximum:g} rad/s (200 deg/s)"
+                if mode == "mit" and maximum == MAX_ORDINARY_MIT_VELOCITY
+                else f"{maximum:g} rad/s"
+            )
             raise ValueError(
-                f"velocity must be finite, positive, and at most {maximum:g} rad/s"
+                f"velocity must be finite, positive, and at most {limit}"
             )
         return value
 
@@ -1124,7 +1139,7 @@ class ArxDCanArm(_SafetyMixin):
         if runtime is None:
             raise RuntimeError("native joint position runtime is not connected")
         targets = self._ordinary_joint_position_targets(positions)
-        reference_velocity = self._ordinary_joint_velocity(velocity)
+        reference_velocity = self._ordinary_joint_velocity(velocity, mode=mode)
         try:
             getattr(runtime, f"set_joint_{mode}")(targets, reference_velocity)
         finally:

@@ -23,6 +23,7 @@ class GravityCompensationSample:
     velocities: tuple[float, ...]
     commanded_torques: tuple[float, ...]
     limited_joints: tuple[str, ...] = ()
+    clipped_joints: tuple[str, ...] = ()
 
 
 def _vector(
@@ -101,6 +102,20 @@ class _GravityTorqueCalculator:
             ],
             dtype=np.float64,
         )
+        self.lower_position_limits = np.asarray(
+            [
+                -math.inf if joint.lower_limit is None else joint.lower_limit
+                for joint in arm.config.arm_joints
+            ],
+            dtype=np.float64,
+        )
+        self.upper_position_limits = np.asarray(
+            [
+                math.inf if joint.upper_limit is None else joint.upper_limit
+                for joint in arm.config.arm_joints
+            ],
+            dtype=np.float64,
+        )
         self.provider = gravity_provider or self._build_provider()
 
     def _build_provider(self) -> GravityProvider:
@@ -146,6 +161,31 @@ class _GravityTorqueCalculator:
             if not math.isclose(float(expected), float(actual), abs_tol=1e-9)
         )
         return limited, limited_joints
+
+    def clip_hold_position(
+        self,
+        positions: np.ndarray,
+    ) -> tuple[np.ndarray, tuple[str, ...]]:
+        """将反馈生成的保持目标裁剪到 URDF 命令限位内。"""
+        values = np.asarray(positions, dtype=np.float64).reshape(-1)
+        if len(values) != self.joint_count or np.any(~np.isfinite(values)):
+            raise RuntimeError("重力补偿保持目标无效")
+        clipped = np.clip(
+            values,
+            self.lower_position_limits,
+            self.upper_position_limits,
+        )
+        clipped_joints = tuple(
+            name
+            for name, expected, actual in zip(
+                self.arm.joint_names,
+                values,
+                clipped,
+            )
+            if not math.isclose(float(expected), float(actual), abs_tol=1e-12)
+        )
+        return clipped, clipped_joints
+
 
 class GravityCompensationMode:
     """使用 MIT 前馈力矩抵消单臂重力。
@@ -221,6 +261,9 @@ class GravityCompensationMode:
         gravity_alpha: float,
     ) -> GravityCompensationSample:
         gravity, limited_joints = self._calculator.compute(positions)
+        safe_hold_position, clipped_joints = self._calculator.clip_hold_position(
+            hold_position
+        )
         kp = (1.0 - gravity_alpha) * self._calculator.default_kp
         kd = (
             (1.0 - gravity_alpha) * self._calculator.default_kd
@@ -228,12 +271,12 @@ class GravityCompensationMode:
         )
         torques = gravity_alpha * gravity
         self.arm._submit_joint_positions(
-            hold_position,
+            safe_hold_position,
             velocities=self._calculator.zeros,
             torques=torques,
             mit_kp=kp,
             mit_kd=kd,
-            enforce_position_limits=False,
+            enforce_position_limits=True,
         )
         sample = GravityCompensationSample(
             elapsed_s=max(0.0, time.monotonic() - self._active_started),
@@ -241,6 +284,7 @@ class GravityCompensationMode:
             velocities=tuple(float(value) for value in velocities),
             commanded_torques=tuple(float(value) for value in torques),
             limited_joints=limited_joints,
+            clipped_joints=clipped_joints,
         )
         self._last_sample = sample
         return sample

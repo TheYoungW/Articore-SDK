@@ -168,7 +168,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.0 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.2 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -252,7 +252,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.0 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.9.2 dual-arm safety runtime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -494,8 +494,8 @@ class ArxDCanDualArm:
         self._sync_python_safety_flags(runtime.health)
         left_targets = self.left._ordinary_joint_position_targets(left)
         right_targets = self.right._ordinary_joint_position_targets(right)
-        left_velocity = self.left._ordinary_joint_velocity(velocity)
-        right_velocity = self.right._ordinary_joint_velocity(velocity)
+        left_velocity = self.left._ordinary_joint_velocity(velocity, mode=mode)
+        right_velocity = self.right._ordinary_joint_velocity(velocity, mode=mode)
         if left_velocity != right_velocity:
             raise RuntimeError("left and right ordinary joint velocities must match")
         try:

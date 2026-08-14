@@ -22,6 +22,8 @@ def _joint(name: str) -> JointMotorConfig:
         pv_pos_kp=50.0,
         pv_pos_ki=0.5,
         pv_vlim=2.0,
+        lower_limit=-1.0,
+        upper_limit=1.0,
     )
 
 
@@ -48,6 +50,8 @@ class _Robot:
             safe_holding=False,
             fault_reason=None,
         )
+        self.left_position = 0.1
+        self.right_position = -0.2
 
     @staticmethod
     def _side(position: float):
@@ -59,7 +63,10 @@ class _Robot:
         )
 
     def _state(self):
-        return SimpleNamespace(left=self._side(0.1), right=self._side(-0.2))
+        return SimpleNamespace(
+            left=self._side(self.left_position),
+            right=self._side(self.right_position),
+        )
 
     def connect(self) -> None:
         self.connected = True
@@ -115,7 +122,7 @@ def test_dual_gravity_uses_one_atomic_runtime_submission() -> None:
     enable_kwargs = next(value for name, value in robot.calls if name == "enable")
     assert enable_kwargs == {}
     assert len(robot.commands) == 1
-    assert not bool(robot.commands[0]["enforce_position_limits"])
+    assert bool(robot.commands[0]["enforce_position_limits"])
     np.testing.assert_allclose(robot.commands[0]["left_torques"], [1.0])
     np.testing.assert_allclose(robot.commands[0]["right_torques"], [-2.0])
     assert sample.left.commanded_torques == pytest.approx((1.0,))
@@ -128,6 +135,24 @@ def test_dual_gravity_uses_one_atomic_runtime_submission() -> None:
     assert not robot.connected
     assert not robot.enabled
     assert robot.calls[-1] == ("close", None)
+
+
+def test_dual_gravity_clips_each_feedback_hold_target() -> None:
+    robot = _Robot()
+    robot.left_position = 1.1
+    robot.right_position = -1.2
+    gravity = _mode(robot)
+
+    sample = gravity.start()
+    try:
+        np.testing.assert_allclose(robot.commands[-1]["left"], [1.0])
+        np.testing.assert_allclose(robot.commands[-1]["right"], [-1.0])
+        assert sample.left.positions == pytest.approx((1.1,))
+        assert sample.right.positions == pytest.approx((-1.2,))
+        assert sample.left.clipped_joints == ("left_joint",)
+        assert sample.right.clipped_joints == ("right_joint",)
+    finally:
+        gravity.stop()
 
 
 def test_dual_gravity_requires_mit_mode() -> None:

@@ -6,7 +6,7 @@ import argparse
 import math
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import positive_velocity_degrees
+from arx_d_can.examples.dual_arm.common import mit_velocity_degrees
 
 
 def main(args: argparse.Namespace) -> None:
@@ -33,8 +33,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--velocity",
-        type=positive_velocity_degrees,
+        type=mit_velocity_degrees,
         default=math.radians(60.0),
-        help="统一最大参考速度，单位为度/秒；默认 60",
+        help="统一最大参考速度，单位为度/秒，范围 (0, 200]；默认 60",
     )
     main(parser.parse_args())

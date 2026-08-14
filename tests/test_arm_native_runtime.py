@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -162,6 +163,25 @@ def test_single_arm_mit_uses_direction_and_one_shared_velocity() -> None:
     arm.set_joint_mit([0.25], velocity=1.5)
 
     assert calls == [(((motor, pytest.approx(-0.25)),), pytest.approx(1.5))]
+
+
+def test_single_arm_mit_velocity_is_capped_at_200_degrees_per_second() -> None:
+    joint = replace(JOINT, pv_vlim=5.0)
+    arm = ArxDCanArm(
+        config=ArxDCanConfig(arm_control_mode="mit", arm_joints=(joint,)),
+        enable_gripper=False,
+    )
+
+    maximum = math.radians(200.0)
+    assert arm._ordinary_joint_velocity(maximum, mode="mit") == pytest.approx(
+        maximum
+    )
+    with pytest.raises(ValueError, match="200 deg/s"):
+        arm._ordinary_joint_velocity(math.radians(200.01), mode="mit")
+
+    assert arm._ordinary_joint_velocity(
+        math.radians(250.0), mode="pv"
+    ) == pytest.approx(math.radians(250.0))
 
 
 @pytest.mark.parametrize("velocity", (0.0, -1.0, float("nan"), 2.1))

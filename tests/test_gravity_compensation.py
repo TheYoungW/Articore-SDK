@@ -130,7 +130,7 @@ def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     assert arm.calls[1][1] == {}
     np.testing.assert_allclose(arm.commands[-1]["mit_kp"], [0.0, 0.0])
     np.testing.assert_allclose(arm.commands[-1]["mit_kd"], [0.0, 0.0])
-    assert not bool(arm.commands[-1]["enforce_position_limits"])
+    assert bool(arm.commands[-1]["enforce_position_limits"])
     np.testing.assert_allclose(arm.commands[-1]["torques"], [1.0, -2.0])
     assert sample.commanded_torques == pytest.approx((1.0, -2.0))
 
@@ -140,6 +140,20 @@ def test_mode_seeds_current_position_and_submits_gravity_to_runtime() -> None:
     assert not arm.enabled
     assert ("disable", None) in arm.calls
     assert arm.calls[-1] == ("close", None)
+
+
+def test_mode_clips_feedback_hold_target_to_urdf_limits() -> None:
+    arm = FakeArm()
+    arm.positions = (2.1, -2.2)
+    mode = make_mode(arm)
+
+    sample = mode.start()
+    try:
+        np.testing.assert_allclose(arm.commands[-1]["positions"], [2.0, -2.0])
+        assert sample.positions == pytest.approx((2.1, -2.2))
+        assert sample.clipped_joints == ("joint1", "joint2")
+    finally:
+        mode.stop()
 
 
 def test_mode_uses_native_cache_without_python_feedback_thread() -> None:

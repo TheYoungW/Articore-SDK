@@ -341,8 +341,8 @@ def test_dual_ordinary_pv_submits_one_atomic_batch_and_shared_velocity() -> None
     robot.right._ordinary_joint_position_targets = (  # type: ignore[method-assign]
         lambda positions: (("right-motor", positions[0]),)
     )
-    robot.left._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
-    robot.right._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.left._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
 
     robot.set_joint_pv(
         left=VALID_POSITIONS,
@@ -397,8 +397,8 @@ def test_dual_ordinary_pv_synchronizes_native_health() -> None:
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
     robot.left._ordinary_joint_position_targets = lambda _positions: (("l0", 0.0),)  # type: ignore[method-assign]
     robot.right._ordinary_joint_position_targets = lambda _positions: (("r0", 0.0),)  # type: ignore[method-assign]
-    robot.left._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
-    robot.right._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.left._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
     robot.set_joint_pv(left=VALID_POSITIONS, right=VALID_POSITIONS)
 
     assert calls == [(('l0', 0.0), ('r0', 0.0))]
@@ -518,8 +518,8 @@ def test_dual_ordinary_mit_submits_only_positions_and_shared_velocity() -> None:
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
     robot.left._ordinary_joint_position_targets = lambda _positions: (("left", 0.2),)  # type: ignore[method-assign]
     robot.right._ordinary_joint_position_targets = lambda _positions: (("right", -0.3),)  # type: ignore[method-assign]
-    robot.left._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
-    robot.right._ordinary_joint_velocity = lambda value: float(value)  # type: ignore[method-assign]
+    robot.left._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
 
     robot.set_joint_mit(
         left=VALID_POSITIONS,

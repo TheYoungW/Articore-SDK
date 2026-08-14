@@ -129,6 +129,8 @@ class DualArmGravityCompensationMode:
         right_positions, right_velocities = right_state
         left_gravity, left_limited = self._left.compute(left_positions)
         right_gravity, right_limited = self._right.compute(right_positions)
+        left_safe_hold, left_clipped = self._left.clip_hold_position(left_hold)
+        right_safe_hold, right_clipped = self._right.clip_hold_position(right_hold)
         left_kp = (1.0 - gravity_alpha) * self._left.default_kp
         right_kp = (1.0 - gravity_alpha) * self._right.default_kp
         left_kd = (
@@ -142,8 +144,8 @@ class DualArmGravityCompensationMode:
         left_torques = gravity_alpha * left_gravity
         right_torques = gravity_alpha * right_gravity
         self.robot._submit_joint_positions(
-            left=left_hold,
-            right=right_hold,
+            left=left_safe_hold,
+            right=right_safe_hold,
             left_velocities=self._left.zeros,
             right_velocities=self._right.zeros,
             left_torques=left_torques,
@@ -152,7 +154,7 @@ class DualArmGravityCompensationMode:
             right_mit_kp=right_kp,
             left_mit_kd=left_kd,
             right_mit_kd=right_kd,
-            enforce_position_limits=False,
+            enforce_position_limits=True,
         )
         elapsed = max(0.0, time.monotonic() - self._active_started)
         sample = DualArmGravityCompensationSample(
@@ -162,6 +164,7 @@ class DualArmGravityCompensationMode:
                 velocities=tuple(float(value) for value in left_velocities),
                 commanded_torques=tuple(float(value) for value in left_torques),
                 limited_joints=left_limited,
+                clipped_joints=left_clipped,
             ),
             right=GravityCompensationSample(
                 elapsed_s=elapsed,
@@ -169,6 +172,7 @@ class DualArmGravityCompensationMode:
                 velocities=tuple(float(value) for value in right_velocities),
                 commanded_torques=tuple(float(value) for value in right_torques),
                 limited_joints=right_limited,
+                clipped_joints=right_clipped,
             ),
         )
         self._last_sample = sample

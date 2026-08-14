@@ -169,6 +169,22 @@ def test_mit_example_uses_the_same_shared_velocity(monkeypatch) -> None:
     assert "profile" not in captured
 
 
+def test_mit_example_rejects_velocity_above_200_degrees_per_second() -> None:
+    parser = mit_example.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "--left",
+                "0,0,0,0,0,0,0",
+                "--right",
+                "0,0,0,0,0,0,0",
+                "--velocity",
+                "200.01",
+            ]
+        )
+
+
 @pytest.mark.parametrize("example", (pv_example, mit_example))
 def test_dual_position_example_has_no_mode_option(example) -> None:
     parser = example.build_parser()

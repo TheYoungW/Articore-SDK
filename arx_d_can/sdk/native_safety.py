@@ -648,11 +648,11 @@ class NativeSafetyRuntime:
         motor_lib = self._motor_abi.lib
         if not getattr(self._motor_abi, "has_transport_health", False):
             raise RuntimeError(
-                "motor-drive-layer 0.9.0 must expose structured transport health"
+                "motor-drive-layer 0.9.2 must expose structured transport health"
             )
         if not getattr(self._motor_abi, "has_structured_feedback_report", False):
             raise RuntimeError(
-                "motor-drive-layer 0.9.0 must expose structured feedback reports"
+                "motor-drive-layer 0.9.2 must expose structured feedback reports"
             )
         transport_health_pointer = _function_pointer(
             motor_lib.motor_controller_get_transport_health
