@@ -7,8 +7,7 @@ from arx_d_can import ArxDCanDualArm
 
 def main() -> None:
     robot = ArxDCanDualArm()
-    robot.connect()
-    print("机器人连接成功")
+    print("正在以维护模式连接；不会切换 MIT/PV，也不会使能电机")
     try:
         left, right = robot.clear_motor_faults()
         print("左臂故障已清除：", ", ".join(left))

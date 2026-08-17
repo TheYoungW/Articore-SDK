@@ -272,6 +272,56 @@ def test_dual_send_uses_one_native_parallel_batch(mode: str, method_name: str) -
     assert len(calls[0][1]) == 4
 
 
+def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    events: list[str] = []
+
+    class Runtime:
+        def __init__(self, **_kwargs) -> None:
+            events.append("create")
+
+        def configure_joints(self, _configs) -> None:
+            events.append("joints")
+
+        def configure_joint_safety_limits(self, _limits) -> None:
+            events.append("limits")
+
+        def configure_gripper_products(self, _bindings) -> None:
+            events.append("grippers")
+
+        def connect(self) -> None:
+            events.append("connect")
+            raise RuntimeError("injected connect failure")
+
+        def close(self) -> None:
+            events.append("close")
+
+    monkeypatch.setattr("arx_d_can.sdk.dual_arm.ArticoreRuntime", Runtime)
+    robot._runtime_motors = lambda: ()  # type: ignore[method-assign]
+    robot._runtime_joint_configs = lambda: ()  # type: ignore[method-assign]
+    robot._runtime_joint_limits = lambda: ()  # type: ignore[method-assign]
+    robot._runtime_gripper_bindings = lambda: ()  # type: ignore[method-assign]
+    group = SimpleNamespace(_ptr=1)
+    left_controller = SimpleNamespace(_ptr=1)
+    right_controller = SimpleNamespace(_ptr=1)
+
+    with pytest.raises(RuntimeError, match="injected connect failure"):
+        robot._create_safety_runtime(
+            group,
+            left_controller,
+            right_controller,
+        )
+
+    assert events == [
+        "create",
+        "joints",
+        "limits",
+        "grippers",
+        "connect",
+        "close",
+    ]
+
+
 def test_dual_raw_send_validates_both_sides_before_submission() -> None:
     robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
     submitted: list[object] = []
@@ -732,6 +782,8 @@ def test_dual_clear_faults_releases_and_recreates_runtime_ownership() -> None:
     runtime = Runtime()
     robot._safety_runtime = runtime  # type: ignore[assignment]
     robot._controller_group = object()  # type: ignore[assignment]
+    robot.left._connected = True
+    robot.right._connected = True
     robot._release_runtime = lambda: (events.append("release"), setattr(robot, "_safety_runtime", None))  # type: ignore[method-assign]
     robot.left.robot.clear_errors = lambda **_kwargs: (events.append("left"), ("l",))[1]  # type: ignore[method-assign]
     robot.right.robot.clear_errors = lambda **_kwargs: (events.append("right"), ("r",))[1]  # type: ignore[method-assign]
@@ -742,6 +794,56 @@ def test_dual_clear_faults_releases_and_recreates_runtime_ownership() -> None:
     assert robot.clear_motor_faults() == (("l",), ("r",))
     assert events == ["release", "left", "right", "recreate"]
     assert robot._safety_runtime is runtime
+
+
+def test_dual_clear_faults_uses_unconfigured_maintenance_connection() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    events: list[str] = []
+
+    for label, arm in (("left", robot.left), ("right", robot.right)):
+        arm.robot.connect = lambda side=label: events.append(f"{side}-connect")  # type: ignore[method-assign]
+        arm.robot.clear_errors = lambda *, joint_names, side=label: (  # type: ignore[method-assign]
+            events.append(f"{side}-clear"),
+            (side,),
+        )[1]
+        arm.robot.disconnect = lambda *, disable, side=label: events.append(  # type: ignore[method-assign]
+            f"{side}-close-{disable}"
+        )
+
+    assert robot.clear_motor_faults() == (("left",), ("right",))
+    assert events == [
+        "left-connect",
+        "right-connect",
+        "left-clear",
+        "right-clear",
+        "right-close-False",
+        "left-close-False",
+    ]
+    assert not robot.connected
+
+
+def test_dual_maintenance_clear_attempts_both_sides_and_closes_them() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    events: list[str] = []
+
+    for label, arm in (("left", robot.left), ("right", robot.right)):
+        arm.robot.connect = lambda side=label: events.append(f"{side}-connect")  # type: ignore[method-assign]
+        arm.robot.disconnect = lambda *, disable, side=label: events.append(  # type: ignore[method-assign]
+            f"{side}-close"
+        )
+    robot.left.robot.clear_errors = lambda **_kwargs: (_ for _ in ()).throw(  # type: ignore[method-assign]
+        RuntimeError("left injected failure")
+    )
+    robot.right.robot.clear_errors = lambda **_kwargs: (  # type: ignore[method-assign]
+        events.append("right-clear"),
+        ("right",),
+    )[1]
+
+    with pytest.raises(RuntimeError, match="left injected failure"):
+        robot.clear_motor_faults()
+
+    assert "right-clear" in events
+    assert events[-2:] == ["right-close", "left-close"]
 
 
 def test_managed_single_arm_gripper_cannot_bypass_native_runtime() -> None:

@@ -16,9 +16,7 @@ def main(args: argparse.Namespace) -> None:
         baud=args.baud,
         enable_gripper=True,
     )
-    arm.connect()
-    print("机器人连接成功")
-
+    print("正在以维护模式连接；不会切换 MIT/PV，也不会使能电机")
     try:
         names = arm.clear_motor_faults()
         print("故障已清除：", ", ".join(names))

@@ -238,10 +238,19 @@ class ArxDCanDualArm:
             right_controller=right_controller,
             motors=self._runtime_motors(),
         )
-        runtime.configure_joints(self._runtime_joint_configs())
-        runtime.configure_joint_safety_limits(self._runtime_joint_limits())
-        runtime.configure_gripper_products(self._runtime_gripper_bindings())
-        runtime.connect()
+        try:
+            runtime.configure_joints(self._runtime_joint_configs())
+            runtime.configure_joint_safety_limits(self._runtime_joint_limits())
+            runtime.configure_gripper_products(self._runtime_gripper_bindings())
+            runtime.connect()
+        except Exception:
+            # connect() 失败时局部 Runtime 仍持有 Group/Controller/Motor 租用。
+            # 必须先释放 Runtime，调用方随后才能安全关闭 ControllerGroup。
+            try:
+                runtime.close()
+            except Exception:
+                pass
+            raise
         return runtime
 
     def _release_runtime(self) -> None:
@@ -726,11 +735,18 @@ class ArxDCanDualArm:
         return left, right
 
     def clear_motor_faults(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """释放共享 Runtime 租用后清除左右臂全部已安装电机故障。"""
+        """清除左右臂全部已安装电机故障，并保持所有电机失能。
+
+        未连接时使用维护路径：只打开 Controller 和 Motor，不配置 MIT/PV、不创建
+        Runtime，清错完成后立即关闭。这样即使故障电机暂时不能写入控制模式，也能
+        先完成恢复。已经正常连接时则先释放 Runtime 租用，清错后重建 Runtime。
+        """
         runtime = self._safety_runtime
         group = self._controller_group
-        if runtime is None or group is None:
-            raise RuntimeError("dual-arm ArticoreRuntime is not connected")
+        if runtime is None and group is None and not self.connected:
+            return self._clear_motor_faults_maintenance()
+        if runtime is None or group is None or not self.connected:
+            raise RuntimeError("dual-arm connection is incomplete")
         self._release_runtime()
         try:
             left = self.left.robot.clear_errors(
@@ -753,6 +769,36 @@ class ArxDCanDualArm:
                 arm._fault_reason = None
                 arm._safe_holding = False
         return left, right
+
+    def _clear_motor_faults_maintenance(
+        self,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """通过不配置控制模式的临时连接清除双臂电机故障。"""
+        arms = (("left", self.left), ("right", self.right))
+        opened: list[tuple[str, ArxDCanArm]] = []
+        results: dict[str, tuple[str, ...]] = {}
+        errors: list[str] = []
+        for label, arm in arms:
+            try:
+                arm.robot.connect()
+                opened.append((label, arm))
+            except Exception as exc:
+                errors.append(f"{label} maintenance connect failed: {exc}")
+        for label, arm in opened:
+            try:
+                results[label] = arm.robot.clear_errors(
+                    joint_names=arm._active_joint_names()
+                )
+            except Exception as exc:
+                errors.append(f"{label} motor fault clear failed: {exc}")
+        for label, arm in reversed(opened):
+            try:
+                arm.robot.disconnect(disable=False)
+            except Exception as exc:
+                errors.append(f"{label} maintenance close failed: {exc}")
+        if errors:
+            raise RuntimeError("dual-arm maintenance failed: " + "; ".join(errors))
+        return results["left"], results["right"]
 
     def set_gripper_openings(
         self,

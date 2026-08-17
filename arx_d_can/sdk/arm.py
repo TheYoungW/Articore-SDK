@@ -500,6 +500,7 @@ class ArxDCanArm(_SafetyMixin):
         if not getattr(group, "_ptr", None):
             group.close()
             return
+        runtime: ArticoreRuntime | None = None
         try:
             runtime = ArticoreRuntime(
                 config=self._runtime_config(),
@@ -515,6 +516,11 @@ class ArxDCanArm(_SafetyMixin):
             )
             runtime.connect()
         except Exception:
+            if runtime is not None:
+                try:
+                    runtime.close()
+                except Exception:
+                    pass
             group.close()
             raise
         self._single_controller_group = group
@@ -711,15 +717,16 @@ class ArxDCanArm(_SafetyMixin):
     def clear_motor_faults(self) -> tuple[str, ...]:
         """清除活动电机故障，并返回成功清除故障的电机名称。
 
-        此操作会先释放 Runtime 租用，完成后按原产品配置重建 Runtime。清除失败仍
-        会作为 SDK 故障锁存。
+        未连接时只临时打开 Controller 和 Motor，不配置控制模式或创建 Runtime；
+        已连接时先释放 Runtime 租用，完成后按原产品配置重建 Runtime。
         """
-        self._require_connected()
         if self._dual_runtime_managed:
             raise RuntimeError(
                 "this arm is managed by ArxDCanDualArm; clear both sides through "
                 "the dual-arm maintenance API"
             )
+        if not self._connected:
+            return self._clear_motor_faults_maintenance()
         recreate_runtime = self._single_safety_runtime is not None
         if recreate_runtime:
             self._release_single_runtime()
@@ -742,6 +749,26 @@ class ArxDCanArm(_SafetyMixin):
         with self._state_lock:
             self._enabled = False
             self._configured = recreate_runtime
+            self._faulted = False
+            self._fault_reason = None
+            self._safe_holding = False
+        return completed
+
+    def _clear_motor_faults_maintenance(self) -> tuple[str, ...]:
+        """通过不配置控制模式的临时连接清除单臂电机故障。"""
+        connected = False
+        try:
+            self.robot.connect()
+            connected = True
+            completed = self.robot.clear_errors(
+                joint_names=self._active_joint_names(),
+            )
+        finally:
+            if connected:
+                self.robot.disconnect(disable=False)
+        with self._state_lock:
+            self._enabled = False
+            self._configured = False
             self._faulted = False
             self._fault_reason = None
             self._safe_holding = False

@@ -458,3 +458,32 @@ def test_builtin_model_rejects_connection_without_native_runtime() -> None:
     with pytest.raises(RuntimeError, match="ArticoreRuntime is unavailable"):
         arm.connect()
     assert not arm.connected
+
+
+def test_single_clear_faults_uses_unconfigured_maintenance_connection() -> None:
+    arm = ArxDCanArm(model="yunyi_v1_0_left", enable_gripper=False)
+    events: list[object] = []
+
+    class Robot:
+        @staticmethod
+        def connect() -> None:
+            events.append("connect")
+
+        @staticmethod
+        def clear_errors(*, joint_names) -> tuple[str, ...]:
+            events.append(("clear", tuple(joint_names)))
+            return ("l-joint1",)
+
+        @staticmethod
+        def disconnect(*, disable: bool) -> None:
+            events.append(("close", disable))
+
+    arm.robot = Robot()  # type: ignore[assignment]
+
+    assert arm.clear_motor_faults() == ("l-joint1",)
+    assert events == [
+        "connect",
+        ("clear", tuple(arm.joint_names)),
+        ("close", False),
+    ]
+    assert not arm.connected
