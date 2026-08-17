@@ -1,40 +1,11 @@
-"""ARX-D-CAN 分组控制系统 — JointGroup 架构。
-
-配置驱动的硬件抽象层：
-  - config/models.yaml 注册内置机型，每种机械臂使用独立硬件 YAML
-  - 关节按 groups 分组，每组独立控制模式
-  - 统一 loop 中按组顺序同步发送，防止总线争用
-
-使用示例::
-
-    # arm 组 POS_VEL，gripper 组 MIT（解耦混合控制）
-    arm = ArxDCan()
-    arm.connect()
-    arm.arm.enable()
-    arm.gripper.enable()
-    arm.arm.mode_pos_vel()
-    arm.gripper.mode_mit()
-
-    def loop(ref, dt):
-        ref.arm.send_pos_vel(joint_pos)
-        ref.gripper.send_mit(gripper_pos)
-
-    arm.start_control_loop(loop)
-
-    # 全部组 MIT（纯测试）
-    arm.arm.mode_mit()
-    arm.gripper.mode_mit()
-
-    arm.disconnect()
-"""
+"""高层 SDK 内部使用的配置驱动执行器后端。"""
 from __future__ import annotations
 
-import threading
 import time
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -143,7 +114,7 @@ def _complete_feedback_error(
         return MotorFaultError(
             f"fresh feedback failed after {attempts} {attempt_label}: {detail}"
         )
-    # 0.9.4 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
+    # motor 的结构化异常可以明确区分超时与反馈不完整。自定义后端仍可能只抛出
     # 基础 CallError；这种情况保守地按“不完整”处理，而不是猜测成超时。
     error_type = (
         FeedbackTimeoutError
@@ -167,7 +138,7 @@ def _feedback_request_error(
     *,
     motor_names: tuple[str, ...],
 ) -> Exception:
-    """把 motor 0.9.4 的稳定反馈分类映射为 SDK 公共异常。"""
+    """把 motor 的稳定反馈分类映射为 SDK 公共异常。"""
     context = {
         "operation": "request_feedback",
         "motor_names": motor_names,
@@ -665,12 +636,6 @@ class NoOpGroup:
 
     def send_pos_vel(self, pos, vlim=None) -> None:
         pass
-
-    def get_positions(self) -> np.ndarray:
-        return np.array([], dtype=np.float64)
-
-    def get_velocities(self) -> np.ndarray:
-        return np.array([], dtype=np.float64)
 
     def read_state(
         self,
@@ -1185,28 +1150,6 @@ class JointGroup:
             np.asarray(torques, dtype=np.float64),
         )
 
-    def get_positions(self, request_feedback: bool = True) -> np.ndarray:
-        if request_feedback:
-            self._request_feedback()
-        return np.array([
-            jc.direction * self._mm[jc.name].get_state().pos
-            if self._mm[jc.name].get_state() is not None else 0.0
-            for jc in self._jcfgs
-        ], dtype=np.float64)
-
-    def get_velocities(self, request_feedback: bool = True) -> np.ndarray:
-        if request_feedback:
-            self._request_feedback()
-        velocities = []
-        for jc in self._jcfgs:
-            state = self._mm[jc.name].get_state()
-            if state is None:
-                velocities.append(0.0)
-                continue
-            _, velocity_feedback_scale = _velocity_range_scales(jc)
-            velocities.append(jc.direction * state.vel * velocity_feedback_scale)
-        return np.asarray(velocities, dtype=np.float64)
-
     def __repr__(self) -> str:
         return f"JointGroup({self.name!r}, joints={self.num_joints}, mode={self._mode})"
 
@@ -1216,25 +1159,7 @@ class JointGroup:
 # --------------------------------------------------------------------------
 
 class ArxDCan:
-    """ARX-D-CAN 分组控制系统。
-
-    持有多个 JointGroup，每组独立控制模式，独立发送命令，
-    在同一个控制循环中按组顺序同步发送，防止总线争用。
-
-    按组访问（通过 __getattr__）::
-
-        arm.arm       # 机械臂关节组
-        arm.gripper   # 夹爪关节组（如果有）
-
-    也可以通过 groups 字典::
-
-        arm.groups["arm"]
-        arm.groups["gripper"]
-
-    手动添加组::
-
-        arm.add_group("custom", ["joint1", "joint2"])
-    """
+    """持有高层 SDK 所需电机句柄和内部关节分组。"""
 
     def __init__(
         self,
@@ -1250,17 +1175,7 @@ class ArxDCan:
         if config_data is not None and (hw_yaml is not None or model is not None):
             raise ValueError("config_data cannot be combined with model or config_path")
         cfg = dict(config_data) if config_data is not None else load_cfg(hw_yaml, model=model)
-        hardware_path = cfg.get("hardware_path")
-        self._hw_yaml = (
-            Path(str(hardware_path)).name
-            if hardware_path
-            else f"{cfg.get('model', 'custom')}.yaml"
-        )
-        self._model: str = str(cfg.get("model", "custom"))
-        self._urdf_path: str | None = cfg.get("urdf_path")
-        self._end_effector_frame: str = str(
-            cfg.get("end_effector_frame", "gripper_end")
-        )
+        self._model = str(cfg.get("model", "custom"))
         if channel:
             cfg["channel"] = channel
         if transport is not None:
@@ -1296,10 +1211,6 @@ class ArxDCan:
         self._motor_map: Dict[str, any] = {}
         self._groups: Dict[str, JointGroup] = {}
 
-        self._running = False
-        self._ctrl_thread: Optional[threading.Thread] = None
-        self._ctrl_fn: Optional[Callable] = None
-        self._ctrl_rate: float = self._rate
         self._connected: bool = False
 
         self._build_groups()
@@ -1357,37 +1268,12 @@ class ArxDCan:
         return [j.name for j in self._all_joints]
 
     @property
-    def groups(self) -> Dict[str, JointGroup]:
-        return self._groups
-
-    @property
-    def control_loop_active(self) -> bool:
-        t = getattr(self, "_ctrl_thread", None)
-        return t is not None and t.is_alive()
-
-    @property
-    def rate(self) -> float:
-        return self._ctrl_rate
-
-    @property
     def has_gripper(self) -> bool:
         return not isinstance(self._groups.get("gripper", None), NoOpGroup)
 
     @property
-    def hardware_yaml(self) -> str:
-        return self._hw_yaml
-
-    @property
     def model(self) -> str:
         return self._model
-
-    @property
-    def urdf_path(self) -> str | None:
-        return self._urdf_path
-
-    @property
-    def end_effector_frame(self) -> str:
-        return self._end_effector_frame
 
     def __getattr__(self, name: str) -> any:
         if name.startswith("_"):
@@ -1395,39 +1281,6 @@ class ArxDCan:
         if name in self._groups:
             return self._groups[name]
         raise AttributeError(name)
-
-    # ── 手动添加组 ────────────────────────────────────────────────────
-
-    def add_group(self, name: str, joint_names: List[str]) -> JointGroup:
-        if name in self._groups:
-            raise ValueError(f"组 {name!r} 已存在")
-        g = JointGroup(
-            name=name,
-            joint_names=joint_names,
-            all_joints=self._all_joints,
-            motor_map=self._motor_map,
-            ctrl_map=self._ctrl_map,
-        )
-        self._groups[name] = g
-        return g
-
-    # ── 全局使能 / 失能 ────────────────────────────────────────────────
-
-    def enable_all(self) -> None:
-        enabled = []
-        try:
-            for jc in self._all_joints:
-                self._motor_map[jc.name].enable()
-                enabled.append(jc.name)
-        except Exception as exc:
-            try:
-                self.disable_all()
-            except Exception:
-                pass
-            raise RuntimeError(
-                f"failed to enable {jc.name}; enabled before failure={enabled}: {exc}"
-            ) from exc
-        time.sleep(0.05)
 
     def disable_all(
         self,
@@ -1720,15 +1573,6 @@ class ArxDCan:
             np.array(torq, dtype=np.float64),
         )
 
-    def get_positions(self) -> np.ndarray:
-        return self.get_state()[0]
-
-    def get_velocities(self) -> np.ndarray:
-        return self.get_state()[1]
-
-    def get_torques(self) -> np.ndarray:
-        return self.get_state()[2]
-
     def get_status_codes(
         self,
         joint_names: Optional[List[str]] = None,
@@ -1800,7 +1644,6 @@ class ArxDCan:
         """
         if not self._connected:
             return
-        self.stop_control_loop()
         errors = []
         if disable:
             try:
@@ -1826,67 +1669,6 @@ class ArxDCan:
     def estop(self) -> None:
         self.disable_all()
 
-    def reconnect(
-        self,
-        init_delay: float = 1.0,
-        post_setup_delay: float = 0.5,
-    ) -> None:
-        self.disconnect()
-        time.sleep(init_delay)
-        self._ctrl_map["main"] = self._make_controller()
-        self._motor_map.clear()
-        ctrl = self._ctrl_map["main"]
-        for jc in self._all_joints:
-            mot = ctrl.add_damiao_motor(jc.motor_id, jc.feedback_id, jc.model)
-            self._motor_map[jc.name] = mot
-            time.sleep(0.05)
-        self._build_groups()
-        time.sleep(post_setup_delay)
-        print("[reconnect] 控制器和电机已重新初始化")
-
-    # ── 控制循环 ────────────────────────────────────────────────────────
-
-    def start_control_loop(
-        self,
-        control_fn: Callable[["ArxDCan", float], None],
-        rate: Optional[float] = None,
-    ) -> None:
-        if self.control_loop_active:
-            raise RuntimeError("控制循环已在运行，请先调用 stop_control_loop()")
-        self._running = True
-        self._ctrl_rate = rate if rate is not None else self._rate
-        self._ctrl_fn = control_fn
-        self._ctrl_thread = threading.Thread(
-            target=self._control_loop_impl,
-            name="arx_d_can-control-loop",
-            daemon=True,
-        )
-        self._ctrl_thread.start()
-
-    def _control_loop_impl(self) -> None:
-        dt = 1.0 / self._ctrl_rate
-        while self._running:
-            t0 = time.perf_counter()
-            try:
-                self._ctrl_fn(self, dt)
-            except Exception:
-                if self._running:
-                    self._running = False
-                    try:
-                        self.estop()
-                    finally:
-                        raise
-            elapsed = time.perf_counter() - t0
-            sleep_time = dt - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-
-    def stop_control_loop(self) -> None:
-        self._running = False
-        t = getattr(self, "_ctrl_thread", None)
-        if t is not None and t.is_alive():
-            t.join(timeout=5.0)
-
     # ── 上下文管理器 ───────────────────────────────────────────────────────
 
     def __enter__(self) -> "ArxDCan":
@@ -1897,4 +1679,4 @@ class ArxDCan:
 
     def __repr__(self) -> str:
         gs = ", ".join(f"{k}({g.num_joints}j)" for k, g in self._groups.items())
-        return f"ArxDCan({self._name!r}, [{gs}], rate={self._ctrl_rate}Hz)"
+        return f"ArxDCan({self._name!r}, [{gs}], rate={self._rate}Hz)"

@@ -552,13 +552,11 @@ def test_disconnect_closes_bus_without_controller_shutdown(disable):
     arm._connected = True
     arm._ctrl_map = {"main": FakeCloseController()}
     arm._motor_map = {"joint1": object()}
-    arm.stop_control_loop = lambda: events.append("stop")
     arm.disable_all = lambda: events.append("disable")
 
     arm.disconnect(disable=disable)
 
     assert events == [
-        "stop",
         *(["disable"] if disable else []),
         "close_bus",
         "close",
@@ -661,6 +659,20 @@ def test_reversed_joint_transforms_commands_and_feedback() -> None:
 def test_joint_group_only_exposes_pv_and_mit_control_modes() -> None:
     assert not hasattr(JointGroup, "mode_vel")
     assert not hasattr(JointGroup, "send_vel")
+    assert not hasattr(JointGroup, "get_positions")
+    assert not hasattr(JointGroup, "get_velocities")
+
+
+def test_internal_backend_excludes_legacy_control_loop_and_direct_enable() -> None:
+    for name in (
+        "add_group",
+        "enable_all",
+        "reconnect",
+        "start_control_loop",
+        "stop_control_loop",
+        "control_loop_active",
+    ):
+        assert not hasattr(ArxDCan, name)
 
 
 def test_driver_clamps_mit_and_pos_vel_positions_before_direction_mapping() -> None:
@@ -771,12 +783,10 @@ def test_custom_velocity_range_rescales_mit_command_and_feedback() -> None:
     group.send_mit([0.0], vel=[2.0])
     _, group_velocity, _ = group.read_state(request_feedback=False)
     _, global_velocity, _ = arm.get_state(request_feedback=False)
-    direct_velocity = group.get_velocities(request_feedback=False)
 
     assert motor.mit_commands == [(0.0, 6.0, 0.0, 0.0, 0.0)]
     assert group_velocity.tolist() == [2.0]
     assert global_velocity.tolist() == [2.0]
-    assert direct_velocity.tolist() == [2.0]
 
 
 @pytest.mark.parametrize("include_gripper", [False, True])

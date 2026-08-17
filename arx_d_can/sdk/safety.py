@@ -54,7 +54,7 @@ class _SafetyMixin:
         self._require_connected()
         runtime = self._single_safety_runtime
         if runtime is not None:
-            self._sync_native_safety_flags(runtime.health)
+            self._sync_runtime_flags(runtime.health)
         if self._faulted:
             raise RuntimeError(
                 f"ARX-D-CAN arm is faulted: {self._fault_reason}; call recover()"
@@ -64,7 +64,7 @@ class _SafetyMixin:
         runtime = self._single_safety_runtime
         if runtime is not None:
             runtime.estop(reason)
-            self._sync_native_safety_flags(runtime.health)
+            self._sync_runtime_flags(runtime.health)
             return
         try:
             self.robot.estop()

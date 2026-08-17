@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from ..actuator.arx_d_can import _torque_range_scales, _velocity_range_scales
 
 
-CTRL_MODE_REGISTER = 10
-
 STATUS_NAMES = {
     0x0: "DISABLED",
     0x1: "ENABLED",
@@ -62,71 +60,50 @@ def mode_name(mode: int | None) -> str:
     return MODE_NAMES.get(mode, "UNSUPPORTED")
 
 
-def read_diagnostics(controller, motors, *, timeout_ms: int) -> list[MotorDiagnostic]:
-    """读取已经注册的电机，不执行使能、失能或模式切换。"""
-    feedback_error = None
-    try:
-        controller.request_feedback_all(timeout_ms=timeout_ms)
-    except Exception as exc:
-        feedback_error = str(exc)
-
-    results = []
-    for joint, motor in motors:
-        try:
-            state = motor.get_state()
-            if state is None:
-                raise RuntimeError(feedback_error or "no motor feedback")
-            control_mode = motor.get_register_u32(
-                CTRL_MODE_REGISTER,
-                timeout_ms=timeout_ms,
-            )
-            _, velocity_scale = _velocity_range_scales(joint)
-            _, torque_scale = _torque_range_scales(joint)
-            results.append(
-                MotorDiagnostic(
-                    name=joint.name,
-                    motor_id=joint.motor_id,
-                    feedback_id=joint.feedback_id,
-                    status_code=int(state.status_code),
-                    control_mode=int(control_mode),
-                    position=joint.direction * float(state.pos),
-                    velocity=joint.direction * float(state.vel) * velocity_scale,
-                    torque=joint.direction * float(state.torq) * torque_scale,
-                    mos_temperature=float(state.t_mos),
-                    rotor_temperature=float(state.t_rotor),
-                )
-            )
-        except Exception as exc:
-            results.append(
-                MotorDiagnostic(
-                    name=joint.name,
-                    motor_id=joint.motor_id,
-                    feedback_id=joint.feedback_id,
-                    error=str(exc),
-                )
-            )
-    return results
-
-
 def read_motor_diagnostics(arm, *, timeout_ms: int = 100) -> list[MotorDiagnostic]:
-    """通过高层机械臂对象读取所有活动电机的结构化诊断信息。
-
-    ``timeout_ms`` 分别作用于整臂反馈请求及每台电机的 ``CTRL_MODE`` 寄存器
-    请求，因此一次诊断的总耗时可能高于该值。
-    """
+    """从 Runtime 持续更新的缓存读取活动电机诊断信息。"""
+    del timeout_ms  # Runtime 独占主动反馈和寄存器通信。
     if not arm.connected:
         raise RuntimeError("ARX-D-CAN arm is not connected")
     active_names = set(arm._active_joint_names())
     joints = [
         joint for joint in arm.robot._all_joints if joint.name in active_names
     ]
-    motors = [(joint, arm.robot._motor_map[joint.name]) for joint in joints]
+    control_mode = 1 if arm._mode == "mit" else 2
+    results = []
     with arm._io_lock:
-        return read_diagnostics(
-            arm.robot._ctrl_map["main"],
-            motors,
-            timeout_ms=timeout_ms,
-        )
+        for joint in joints:
+            motor = arm.robot._motor_map[joint.name]
+            try:
+                state = motor.get_state()
+                if state is None:
+                    raise RuntimeError("no cached motor feedback")
+                _, velocity_scale = _velocity_range_scales(joint)
+                _, torque_scale = _torque_range_scales(joint)
+                results.append(
+                    MotorDiagnostic(
+                        name=joint.name,
+                        motor_id=joint.motor_id,
+                        feedback_id=joint.feedback_id,
+                        status_code=int(state.status_code),
+                        control_mode=control_mode,
+                        position=joint.direction * float(state.pos),
+                        velocity=joint.direction * float(state.vel) * velocity_scale,
+                        torque=joint.direction * float(state.torq) * torque_scale,
+                        mos_temperature=float(state.t_mos),
+                        rotor_temperature=float(state.t_rotor),
+                    )
+                )
+            except Exception as exc:
+                results.append(
+                    MotorDiagnostic(
+                        name=joint.name,
+                        motor_id=joint.motor_id,
+                        feedback_id=joint.feedback_id,
+                        error=str(exc),
+                    )
+                )
+    return results
 
 
 def print_diagnostic_summary(

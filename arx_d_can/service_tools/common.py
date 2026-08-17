@@ -1,7 +1,6 @@
 """维护工具共用的连接和关节参数辅助函数。"""
 from __future__ import annotations
 
-import math
 import time
 from argparse import ArgumentParser, Namespace
 from collections.abc import Sequence
@@ -72,32 +71,6 @@ def parse_joint_positions(text: str, *, expected_count: int = 6) -> tuple[float,
             f"expected {expected_count} comma-separated joint positions, got {len(values)}"
         )
     return values
-
-
-def parse_joint_positions_degrees(
-    text: str,
-    *,
-    expected_count: int = 6,
-) -> tuple[float, ...]:
-    """解析用户输入的角度值，并返回 SDK 使用的弧度值。"""
-    return tuple(
-        math.radians(value)
-        for value in parse_joint_positions(text, expected_count=expected_count)
-    )
-
-
-def send_for_seconds(
-    arm: ArxDCanArm,
-    positions: Sequence[float],
-    *,
-    seconds: float,
-    hz: float = DEFAULT_HZ,
-) -> None:
-    period = 1.0 / max(1.0, hz)
-    deadline = time.monotonic() + max(0.0, seconds)
-    while time.monotonic() < deadline:
-        arm._submit_joint_positions(positions)
-        time.sleep(period)
 
 
 def interpolate_joint_positions(

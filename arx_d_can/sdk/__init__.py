@@ -3,6 +3,19 @@ from __future__ import annotations
 
 import time
 
+from motor_drive_layer import (
+    DisableMotorResult,
+    DisableReport,
+    EnableMotorResult,
+    EnableReport,
+    GripperControlState,
+    GripperHealth,
+    RuntimeTransactionError,
+    RuntimeTransportHealth,
+    SafetyHealth,
+    SafetyState,
+)
+
 # 此处保留 ``load_cfg``，以兼容调用方以及通过 ``arx_d_can.sdk`` 检查配置加载过程的测试。
 from ..actuator import load_cfg
 from .arm import ArxDCanArm
@@ -13,22 +26,7 @@ from .config import (
 )
 from .dual_arm import ArxDCanDualArm, ArxDCanDualArmState
 from .diagnostics import MotorDiagnostic
-from .native_safety import (
-    DisableMotorResult,
-    DisableReport,
-    EnableMotorResult,
-    EnableReport,
-    GripperControlState,
-    GripperForceLevel,
-    GripperSafetyHealth,
-    MissingEnableMotor,
-    MissingDisableMotor,
-    NativeDisableError,
-    NativeEnableError,
-    SafetyHealth,
-    SafetyState,
-    TransportHealth,
-)
+from .gripper import GripperForceLevel
 from .state import (
     ArxDCanState,
     GripperState,
@@ -43,25 +41,12 @@ for _public_type in (
     ArxDCanDualArm,
     ArxDCanDualArmState,
     ArxDCanState,
-    DisableMotorResult,
-    DisableReport,
-    EnableMotorResult,
-    EnableReport,
-    GripperControlState,
     GripperForceLevel,
-    GripperSafetyHealth,
     GripperState,
     JointMotorConfig,
     JointState,
     MotorDiagnostic,
     MotorState,
-    MissingEnableMotor,
-    MissingDisableMotor,
-    NativeDisableError,
-    NativeEnableError,
-    SafetyHealth,
-    SafetyState,
-    TransportHealth,
 ):
     _public_type.__module__ = __name__
 del _public_type
@@ -80,17 +65,14 @@ __all__ = [
     "GripperState",
     "GripperControlState",
     "GripperForceLevel",
-    "GripperSafetyHealth",
+    "GripperHealth",
     "JointMotorConfig",
     "JointState",
     "MotorDiagnostic",
     "MotorState",
-    "MissingEnableMotor",
-    "MissingDisableMotor",
-    "NativeDisableError",
-    "NativeEnableError",
+    "RuntimeTransactionError",
+    "RuntimeTransportHealth",
     "SafetyHealth",
     "SafetyState",
-    "TransportHealth",
     "default_config",
 ]

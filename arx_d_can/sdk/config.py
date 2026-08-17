@@ -8,7 +8,8 @@ from typing import Sequence
 
 import numpy as np
 
-from ..actuator import JointCfg, load_cfg
+from ..actuator import load_cfg
+from ..actuator.arx_d_can import JointCfg
 _MIT_GAIN_MAX = {"Kp": 500.0, "Kd": 5.0}
 
 

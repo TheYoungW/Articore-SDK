@@ -5,19 +5,23 @@ from dataclasses import dataclass, replace
 import math
 from typing import Sequence
 
-from ..driver import ControllerGroup
-from .arm import ArxDCanArm
-from .native_safety import (
+from motor_drive_layer import (
+    ArticoreRuntime,
     DisableReport,
     EnableReport,
-    GripperForceLevel,
-    GripperSafetyHealth,
-    NativeMotorDescriptor,
-    NativeSafetyRuntime,
+    GripperCommand,
+    GripperHealth,
+    RuntimeConfig,
+    RuntimeControlMode,
+    RuntimeMotor,
+    RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
-    TransportHealth,
 )
+
+from ..driver import ControllerGroup
+from .arm import ArxDCanArm, _runtime_raw_commands
+from .gripper import GripperForceLevel
 from .state import ArxDCanState
 
 
@@ -27,8 +31,8 @@ class ArxDCanDualArmState:
 
     left: ArxDCanState
     right: ArxDCanState
-    left_gripper: GripperSafetyHealth | None = None
-    right_gripper: GripperSafetyHealth | None = None
+    left_gripper: GripperHealth | None = None
+    right_gripper: GripperHealth | None = None
 
 
 class ArxDCanDualArm:
@@ -73,7 +77,7 @@ class ArxDCanDualArm:
             enable_gripper=right_gripper,
         )
         self._controller_group: ControllerGroup | None = None
-        self._safety_runtime: NativeSafetyRuntime | None = None
+        self._safety_runtime: ArticoreRuntime | None = None
 
     @property
     def connected(self) -> bool:
@@ -85,7 +89,7 @@ class ArxDCanDualArm:
         """返回 SDK 内部双臂调度频率，不属于公开控制接口。"""
         runtime = self._safety_runtime
         if runtime is not None:
-            return runtime._get_control_hz()
+            return float(runtime.control_hz)
         return min(self.left.config.control_hz, self.right.config.control_hz)
 
     @property
@@ -111,63 +115,70 @@ class ArxDCanDualArm:
             if connected
             else SafetyState.DISCONNECTED
         )
-        transport = TransportHealth(
+        transport = RuntimeTransportHealth(
             connected=connected,
             healthy=connected,
             consecutive_send_failures=0,
             consecutive_feedback_failures=0,
-            last_feedback_age_s=None,
+            last_feedback_age_ns=None,
+            tx_frames=0,
+            rx_frames=0,
+            send_errors=0,
+            receive_errors=0,
+            last_tx_age_ns=None,
+            last_rx_age_ns=None,
             last_error=None,
         )
         return SafetyHealth(
             state=state,
-            fault_reason=None,
-            last_successful_command_age_s=None,
-            last_fresh_feedback_age_s=None,
+            safe_holding=False,
+            disable_confirmed=not self.enabled,
+            last_successful_command_age_ns=None,
+            last_fresh_feedback_age_ns=None,
             consecutive_send_failures=0,
             consecutive_feedback_failures=0,
             left_transport=transport,
             right_transport=transport,
+            grippers=(),
             motor_faults=(),
-            unconfirmed_disable_motors=(),
-            safe_holding=False,
-            disable_confirmed=not self.enabled,
+            unconfirmed_disable=(),
+            fault_reason=None,
         )
 
     @property
     def last_enable_report(self) -> EnableReport | None:
         """返回最近一次双臂原子使能报告。"""
         runtime = self._safety_runtime
-        return None if runtime is None else runtime.last_enable_report
+        return None if runtime is None else runtime.last_enable_report()
 
     @property
     def last_disable_report(self) -> DisableReport | None:
         """返回最近一次双臂确定性失能报告。"""
         runtime = self._safety_runtime
-        return None if runtime is None else runtime.last_disable_report
+        return None if runtime is None else runtime.last_disable_report()
 
-    def _native_motor_descriptors(self) -> tuple[NativeMotorDescriptor, ...]:
+    def _runtime_motors(self) -> tuple[RuntimeMotor, ...]:
         return (
-            *self.left._native_motor_descriptors(side=0, label="left"),
-            *self.right._native_motor_descriptors(side=1, label="right"),
+            *self.left._runtime_motors(side=0, label="left"),
+            *self.right._runtime_motors(side=1, label="right"),
         )
 
-    def _native_joint_control_configs(self):
+    def _runtime_joint_configs(self):
         return (
-            *self.left._native_joint_control_configs(),
-            *self.right._native_joint_control_configs(),
+            *self.left._runtime_joint_configs(),
+            *self.right._runtime_joint_configs(),
         )
 
-    def _native_joint_safety_limits(self):
+    def _runtime_joint_limits(self):
         return (
-            *self.left._native_joint_safety_limits(),
-            *self.right._native_joint_safety_limits(),
+            *self.left._runtime_joint_limits(),
+            *self.right._runtime_joint_limits(),
         )
 
-    def _native_gripper_product_bindings(self):
+    def _runtime_gripper_bindings(self):
         return (
-            *self.left._native_gripper_product_bindings(),
-            *self.right._native_gripper_product_bindings(),
+            *self.left._runtime_gripper_bindings(),
+            *self.right._runtime_gripper_bindings(),
         )
 
     def _create_safety_runtime(
@@ -175,8 +186,8 @@ class ArxDCanDualArm:
         group: ControllerGroup,
         left_controller: object,
         right_controller: object,
-    ) -> NativeSafetyRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.9.4 对象必须具备。
+    ) -> ArticoreRuntime | None:
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.0 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -184,37 +195,71 @@ class ArxDCanDualArm:
             return None
         left = self.left.config
         right = self.right.config
-        runtime = NativeSafetyRuntime(
+        runtime = ArticoreRuntime(
+            config=RuntimeConfig(
+                control_hz=max(1, round(min(left.control_hz, right.control_hz))),
+                command_timeout_ms=max(
+                    1, round(min(left.command_timeout_s, right.command_timeout_s) * 1000)
+                ),
+                enable_grace_ms=max(
+                    1, round(min(left.enable_grace_s, right.enable_grace_s) * 1000)
+                ),
+                safe_hold_hz=max(1, round(min(left.safe_hold_hz, right.safe_hold_hz))),
+                feedback_check_hz=max(
+                    1, round(min(left.feedback_check_hz, right.feedback_check_hz))
+                ),
+                feedback_failure_threshold=min(
+                    left.feedback_fault_threshold, right.feedback_fault_threshold
+                ),
+                feedback_max_age_ms=max(
+                    1,
+                    round(
+                        min(
+                            left.max_cached_feedback_age_s,
+                            right.max_cached_feedback_age_s,
+                        )
+                        * 1000
+                    ),
+                ),
+                safe_hold_failure_threshold=min(
+                    left.safe_hold_failure_threshold,
+                    right.safe_hold_failure_threshold,
+                ),
+                safe_pv_velocity_limit=min(
+                    left.safe_hold_pv_velocity_limit,
+                    right.safe_hold_pv_velocity_limit,
+                ),
+                gripper_control_hz=max(
+                    1, round(min(left.control_hz, right.control_hz))
+                ),
+            ),
             controller_group=group,
             left_controller=left_controller,
             right_controller=right_controller,
-            motors=self._native_motor_descriptors(),
-            joints=self._native_joint_control_configs(),
-            joint_safety_limits=self._native_joint_safety_limits(),
-            gripper_products=self._native_gripper_product_bindings(),
-            control_hz=min(left.control_hz, right.control_hz),
-            command_timeout_s=min(left.command_timeout_s, right.command_timeout_s),
-            enable_grace_s=min(left.enable_grace_s, right.enable_grace_s),
-            safe_hold_hz=min(left.safe_hold_hz, right.safe_hold_hz),
-            feedback_check_hz=min(left.feedback_check_hz, right.feedback_check_hz),
-            feedback_failure_threshold=min(
-                left.feedback_fault_threshold, right.feedback_fault_threshold
-            ),
-            feedback_max_age_s=min(
-                left.max_cached_feedback_age_s,
-                right.max_cached_feedback_age_s,
-            ),
-            safe_hold_failure_threshold=min(
-                left.safe_hold_failure_threshold,
-                right.safe_hold_failure_threshold,
-            ),
-            safe_pv_velocity_limit=min(
-                left.safe_hold_pv_velocity_limit,
-                right.safe_hold_pv_velocity_limit,
-            ),
+            motors=self._runtime_motors(),
         )
+        runtime.configure_joints(self._runtime_joint_configs())
+        runtime.configure_joint_safety_limits(self._runtime_joint_limits())
+        runtime.configure_gripper_products(self._runtime_gripper_bindings())
         runtime.connect()
         return runtime
+
+    def _release_runtime(self) -> None:
+        """释放共享 Runtime 的租用，但保留 ControllerGroup。"""
+        runtime = self._safety_runtime
+        if runtime is None:
+            return
+        error: Exception | None = None
+        try:
+            runtime.close()
+        except Exception as exc:
+            error = exc
+        if getattr(runtime, "closed", True):
+            self._safety_runtime = None
+        else:
+            raise error or RuntimeError("ArticoreRuntime did not close")
+        if error is not None:
+            raise error
 
     def _sync_python_safety_flags(self, health: SafetyHealth) -> None:
         active = health.state in {
@@ -250,14 +295,11 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.9.4 dual-arm safety runtime is unavailable"
+                    "motor-drive-layer 0.10.0 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
-                # Runtime 关闭失败时仍依赖后续所有句柄；异常直接向上传播，绝不能
-                # 继续释放 ControllerGroup、Controller 或 Transport。
-                self._safety_runtime.close()
-                self._safety_runtime = None
+                self._release_runtime()
             if self._controller_group is not None:
                 self._controller_group.close()
                 self._controller_group = None
@@ -283,7 +325,11 @@ class ArxDCanDualArm:
         if not self.right._configured:
             self.right._configure()
         try:
-            runtime.enable(self.left._mode)
+            runtime.enable(
+                RuntimeControlMode.PV
+                if self.left._mode in {"pv", "posvel"}
+                else RuntimeControlMode.MIT
+            )
             self._sync_python_safety_flags(runtime.health)
         except Exception:
             # 健康快照只是补充状态，不能覆盖携带 EnableReport 的原始异常。
@@ -310,26 +356,30 @@ class ArxDCanDualArm:
                 "call disable() first"
             )
 
+        group = self._controller_group
+        if group is None:
+            raise RuntimeError("dual-arm ControllerGroup is not connected")
         previous = (self.left._mode, self.right._mode)
+        self._release_runtime()
         try:
             self.left.configure_mode(normalized)
             self.right.configure_mode(normalized)
         except Exception as exc:
-            rollback_errors = []
             for arm, previous_mode in zip((self.left, self.right), previous):
                 try:
                     arm.configure_mode(previous_mode)
-                except Exception as rollback_exc:
-                    rollback_errors.append(rollback_exc)
-            if rollback_errors:
-                try:
-                    runtime.estop("dual-arm mode switch rollback failed")
-                finally:
-                    self._sync_python_safety_flags(runtime.health)
+                except Exception:
+                    pass
             raise RuntimeError("dual-arm control mode switch failed") from exc
-
-        self.left._configured = False
-        self.right._configured = False
+        self.left._configured = True
+        self.right._configured = True
+        self._safety_runtime = self._create_safety_runtime(
+            group,
+            self.left._controller_for_parallel_batch(),
+            self.right._controller_for_parallel_batch(),
+        )
+        if self._safety_runtime is None:
+            raise RuntimeError("failed to recreate dual-arm ArticoreRuntime")
 
     def disable(self) -> None:
         """失能左右臂；一侧失败时仍继续处理另一侧。"""
@@ -339,7 +389,7 @@ class ArxDCanDualArm:
         try:
             runtime.disable()
         except Exception as exc:
-            # 不允许后续 health 读取失败覆盖结构化 NativeDisableError。
+            # 不允许后续 health 读取失败覆盖结构化 RuntimeTransactionError。
             try:
                 health = runtime.health
             except Exception:
@@ -358,15 +408,13 @@ class ArxDCanDualArm:
     def close(self) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
-        ABI 2.2 的 Runtime 关闭包含确定性失能事务。若无法确认所有电机失能，
-        此方法保留全部底层句柄，以便调用方检查 ``last_disable_report`` 并重试。
+        native 句柄和资源租用由 motor-drive-layer 的正式 Runtime 封装管理。
         """
         errors: list[Exception] = []
-        runtime = self._safety_runtime
-        if runtime is not None:
-            # close() 失败时必须原样保留 runtime、group、两侧 controller/transport。
-            runtime.close()
-            self._safety_runtime = None
+        try:
+            self._release_runtime()
+        except Exception as exc:
+            errors.append(exc)
         group = self._controller_group
         if group is not None:
             try:
@@ -375,7 +423,7 @@ class ArxDCanDualArm:
                 errors.append(exc)
             else:
                 self._controller_group = None
-        if errors:
+        if self._controller_group is not None:
             raise RuntimeError("failed to close dual-arm ControllerGroup") from errors[0]
         self.left._set_dual_runtime_managed(False)
         self.right._set_dual_runtime_managed(False)
@@ -387,10 +435,10 @@ class ArxDCanDualArm:
             except Exception as exc:
                 errors.append(exc)
         if errors:
-            raise RuntimeError("failed to close one or more arms") from errors[0]
+            raise errors[0]
 
     def read_state(self) -> ArxDCanDualArmState:
-        """分别读取左右臂状态。"""
+        """读取 Runtime 后台持续刷新的左右臂缓存状态。"""
         states = []
         errors = []
         for side, arm in enumerate((self.left, self.right)):
@@ -403,37 +451,46 @@ class ArxDCanDualArm:
         if errors:
             raise errors[0]
         health = self._safety_runtime.health if self._safety_runtime else None
+        left_gripper = self._gripper_health(health, 0)
+        right_gripper = self._gripper_health(health, 1)
         return ArxDCanDualArmState(
-            left=self._state_with_runtime_gripper(
-                states[0], health.left_gripper if health else None
-            ),
-            right=self._state_with_runtime_gripper(
-                states[1], health.right_gripper if health else None
-            ),
-            left_gripper=health.left_gripper if health else None,
-            right_gripper=health.right_gripper if health else None,
+            left=self._state_with_runtime_gripper(states[0], left_gripper),
+            right=self._state_with_runtime_gripper(states[1], right_gripper),
+            left_gripper=left_gripper,
+            right_gripper=right_gripper,
         )
 
     def read_cached_state(self) -> ArxDCanDualArmState:
         """分别返回左右臂最近一次成功反馈，不发送新的查询帧。"""
         health = self._safety_runtime.health if self._safety_runtime else None
+        left_gripper = self._gripper_health(health, 0)
+        right_gripper = self._gripper_health(health, 1)
         return ArxDCanDualArmState(
             left=self._state_with_runtime_gripper(
                 self.left.read_cached_state(),
-                health.left_gripper if health else None,
+                left_gripper,
             ),
             right=self._state_with_runtime_gripper(
                 self.right.read_cached_state(),
-                health.right_gripper if health else None,
+                right_gripper,
             ),
-            left_gripper=health.left_gripper if health else None,
-            right_gripper=health.right_gripper if health else None,
+            left_gripper=left_gripper,
+            right_gripper=right_gripper,
         )
+
+    @staticmethod
+    def _gripper_health(
+        health: SafetyHealth | None,
+        side: int,
+    ) -> GripperHealth | None:
+        if health is None:
+            return None
+        return next((item for item in health.grippers if item.side == side), None)
 
     @staticmethod
     def _state_with_runtime_gripper(
         state: ArxDCanState,
-        health: GripperSafetyHealth | None,
+        health: GripperHealth | None,
     ) -> ArxDCanState:
         """用 Runtime 产品 profile 计算的开合度补全公开夹爪状态。"""
         if state.gripper is None or health is None:
@@ -489,8 +546,9 @@ class ArxDCanDualArm:
 
         commands = left_batch.commands + right_batch.commands
         try:
-            (runtime.submit_pos_vel if left_batch.mode == "pv" else runtime.submit_mit)(
-                commands
+            batch = type(left_batch)(mode=left_batch.mode, commands=commands)
+            (runtime.submit_pv if left_batch.mode == "pv" else runtime.submit_mit)(
+                _runtime_raw_commands(batch)
             )
         finally:
             self._sync_python_safety_flags(runtime.health)
@@ -577,6 +635,73 @@ class ArxDCanDualArm:
             raise RuntimeError("dual arm can only recover from SAFE_HOLD or FAULT")
         self._sync_python_safety_flags(runtime.health)
 
+    def set_zero(
+        self,
+        *,
+        verify_tolerance: float = 0.02,
+        verify_velocity: float = 0.05,
+        verify_samples: int = 3,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """暂停共享 Runtime 后设置左右臂全部已安装电机的零点。"""
+        runtime = self._safety_runtime
+        group = self._controller_group
+        if runtime is None or group is None:
+            raise RuntimeError("dual-arm ArticoreRuntime is not connected")
+        self._sync_python_safety_flags(runtime.health)
+        if self.enabled:
+            raise RuntimeError("disable the dual arm before writing motor zero positions")
+
+        self._release_runtime()
+        try:
+            left = self.left.robot.set_zero(
+                joint_names=None,
+                verify_tolerance=verify_tolerance,
+                verify_velocity=verify_velocity,
+                verify_samples=verify_samples,
+            )
+            right = self.right.robot.set_zero(
+                joint_names=None,
+                verify_tolerance=verify_tolerance,
+                verify_velocity=verify_velocity,
+                verify_samples=verify_samples,
+            )
+        finally:
+            self._safety_runtime = self._create_safety_runtime(
+                group,
+                self.left._controller_for_parallel_batch(),
+                self.right._controller_for_parallel_batch(),
+            )
+        return left, right
+
+    def clear_motor_faults(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """释放共享 Runtime 租用后清除左右臂全部已安装电机故障。"""
+        runtime = self._safety_runtime
+        group = self._controller_group
+        if runtime is None or group is None:
+            raise RuntimeError("dual-arm ArticoreRuntime is not connected")
+        self._release_runtime()
+        try:
+            left = self.left.robot.clear_errors(
+                joint_names=self.left._active_joint_names()
+            )
+            right = self.right.robot.clear_errors(
+                joint_names=self.right._active_joint_names()
+            )
+        finally:
+            self._safety_runtime = self._create_safety_runtime(
+                group,
+                self.left._controller_for_parallel_batch(),
+                self.right._controller_for_parallel_batch(),
+            )
+        for arm in (self.left, self.right):
+            with arm._state_lock:
+                arm._configured = True
+                arm._enabled = False
+                arm._faulted = False
+                arm._fault_reason = None
+                arm._safe_holding = False
+        return left, right
+
     def set_gripper_openings(
         self,
         *,
@@ -605,15 +730,15 @@ class ArxDCanDualArm:
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
         commands = tuple(
-            (
-                arm.robot._motor_map[arm.config.gripper.name],
-                value,
-                normalized_speed,
-                level,
+            GripperCommand(
+                motor=arm.robot._motor_map[arm.config.gripper.name],
+                opening=value,
+                speed=normalized_speed,
+                force_level=int(level),
             )
             for arm, value in active
         )
-        runtime.set_gripper_commands(commands)
+        runtime.set_grippers(commands)
 
 
 __all__ = ["ArxDCanDualArm", "ArxDCanDualArmState"]

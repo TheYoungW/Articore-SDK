@@ -1,14 +1,14 @@
 """ARX-D-CAN Python SDK。
 
 本包保持电机控制路径的依赖精简：导入 ``arx_d_can`` 时只加载 USB2CAN SDK 组件。
-运动学、动力学、轨迹规划和末端位姿控制器依赖 Pinocchio，因此采用延迟加载。
+运动学、动力学和轨迹规划依赖 Pinocchio，因此采用延迟加载。
 """
 from __future__ import annotations
 
 import importlib
 from typing import Any
 
-from .actuator import ArxDCan, JointCfg, JointGroup, available_models, load_cfg
+from .actuator import available_models, load_cfg
 from .errors import (
     ArxDCanError,
     CommunicationError,
@@ -32,18 +32,15 @@ from .sdk import (
     GripperState,
     GripperControlState,
     GripperForceLevel,
-    GripperSafetyHealth,
+    GripperHealth,
     JointMotorConfig,
     JointState,
     MotorDiagnostic,
     MotorState,
-    MissingEnableMotor,
-    MissingDisableMotor,
-    NativeDisableError,
-    NativeEnableError,
+    RuntimeTransactionError,
+    RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
-    TransportHealth,
     default_config,
 )
 
@@ -63,10 +60,6 @@ del _public_error
 
 
 def __getattr__(name: str) -> Any:
-    if name == "ArxDCanEndPose":
-        from .controllers import ArxDCanEndPose
-
-        return ArxDCanEndPose
     if name in {
         "DualArmGravityCompensationMode",
         "DualArmGravityCompensationSample",
@@ -86,13 +79,11 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "ArxDCan",
     "ArxDCanError",
     "ArxDCanArm",
     "ArxDCanConfig",
     "ArxDCanDualArm",
     "ArxDCanDualArmState",
-    "ArxDCanEndPose",
     "ArxDCanState",
     "CommunicationError",
     "DisableMotorResult",
@@ -106,23 +97,18 @@ __all__ = [
     "GripperState",
     "GripperControlState",
     "GripperForceLevel",
-    "GripperSafetyHealth",
-    "JointCfg",
-    "JointGroup",
+    "GripperHealth",
     "JointMotorConfig",
     "JointState",
     "IncompleteFeedbackError",
     "MotorState",
-    "MissingEnableMotor",
-    "MissingDisableMotor",
-    "NativeDisableError",
-    "NativeEnableError",
+    "RuntimeTransactionError",
+    "RuntimeTransportHealth",
     "SafetyHealth",
     "SafetyState",
     "MotorFaultError",
     "MotorDiagnostic",
     "TransportError",
-    "TransportHealth",
     "UnexpectedMotorStateError",
     "actuator",
     "available_models",

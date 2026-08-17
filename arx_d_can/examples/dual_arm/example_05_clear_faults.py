@@ -10,8 +10,7 @@ def main() -> None:
     robot.connect()
     print("机器人连接成功")
     try:
-        left = robot.left.clear_motor_faults()
-        right = robot.right.clear_motor_faults()
+        left, right = robot.clear_motor_faults()
         print("左臂故障已清除：", ", ".join(left))
         print("右臂故障已清除：", ", ".join(right))
         print("所有电机保持失能状态")

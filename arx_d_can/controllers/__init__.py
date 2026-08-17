@@ -5,10 +5,6 @@ from typing import Any
 
 
 def __getattr__(name: str) -> Any:
-    if name == "ArxDCanEndPose":
-        from .arx_d_can_endpose_controller import ArxDCanEndPose
-
-        return ArxDCanEndPose
     if name in {
         "DualArmGravityCompensationMode",
         "DualArmGravityCompensationSample",
@@ -26,7 +22,6 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
-    "ArxDCanEndPose",
     "DualArmGravityCompensationMode",
     "DualArmGravityCompensationSample",
 ]

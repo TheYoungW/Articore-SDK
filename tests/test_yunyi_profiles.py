@@ -126,7 +126,7 @@ def test_yunyi_control_gains_and_velocity_limits_match_product_profile() -> None
         ) == expected_pv
 
 
-def test_yunyi_native_ordinary_mit_gains_come_from_yaml() -> None:
+def test_yunyi_runtime_ordinary_mit_gains_come_from_yaml() -> None:
     expected_kp = (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
     expected_kd = (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
 
@@ -136,7 +136,7 @@ def test_yunyi_native_ordinary_mit_gains_come_from_yaml() -> None:
             {joint.name: object() for joint in arm.config.arm_joints}
         )
 
-        native = arm._native_joint_control_configs()
+        native = arm._runtime_joint_configs()
 
         assert tuple(joint.mit_kp for joint in native) == expected_kp
         assert tuple(joint.mit_kd for joint in native) == expected_kd
@@ -149,7 +149,7 @@ def test_yunyi_runtime_torque_limits_match_urdf_effort_limits() -> None:
             {joint.name: object() for joint in arm.config.arm_joints}
         )
 
-        native_configs = arm._native_joint_control_configs()
+        native_configs = arm._runtime_joint_configs()
         for joint, native in zip(arm.config.arm_joints, native_configs):
             _, _, native_torque_range = damiao_model_limits(joint.model)
             configured_torque_range = joint.torque_range or native_torque_range
@@ -190,7 +190,7 @@ def test_yunyi_uses_one_degree_soft_limit_margin_and_dynamic_braking() -> None:
         assert arm.config.soft_limit_margin == pytest.approx(0.01745329252)
         assert arm.config.soft_limit_braking_zone == pytest.approx(0.08726646260)
         assert arm.config.braking_acceleration == pytest.approx(2.0)
-        native = arm._native_joint_safety_limits()
+        native = arm._runtime_joint_limits()
         for joint, limits in zip(arm.config.arm_joints, native):
             assert joint.lower_limit is not None
             assert joint.upper_limit is not None
@@ -202,13 +202,13 @@ def test_yunyi_uses_one_degree_soft_limit_margin_and_dynamic_braking() -> None:
             ) == pytest.approx(0.01745329252)
 
 
-def test_yunyi_native_gripper_binding_contains_only_motor_profile_id() -> None:
+def test_yunyi_runtime_gripper_binding_contains_only_motor_profile_id() -> None:
     arm = ArxDCanArm(model="yunyi_v1_0_right", enable_gripper=True)
     assert arm.config.gripper is not None
     motor = object()
     arm.robot._motor_map[arm.config.gripper.name] = motor
 
-    bindings = arm._native_gripper_product_bindings()
+    bindings = arm._runtime_gripper_bindings()
 
     assert len(bindings) == 1
     assert bindings[0].motor is motor

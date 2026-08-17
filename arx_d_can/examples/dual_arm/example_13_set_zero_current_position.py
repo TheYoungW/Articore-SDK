@@ -10,8 +10,7 @@ def main() -> None:
     robot.connect()
     print("机器人连接成功，电机保持失能状态")
     try:
-        left = robot.left.set_zero()
-        right = robot.right.set_zero()
+        left, right = robot.set_zero()
         print("左臂零点设置完成：", ", ".join(left))
         print("右臂零点设置完成：", ", ".join(right))
     finally:

@@ -18,7 +18,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时固定使用 `motor-drive-layer==0.9.4`（Runtime ABI 2.2）。平台 wheel 已包含对应的
+底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.0`（Runtime ABI 2.2）。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -198,7 +198,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.9.4 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.10.0 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -298,7 +298,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer==0.9.4` 的平台 wheel 会自动加载随包提供的运行库；
+厂商动态库。`motor-drive-layer==0.10.0` 的平台 wheel 会自动加载随包提供的运行库；
 `MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -338,15 +338,12 @@ SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.9.4 提供的 ABI 2.2 `libarticore_runtime`。SDK 初始化时同时要求
-`deterministic_disable`、`layered_joint_limits`、`gripper_command_profiles`、
-`gripper_force_10_levels`、`builtin_gripper_product_profiles`、`joint_mit_position` 和
-`joint_pv_position` 能力。
-本仓库不再编译 C++；Python 只校验
-和提交完整的单臂或双臂命令。常驻原生线程使用
+motor-drive-layer 0.10.0 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
+ctypes 结构、函数签名、native 句柄所有权和报告转换全部由 motor-drive-layer 维护，
+Articore-SDK 只提供机器人产品配置并提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
 `DISCONNECTED → READY → ENABLED → RUNNING → SAFE_HOLD / FAULT`，`FAULT` 只能通过
-检查所有活动通道、TransportHealth、新鲜反馈、电机故障码和物理失能状态的 `recover()` 回到
+检查所有活动通道、`RuntimeTransportHealth`、新鲜反馈、电机故障码和物理失能状态的 `recover()` 回到
 `READY`，不会自动重新使能。
 若整个 Python 进程退出，进程内原生线程也会随之终止；SDK 因此在配置阶段同时写入
 `motor_communication_timeout_ms`（Yunyi 默认 500 ms），由电机固件在主机进程消失后
@@ -362,7 +359,7 @@ joint_safety:
   braking_acceleration: 2.0              # rad/s²
 ```
 
-Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.9.4 不再把反馈
+Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.10.0 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。重力补偿使用真实反馈计算和录制，但会把由反馈生成的 MIT 保持
 位置裁剪到 URDF 上下限后再提交。首次普通 MIT/PV 命令即使从超出配置硬限位的实际
@@ -385,7 +382,7 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程自动调度，安全保持同样由底层管理。调度周期会根据实际控制器拓扑自动选择，
-但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.9.4 承担。
+但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.0 承担。
 
 使能时，SDK 先完成控制模式和电机参数配置，然后只调用一次原生 `runtime.enable()`。
 ABI 2.2 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
@@ -396,14 +393,15 @@ ABI 2.2 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当�
 的机械臂和夹爪继续发送保护保持，夹爪反馈丢失时保留最后安全夹持目标。只有用户明确
 调用 `disable()`（或执行明确的急停策略）才请求全部电机物理失能。
 
-使能失败会抛出 `NativeEnableError`。诊断程序应读取结构化报告，不要解析错误字符串：
+使能事务失败会抛出 motor-drive-layer 的 `RuntimeTransactionError`。诊断程序应读取
+结构化报告，不要解析错误字符串：
 
 ```python
-from arx_d_can import NativeEnableError
+from arx_d_can import RuntimeTransactionError
 
 try:
     robot.enable()
-except NativeEnableError as exc:
+except RuntimeTransactionError as exc:
     report = exc.report
     print(report.enabled_count, report.expected_count)
     print(report.missing_motors)
@@ -419,23 +417,23 @@ except NativeEnableError as exc:
 ABI 2.2 的 `disable()` 和 `close()` 使用同一个确定性失能事务：停止接收新命令，等待
 在途批次完成，建立 ControllerGroup 与 USB/CAN 队列屏障，并行失能 CH0/CH1 并确认
 所有电机的新鲜失能反馈；第一轮未确认的电机只会被定向重发一次。正常关闭不再依赖
-电机通信超时。失能确认失败时会抛出携带 `DisableReport` 的 `NativeDisableError`：
+电机通信超时。失能或关闭事务失败时同样会抛出携带结构化报告的
+`RuntimeTransactionError`：
 
 ```python
-from arx_d_can import NativeDisableError
+from arx_d_can import RuntimeTransactionError
 
 try:
     robot.close()
-except NativeDisableError as exc:
+except RuntimeTransactionError as exc:
     print(exc.report.missing_motors)
     print(exc.report.motors)
     raise
 ```
 
-此时 Runtime、ControllerGroup、Controller 和 Transport 均保持有效，不会在 `finally`
-中继续释放；排查缺失电机后可以再次调用 `close()`。成功关闭严格按照 Runtime →
-ControllerGroup → Controller/Transport 的顺序执行。`disable()` 调用后或 `close()`
-失败时，也可以通过 `robot.last_disable_report` 读取最近一次失能报告。
+Python native 句柄和资源租用由 motor-drive-layer 统一处理；SDK 始终按照 Runtime →
+ControllerGroup → Controller/Transport 的顺序清理。`disable()` 调用后也可以通过
+`robot.last_disable_report` 读取最近一次失能报告。
 
 运行实机运动示例时，应先激活 Python 环境再执行 `python -m ...`。如果必须使用
 `conda run`，需要添加 `--no-capture-output`：
@@ -471,8 +469,7 @@ MIT 示例同样使用统一的实际速度（命令行单位为度/秒），Kp/
 - 单次双通道批量发送失败、命令超时或连续反馈失败会进入 `SAFE_HOLD`；
 - 安全保持失败、设备掉线、反馈严重过期、电机故障或意外失能会锁存 `FAULT`；夹爪
   故障默认执行 motor 产品 profile 内置的保持策略；
-- `read_state()` 只返回新鲜、完整反馈；
-- `read_cached_state()` 明确读取最近一次成功反馈；
+- `read_state()` 和 `read_cached_state()` 都读取 Runtime 后台持续刷新的完整缓存；
 - `communication_health` 提供结构化通信状态；
 - `close()` 默认停止后台任务、失能电机并关闭总线。
 

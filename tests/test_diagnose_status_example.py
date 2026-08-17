@@ -1,23 +1,15 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can.actuator import JointCfg
+from arx_d_can.actuator.arx_d_can import JointCfg
 from arx_d_can.sdk import diagnostics as example
 
 
-class FakeController:
-    def __init__(self):
-        self.timeouts = []
-
-    def request_feedback_all(self, timeout_ms):
-        self.timeouts.append(timeout_ms)
-
-
 class FakeMotor:
-    def __init__(self, *, status_code, mode, rotor_temperature=30.0):
+    def __init__(self, *, status_code, rotor_temperature=30.0):
         self.status_code = status_code
-        self.mode = mode
         self.rotor_temperature = rotor_temperature
 
     def get_state(self):
@@ -30,12 +22,6 @@ class FakeMotor:
             t_rotor=self.rotor_temperature,
         )
 
-    def get_register_u32(self, register, timeout_ms):
-        assert register == example.CTRL_MODE_REGISTER
-        assert timeout_ms == 100
-        return self.mode
-
-
 def joint(name, motor_id):
     return JointCfg(
         name=name,
@@ -46,25 +32,28 @@ def joint(name, motor_id):
     )
 
 
-def test_read_diagnostics_reports_fault_and_actual_control_mode():
-    controller = FakeController()
-    diagnostics = example.read_diagnostics(
-        controller,
-        [
-            (joint("joint4", 4), FakeMotor(status_code=0xC, mode=2)),
-            (joint("gripper", 7), FakeMotor(status_code=0x0, mode=1)),
-        ],
-        timeout_ms=100,
+def test_read_diagnostics_reports_fault_and_configured_control_mode():
+    joints = (joint("joint4", 4), joint("gripper", 7))
+    motors = {
+        "joint4": FakeMotor(status_code=0xC),
+        "gripper": FakeMotor(status_code=0x0),
+    }
+    arm = SimpleNamespace(
+        connected=True,
+        _mode="posvel",
+        _io_lock=nullcontext(),
+        _active_joint_names=lambda: ["joint4", "gripper"],
+        robot=SimpleNamespace(_all_joints=joints, _motor_map=motors),
     )
+    diagnostics = example.read_motor_diagnostics(arm, timeout_ms=100)
 
-    assert controller.timeouts == [100]
     assert diagnostics[0].status_code == 0xC
     assert diagnostics[0].control_mode == 2
     assert example.status_name(diagnostics[0].status_code) == "COIL_OVER_TEMPERATURE"
     assert example.mode_name(diagnostics[0].control_mode) == "POS_VEL"
     assert example.mode_name(3) == "UNSUPPORTED"
     assert diagnostics[1].status_code == 0x0
-    assert diagnostics[1].control_mode == 1
+    assert diagnostics[1].control_mode == 2
     assert diagnostics[0].velocity == pytest.approx(0.2 / 3.0)
 
 

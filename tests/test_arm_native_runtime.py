@@ -10,9 +10,9 @@ from arx_d_can import (
     ArxDCanArm,
     ArxDCanConfig,
     JointMotorConfig,
+    RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
-    TransportHealth,
 )
 
 
@@ -66,21 +66,26 @@ def test_arm_rejects_mit_gains_above_protocol_range(
 
 
 def _health() -> SafetyHealth:
-    transport = TransportHealth(True, True, 0, 0, 0.001, None)
-    inactive = TransportHealth(False, False, 0, 0, None, None)
+    transport = RuntimeTransportHealth(
+        True, True, 0, 0, 1_000_000, 0, 0, 0, 0, None, None, None
+    )
+    inactive = RuntimeTransportHealth(
+        False, False, 0, 0, None, 0, 0, 0, 0, None, None, None
+    )
     return SafetyHealth(
         state=SafetyState.RUNNING,
-        fault_reason=None,
-        last_successful_command_age_s=0.001,
-        last_fresh_feedback_age_s=0.001,
+        safe_holding=False,
+        disable_confirmed=False,
+        last_successful_command_age_ns=1_000_000,
+        last_fresh_feedback_age_ns=1_000_000,
         consecutive_send_failures=0,
         consecutive_feedback_failures=0,
         left_transport=transport,
         right_transport=inactive,
+        grippers=(),
         motor_faults=(),
-        unconfirmed_disable_motors=(),
-        safe_holding=False,
-        disable_confirmed=False,
+        unconfirmed_disable=(),
+        fault_reason=None,
     )
 
 
@@ -116,7 +121,7 @@ def _ready_arm(
             joint_calls.append((tuple(targets), float(velocity)))
 
         @staticmethod
-        def set_gripper_commands(targets) -> None:
+        def set_grippers(targets) -> None:
             gripper_calls.extend(targets)
 
     arm._connected = True
@@ -133,9 +138,11 @@ def test_single_arm_commands_use_native_runtime() -> None:
     arm.set_gripper_opening(750)
 
     assert len(joint_calls) == 1
-    assert joint_calls[0][0][0][1] == pytest.approx(0.25)
+    assert joint_calls[0][0][0].position == pytest.approx(0.25)
     assert joint_calls[0][1] == pytest.approx(1.0)
-    assert gripper_calls[0][1] == 750.0
+    assert gripper_calls[0].opening == pytest.approx(750.0)
+    assert gripper_calls[0].speed == pytest.approx(1000.0)
+    assert gripper_calls[0].force_level == 5
 
 
 def test_single_arm_mit_uses_direction_and_one_shared_velocity() -> None:
@@ -162,7 +169,10 @@ def test_single_arm_mit_uses_direction_and_one_shared_velocity() -> None:
 
     arm.set_joint_mit([0.25], velocity=1.5)
 
-    assert calls == [(((motor, pytest.approx(-0.25)),), pytest.approx(1.5))]
+    assert len(calls) == 1
+    assert calls[0][0][0].motor is motor
+    assert calls[0][0][0].position == pytest.approx(-0.25)
+    assert calls[0][1] == pytest.approx(1.5)
 
 
 def test_single_arm_mit_velocity_is_capped_at_200_degrees_per_second() -> None:
@@ -254,7 +264,7 @@ def test_single_arm_enable_does_not_physically_enable_before_runtime() -> None:
 
     arm.enable()
 
-    assert events == [("runtime-enable", "mit")]
+    assert events == [("runtime-enable", 2)]
     assert arm.enabled
 
 
@@ -269,7 +279,7 @@ def test_single_arm_exposes_no_user_hold_or_open_close_aliases() -> None:
     assert not hasattr(arm, "close_gripper")
 
 
-def test_single_arm_close_failure_retains_runtime_group_and_transport() -> None:
+def test_single_arm_close_failure_still_releases_official_runtime_ownership() -> None:
     arm = ArxDCanArm(
         config=ArxDCanConfig(arm_joints=(JOINT,)),
         enable_gripper=False,
@@ -298,12 +308,10 @@ def test_single_arm_close_failure_retains_runtime_group_and_transport() -> None:
     with pytest.raises(RuntimeError, match="did not confirm disable"):
         arm.close()
 
-    assert events == ["runtime"]
-    assert arm._single_safety_runtime is runtime
-    assert arm._single_controller_group is group
-    assert arm.connected
-    assert arm._enabled
-    assert arm._faulted
+    assert events == ["runtime", "group", "transport"]
+    assert arm._single_safety_runtime is None
+    assert arm._single_controller_group is None
+    assert not arm.connected
 
 
 def test_parallel_pv_batch_accepts_velocity_limits() -> None:
@@ -445,7 +453,8 @@ def test_builtin_model_rejects_connection_without_native_runtime() -> None:
             assert not disable
 
     arm.robot = Robot()  # type: ignore[assignment]
+    arm._configure = lambda: setattr(arm, "_configured", True)  # type: ignore[method-assign]
 
-    with pytest.raises(RuntimeError, match="native safety runtime is unavailable"):
+    with pytest.raises(RuntimeError, match="ArticoreRuntime is unavailable"):
         arm.connect()
     assert not arm.connected
