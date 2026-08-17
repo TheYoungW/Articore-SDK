@@ -18,7 +18,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.4`（Runtime ABI 2.4）。平台 wheel 已包含对应的
+底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.5`（Runtime ABI 2.4）。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -205,7 +205,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.10.4 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.10.5 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -321,7 +321,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer==0.10.4` 的平台 wheel 会自动加载随包提供的运行库；
+厂商动态库。`motor-drive-layer==0.10.5` 的平台 wheel 会自动加载随包提供的运行库；
 `MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -361,7 +361,7 @@ SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.10.4 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
+motor-drive-layer 0.10.5 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
 ctypes 结构、函数签名、native 句柄所有权和报告转换全部由 motor-drive-layer 维护，
 Articore-SDK 只提供机器人产品配置并提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
@@ -391,7 +391,7 @@ except RuntimeTransactionError as exc:
     raise
 ```
 
-0.10.4 在 DM Device 回调入口复制完整帧并保留物理 channel，底层同时校验 channel、
+0.10.5 在 DM Device 回调入口复制完整帧并保留物理 channel，底层同时校验 channel、
 仲裁 ID 和 payload CAN ID；与反馈速度明显不相容的单帧位置跳变会在进入缓存前丢弃，
 继续保留上一帧，不触发全局 `FAULT` 或失能。SDK 不重复实现这些过滤，
 `read_cached_state()` 的调用方式保持不变。底层完整性统计仅供内部硬件诊断使用，不加入
@@ -410,7 +410,7 @@ joint_safety:
   braking_acceleration: 2.0              # rad/s²
 ```
 
-Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.10.4 不再把反馈
+Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.10.5 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。重力补偿使用真实反馈计算和录制，但会把由反馈生成的 MIT 保持
 位置裁剪到 URDF 上下限后再提交。首次普通 MIT/PV 命令即使从超出配置硬限位的实际
@@ -433,7 +433,9 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程自动调度，安全保持同样由底层管理。调度周期会根据实际控制器拓扑自动选择，
-但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.4 承担。
+但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.5 承担。双臂 MIT
+运行时，14 个关节和两个夹爪由同一个 `ControllerGroup` 批次调度；夹爪反馈年龄直接
+读取实时 Motor 缓存，SDK 不再增加单独的夹爪发送或反馈刷新路径。
 
 使能时，SDK 先完成控制模式和电机参数配置，然后只调用一次原生 `runtime.enable()`。
 ABI 2.4 Runtime 会并行刷新 CH0/CH1 的失能反馈，读取全部电机当前位置，生成安全保持
