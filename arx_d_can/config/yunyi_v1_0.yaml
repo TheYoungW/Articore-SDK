@@ -5,7 +5,7 @@ transport: dm-device
 baud: 1000000
 rate: 500
 
-# ABI 2.2：URDF 限位作为机械硬限位；普通位置 reference 在两端各预留 1°。
+# ABI 2.3：URDF 限位作为机械硬限位；普通位置 reference 在两端各预留 1°。
 joint_safety:
   soft_limit_margin: 0.01745329252
   soft_limit_braking_zone: 0.08726646260

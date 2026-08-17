@@ -6,6 +6,16 @@ import arx_d_can
 from arx_d_can import ArxDCanArm
 
 
+def test_runtime_supports_connect_feedback_barrier() -> None:
+    assert motor_drive_layer.articore_runtime_abi_version() == "2.3"
+    assert (
+        motor_drive_layer.articore_runtime_capabilities()[
+            "connect_feedback_barrier"
+        ]
+        is True
+    )
+
+
 def test_public_runtime_reports_are_motor_drive_layer_types() -> None:
     assert arx_d_can.SafetyHealth is motor_drive_layer.SafetyHealth
     assert arx_d_can.SafetyState is motor_drive_layer.SafetyState
