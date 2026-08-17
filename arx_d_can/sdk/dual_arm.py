@@ -187,7 +187,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.5 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.6 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -304,7 +304,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.5 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.6 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:

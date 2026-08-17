@@ -58,6 +58,10 @@ def test_build_scan_command_uses_socketcan_channel(transport: str):
     assert command[command.index("--transport") + 1] == transport
     assert command[command.index("--channel") + 1] == "can0"
     assert "--serial-port" not in command
+    if transport == "socketcanfd":
+        assert command[command.index("--socketcanfd-brs") + 1] == "on"
+    else:
+        assert "--socketcanfd-brs" not in command
 
 
 def test_auto_transport_preserves_legacy_channel_inference():
@@ -85,8 +89,8 @@ def test_create_controller_selects_matching_motor_drive_layer_constructor(monkey
             return object()
 
         @classmethod
-        def from_socketcanfd(cls, channel):
-            calls.append(("socketcanfd", channel))
+        def from_socketcanfd(cls, channel, enable_brs=True):
+            calls.append(("socketcanfd", channel, enable_brs))
             return object()
 
     monkeypatch.setattr(backend, "Controller", FakeController)
@@ -108,7 +112,7 @@ def test_create_controller_selects_matching_motor_drive_layer_constructor(monkey
             },
         ),
         ("socketcan", "can0"),
-        ("socketcanfd", "can1"),
+        ("socketcanfd", "can1", True),
     ]
 
 

@@ -82,7 +82,7 @@ def create_controller(
         if resolved == "socketcan":
             return Controller(channel)
         if resolved == "socketcanfd":
-            return Controller.from_socketcanfd(channel)
+            return Controller.from_socketcanfd(channel, enable_brs=True)
     except CallError as exc:
         raise TransportError(
             f"failed to open {resolved} transport on {channel}: {exc}",
@@ -131,6 +131,8 @@ def build_scan_command(
             "--dm-data-bitrate",
             str(_DM_DEVICE_DATA_BITRATE),
         ])
+    elif resolved == "socketcanfd":
+        command.extend(["--channel", port, "--socketcanfd-brs", "on"])
     else:
         command.extend(["--channel", port])
     command.extend([

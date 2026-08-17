@@ -581,7 +581,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.5 ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.6 ArticoreRuntime is unavailable"
                 )
         except Exception:
             try:
