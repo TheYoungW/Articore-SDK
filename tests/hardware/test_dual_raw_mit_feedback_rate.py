@@ -13,7 +13,7 @@ from arx_d_can import ArxDCanDualArm
 from arx_d_can.driver import damiao_model_limits
 
 
-EXPECTED_DUAL_CONTROL_HZ = 400.0
+EXPECTED_DUAL_CONTROL_HZ = 500.0
 TARGET_SPEED = math.radians(30.0)
 SETTLE_SECONDS = 1.0
 CACHED_FEEDBACK_SAMPLE_SECONDS = float(

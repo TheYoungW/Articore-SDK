@@ -60,6 +60,14 @@ class ArxDCanDualArm:
         normalized_mode = str(control_mode).strip().lower()
         if normalized_mode not in ("pv", "mit"):
             raise ValueError("control_mode must be 'pv' or 'mit'")
+        normalized_transport = (
+            None
+            if transport is None
+            else str(transport).strip().lower().replace("_", "-")
+        )
+        if normalized_transport == "dm-device":
+            left_channel = "0" if left_channel is None else left_channel
+            right_channel = "1" if right_channel is None else right_channel
         self.left = ArxDCanArm(
             model=left_model,
             channel=left_channel,
@@ -187,7 +195,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.6 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.7 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -304,7 +312,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.6 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.7 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:

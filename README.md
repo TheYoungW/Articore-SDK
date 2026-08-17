@@ -9,8 +9,9 @@ SDK 不把公共接口绑定到具体产品：
 - `ArxDCanDualArm` 组合左右两条独立 CAN 通道；
 - 机型差异全部由 YAML 配置描述。
 
-当前双臂默认配置是 Yunyi V1.0，默认通过原厂 DM Device 的 CH0/CH1 通信。以后增加
-其他产品时不需要再创建产品专用 Python 类。
+当前双臂默认配置是 Yunyi V1.0，默认通过刷入 `gs_usb` 固件的
+DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can0`/`can1` 通信。以后增加其他产品时
+不需要再创建产品专用 Python 类。
 
 ## 安装
 
@@ -18,7 +19,7 @@ SDK 不把公共接口绑定到具体产品：
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.5`（Runtime ABI 2.4）。平台 wheel 已包含对应的
+底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.7`（Runtime ABI 2.5）。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -205,7 +206,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.10.5 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.10.7 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -320,16 +321,17 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcan` | `can0` | Linux 经典 CAN |
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
-Yunyi 默认使用原厂 DM Device，不需要刷写固件，也不需要额外传入通信参数或安装
-厂商动态库。`motor-drive-layer==0.10.5` 的平台 wheel 会自动加载随包提供的运行库；
-`MOTOR_DM_DEVICE_LIB` 和下载器只作为 motor-drive-layer 开发、诊断时的回退机制。
+Yunyi 默认使用刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配置 CAN-FD
+接口，SDK 默认打开 `can0`/`can1` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
+需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.7` 的平台 wheel 会自动
+加载随包提供的厂商运行库。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
 wheel 使用 `macosx_26_0` 标签，不声明对更早 macOS 版本兼容。
 
-`ArxDCanArm(model="yunyi_v1_0_left")` 默认使用 CH0，
-`ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 CH1；`ArxDCanDualArm()` 默认同时
-打开 CH0 和 CH1。`dm-serial`、SocketCAN 等其他后端只在用户显式覆盖时使用。
+`ArxDCanArm(model="yunyi_v1_0_left")` 默认使用 `can0`，
+`ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 `can1`；`ArxDCanDualArm()` 默认同时
+打开这两个 SocketCAN-FD 接口。原厂 `dm-device` 和 `dm-serial` 后端仍可显式选择。
 
 DM Device 默认正式使用 CAN-FD+BRS，仲裁速率为 1 Mbps、数据速率为 5 Mbps；5 Mbps
 数据段的 87.5% 采样点由 motor 底层固定配置，SDK 不提供用户参数。达妙电机必须预先
@@ -357,11 +359,30 @@ ip -details -statistics link show can0
 ```
 
 SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 接口。
+Yunyi 电机需要设置为 `CAN_BR=9`，并在使用 SDK 前配置两个默认接口：
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 1000000 sample-point 0.75 \
+  dbitrate 5000000 dsample-point 0.875 fd on
+sudo ip link set can0 txqueuelen 1000
+sudo ip link set can0 up
+
+sudo ip link set can1 down
+sudo ip link set can1 type can bitrate 1000000 sample-point 0.75 \
+  dbitrate 5000000 dsample-point 0.875 fd on
+sudo ip link set can1 txqueuelen 1000
+sudo ip link set can1 up
+```
+
+SDK 会显式调用 `Controller.from_socketcanfd(channel, enable_brs=True)`，确保帧包含
+`CANFD_BRS`。部分 `gs_usb` 固件不支持 `berr-reporting` 或 `restart-ms`，因此默认
+配置命令不要求这两个选项。
 
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.10.5 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
+motor-drive-layer 0.10.7 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
 ctypes 结构、函数签名、native 句柄所有权和报告转换全部由 motor-drive-layer 维护，
 Articore-SDK 只提供机器人产品配置并提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
@@ -373,8 +394,8 @@ ABI 2.4 的 `connect()` 会并行获取全部已配置关节和已安装夹爪�
 屏障通过后才进入 `READY`；因此连接成功后可以立即调用 `read_state()` 或
 `read_cached_state()`。`READY` 状态的低频反馈刷新同样由 Runtime 负责，SDK 不会绕过
 Runtime 主动请求反馈，也不会用零值掩盖缺失电机。
-SDK 和 Yunyi 产品配置均使用 50 ms 的反馈新鲜度窗口；反馈健康检查仍为 100 Hz，
-连续 3 次失败才判定故障。该窗口会显式传给 Runtime，不再使用旧的 20 ms 或 100 ms。
+SDK 的通用反馈新鲜度窗口默认为 50 ms；Yunyi 双通道产品配置使用 300 ms，
+反馈健康检查仍为 100 Hz，连续 3 次失败才判定故障。该窗口会显式传给 Runtime。
 连接失败会抛出携带 `ConnectReport` 的 `RuntimeTransactionError`。诊断代码应直接读取
 通道、电机和缺失反馈字段，不要解析异常字符串：
 
@@ -391,7 +412,7 @@ except RuntimeTransactionError as exc:
     raise
 ```
 
-0.10.5 在 DM Device 回调入口复制完整帧并保留物理 channel，底层同时校验 channel、
+0.10.7 在 DM Device 回调入口复制完整帧并保留物理 channel，底层同时校验 channel、
 仲裁 ID 和 payload CAN ID；与反馈速度明显不相容的单帧位置跳变会在进入缓存前丢弃，
 继续保留上一帧，不触发全局 `FAULT` 或失能。SDK 不重复实现这些过滤，
 `read_cached_state()` 的调用方式保持不变。底层完整性统计仅供内部硬件诊断使用，不加入
@@ -410,7 +431,7 @@ joint_safety:
   braking_acceleration: 2.0              # rad/s²
 ```
 
-Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.10.5 不再把反馈
+Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.10.7 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。重力补偿使用真实反馈计算和录制，但会把由反馈生成的 MIT 保持
 位置裁剪到 URDF 上下限后再提交。首次普通 MIT/PV 命令即使从超出配置硬限位的实际
@@ -433,7 +454,10 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程自动调度，安全保持同样由底层管理。调度周期会根据实际控制器拓扑自动选择，
-但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.5 承担。双臂 MIT
+但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.7 承担。Runtime ABI
+2.5 会读取两侧 Controller 的不可变 transport capability；只有左右两侧都明确报告
+`socketcanfd + can_fd + can_fd_brs` 时，双臂上限才是 500 Hz。原厂 `dm-device`、
+混合传输、旧 ABI 或缺少 capability 的调用路径继续保守限制为 400 Hz。双臂 MIT
 运行时，14 个关节和两个夹爪由同一个 `ControllerGroup` 批次调度；夹爪反馈年龄直接
 读取实时 Motor 缓存，SDK 不再增加单独的夹爪发送或反馈刷新路径。
 

@@ -51,10 +51,10 @@ def test_default_dual_arm_uses_two_yunyi_profiles() -> None:
 
     assert len(robot.left.joint_names) == 7
     assert len(robot.right.joint_names) == 7
-    assert robot.left.config.transport == "dm-device"
-    assert robot.right.config.transport == "dm-device"
-    assert robot.left.config.port == "0"
-    assert robot.right.config.port == "1"
+    assert robot.left.config.transport == "socketcanfd"
+    assert robot.right.config.transport == "socketcanfd"
+    assert robot.left.config.port == "can0"
+    assert robot.right.config.port == "can1"
     assert robot.left.config.hardware_config_path == robot.right.config.hardware_config_path
     assert robot.left._mode == "mit"
     assert robot.right._mode == "mit"
@@ -323,7 +323,7 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
         "close",
     ]
     assert len(configs) == 1
-    assert configs[0].feedback_max_age_ms == 50
+    assert configs[0].feedback_max_age_ms == 300
 
 
 def test_dual_raw_send_validates_both_sides_before_submission() -> None:

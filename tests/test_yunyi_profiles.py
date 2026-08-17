@@ -30,12 +30,12 @@ def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
     assert left.config.gripper is not None
     assert right.config.gripper.name == "r-gripper"
     assert left.config.gripper.name == "l-gripper"
-    assert right.config.transport == "dm-device"
-    assert left.config.transport == "dm-device"
-    assert right.config.port == "1"
-    assert left.config.port == "0"
-    assert right.config.max_cached_feedback_age_s == pytest.approx(0.05)
-    assert left.config.max_cached_feedback_age_s == pytest.approx(0.05)
+    assert right.config.transport == "socketcanfd"
+    assert left.config.transport == "socketcanfd"
+    assert right.config.port == "can1"
+    assert left.config.port == "can0"
+    assert right.config.max_cached_feedback_age_s == pytest.approx(0.3)
+    assert left.config.max_cached_feedback_age_s == pytest.approx(0.3)
 
 
 def test_yunyi_motor_models_and_ids_match_each_single_can_bus() -> None:
