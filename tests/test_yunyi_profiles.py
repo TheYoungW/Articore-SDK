@@ -34,8 +34,8 @@ def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
     assert left.config.transport == "dm-device"
     assert right.config.port == "1"
     assert left.config.port == "0"
-    assert right.config.max_cached_feedback_age_s == pytest.approx(0.1)
-    assert left.config.max_cached_feedback_age_s == pytest.approx(0.1)
+    assert right.config.max_cached_feedback_age_s == pytest.approx(0.05)
+    assert left.config.max_cached_feedback_age_s == pytest.approx(0.05)
 
 
 def test_yunyi_motor_models_and_ids_match_each_single_can_bus() -> None:

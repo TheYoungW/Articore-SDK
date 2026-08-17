@@ -275,10 +275,12 @@ def test_dual_send_uses_one_native_parallel_batch(mode: str, method_name: str) -
 def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> None:
     robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
     events: list[str] = []
+    configs: list[object] = []
 
     class Runtime:
-        def __init__(self, **_kwargs) -> None:
+        def __init__(self, *, config, **_kwargs) -> None:
             events.append("create")
+            configs.append(config)
 
         def configure_joints(self, _configs) -> None:
             events.append("joints")
@@ -320,6 +322,8 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
         "connect",
         "close",
     ]
+    assert len(configs) == 1
+    assert configs[0].feedback_max_age_ms == 50
 
 
 def test_dual_raw_send_validates_both_sides_before_submission() -> None:

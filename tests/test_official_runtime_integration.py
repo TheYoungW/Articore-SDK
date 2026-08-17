@@ -41,6 +41,7 @@ def test_yunyi_builds_official_runtime_configuration_types() -> None:
     assert isinstance(config, motor_drive_layer.RuntimeConfig)
     assert config.command_timeout_ms == 250
     assert config.enable_grace_ms == 2000
+    assert config.feedback_max_age_ms == 50
     assert config.gripper_control_hz == round(arm.config.control_hz)
 
     assert all(

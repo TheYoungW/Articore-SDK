@@ -56,7 +56,7 @@ class ArxDCanConfig:
     safe_hold_failure_threshold: int = 1
     feedback_check_hz: float = 100.0
     feedback_fault_threshold: int = 3
-    max_cached_feedback_age_s: float = 0.02
+    max_cached_feedback_age_s: float = 0.05
     motor_communication_timeout_ms: int = 500
     name: str = "ARX-D-CAN"
     model: str = "custom"
@@ -192,7 +192,7 @@ def _config_from_loaded(
         feedback_check_hz=float(safety.get("feedback_check_hz", 100.0)),
         feedback_fault_threshold=int(safety.get("feedback_fault_threshold", 3)),
         max_cached_feedback_age_s=float(
-            safety.get("max_cached_feedback_age_s", 0.02)
+            safety.get("max_cached_feedback_age_s", 0.05)
         ),
         motor_communication_timeout_ms=int(
             safety.get("motor_communication_timeout_ms", 500)
