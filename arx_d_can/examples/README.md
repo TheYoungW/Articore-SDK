@@ -18,7 +18,9 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 
 python -m arx_d_can.examples.single_arm.example_05_set_gripper_opening \
   --arm-model yunyi_v1_0_right \
-  --opening 1000
+  --opening 1000 \
+  --speed 1000 \
+  --force-level 5
 
 ```
 
@@ -46,7 +48,9 @@ python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
 
 python -m arx_d_can.examples.dual_arm.example_08_set_gripper_openings \
   --left-gripper 1000 \
-  --right-gripper 500
+  --right-gripper 500 \
+  --speed 1000 \
+  --force-level 5
 
 python -m arx_d_can.examples.dual_arm.example_15_gravity_compensation
 
@@ -67,6 +71,8 @@ MIT 目标速度和前馈力矩均为零，Kp/Kd 读取机型 YAML。两种模�
 双臂目标。Runtime 在内部控制周期中限步，新值覆盖旧的最终目标且不会排队。普通 MIT
 的产品级速度范围为 `(0, 200]` 度/秒；URDF/YAML `vlim` 仍作为更底层的绝对上限。
 夹爪开合度必须显式填写，范围为 0～1000；0 表示闭合，1000 表示打开。
+`--speed` 范围为 `(0, 1000]`，默认 1000；`--force-level` 范围为 1～10，
+默认 5，10 最强。
 
 示例 06/07 的限步、固定频率发送、通信检查和最终位置保持均由 C++ Runtime 处理；
 调用本身非阻塞。SDK 不再公开第二套关节轨迹执行接口。

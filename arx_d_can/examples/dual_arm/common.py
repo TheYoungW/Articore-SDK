@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+from arx_d_can.examples.gripper_arguments import gripper_opening
+
 
 MAX_MIT_VELOCITY_DEG_S = 200.0
 
@@ -29,7 +31,6 @@ def positive_velocity_degrees(text: str) -> float:
         raise ValueError("速度必须是有限正数")
     return math.radians(value)
 
-
 def mit_velocity_degrees(text: str) -> float:
     """解析普通 MIT 统一速度，命令行单位为度/秒。"""
     value = float(text)
@@ -40,11 +41,3 @@ def mit_velocity_degrees(text: str) -> float:
     ):
         raise ValueError("MIT 速度必须在 (0, 200] 度/秒范围内")
     return math.radians(value)
-
-
-def gripper_opening(text: str) -> float:
-    """解析夹爪 0～1000 开合度；0 闭合，1000 打开。"""
-    value = float(text)
-    if not math.isfinite(value) or not 0.0 <= value <= 1000.0:
-        raise ValueError("夹爪开合度必须是 0～1000 的有限数值")
-    return value

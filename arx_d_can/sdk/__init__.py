@@ -4,6 +4,10 @@ from __future__ import annotations
 import time
 
 from motor_drive_layer import (
+    ConnectChannelResult,
+    ConnectErrorCode,
+    ConnectMotorResult,
+    ConnectReport,
     DisableMotorResult,
     DisableReport,
     EnableMotorResult,
@@ -58,6 +62,10 @@ __all__ = [
     "ArxDCanDualArm",
     "ArxDCanDualArmState",
     "ArxDCanState",
+    "ConnectChannelResult",
+    "ConnectErrorCode",
+    "ConnectMotorResult",
+    "ConnectReport",
     "DisableMotorResult",
     "DisableReport",
     "EnableMotorResult",

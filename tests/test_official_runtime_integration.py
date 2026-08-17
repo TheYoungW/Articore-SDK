@@ -7,7 +7,7 @@ from arx_d_can import ArxDCanArm
 
 
 def test_runtime_supports_connect_feedback_barrier() -> None:
-    assert motor_drive_layer.articore_runtime_abi_version() == "2.3"
+    assert motor_drive_layer.articore_runtime_abi_version() == "2.4"
     assert (
         motor_drive_layer.articore_runtime_capabilities()[
             "connect_feedback_barrier"
@@ -17,6 +17,10 @@ def test_runtime_supports_connect_feedback_barrier() -> None:
 
 
 def test_public_runtime_reports_are_motor_drive_layer_types() -> None:
+    assert arx_d_can.ConnectReport is motor_drive_layer.ConnectReport
+    assert arx_d_can.ConnectChannelResult is motor_drive_layer.ConnectChannelResult
+    assert arx_d_can.ConnectErrorCode is motor_drive_layer.ConnectErrorCode
+    assert arx_d_can.ConnectMotorResult is motor_drive_layer.ConnectMotorResult
     assert arx_d_can.SafetyHealth is motor_drive_layer.SafetyHealth
     assert arx_d_can.SafetyState is motor_drive_layer.SafetyState
     assert arx_d_can.EnableReport is motor_drive_layer.EnableReport
