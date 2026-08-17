@@ -55,6 +55,7 @@ from .state import (
 
 
 MAX_ORDINARY_MIT_VELOCITY = math.radians(200.0)
+RAW_MIT_FEEDFORWARD_TORQUE_RATIO = 0.8
 
 
 def _load_profile(config_path: str | Path | None, *, model: str | None) -> dict:
@@ -1062,6 +1063,39 @@ class ArxDCanArm(_SafetyMixin):
             )
 
         raise ValueError("mode must be 'posvel' or 'mit'")
+
+    def _clip_raw_mit_feedforward_torques(
+        self,
+        torques: Sequence[float],
+    ) -> tuple[float, ...]:
+        """按逐关节 URDF effort 的 80% 裁剪公开 raw MIT 前馈力矩。"""
+        values = np.asarray(torques, dtype=np.float64).reshape(-1)
+        if len(values) != len(self.config.arm_joints):
+            raise ValueError(
+                f"expected {len(self.config.arm_joints)} joint feedforward torques, "
+                f"got {len(values)}"
+            )
+        if not np.all(np.isfinite(values)):
+            raise ValueError("joint feedforward torques must be finite")
+
+        limits = []
+        for joint in self.config.arm_joints:
+            _, _, native_torque = damiao_model_limits(joint.model)
+            configured_torque = (
+                native_torque
+                if joint.torque_range is None
+                else joint.torque_range
+            )
+            logical_limit = (
+                configured_torque
+                if joint.effort_limit is None
+                else joint.effort_limit
+            )
+            limits.append(
+                RAW_MIT_FEEDFORWARD_TORQUE_RATIO * logical_limit
+            )
+        clipped = np.clip(values, -np.asarray(limits), np.asarray(limits))
+        return tuple(float(value) for value in clipped)
 
     def _submit_joint_positions(
         self,

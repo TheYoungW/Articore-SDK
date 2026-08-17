@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -373,6 +374,49 @@ def test_dual_mit_send_forwards_each_side_parameters() -> None:
     assert len(submitted) == 1
     assert len(submitted[0]) == 2
     assert all(command.position == 0.0 for command in submitted[0])
+
+
+def test_public_dual_raw_mit_clips_feedforward_torque_to_80_percent() -> None:
+    robot = ArxDCanDualArm(
+        control_mode="mit",
+        left_gripper=False,
+        right_gripper=False,
+    )
+    captured: dict[str, object] = {}
+    robot._submit_joint_positions = (  # type: ignore[method-assign]
+        lambda **kwargs: captured.update(kwargs)
+    )
+
+    robot.submit_raw_mit(
+        left_positions=VALID_POSITIONS,
+        right_positions=VALID_POSITIONS,
+        left_velocities=(0.1,) * 7,
+        right_velocities=(-0.1,) * 7,
+        kp=20.0,
+        kd=1.0,
+        left_feedforward_torques=(100.0,) * 7,
+        right_feedforward_torques=(-100.0,) * 7,
+    )
+
+    expected_limits = (32.0, 32.0, 21.6, 21.6, 5.6, 5.6, 5.6)
+    assert captured["left"] == VALID_POSITIONS
+    assert captured["right"] == VALID_POSITIONS
+    assert captured["left_velocities"] == (0.1,) * 7
+    assert captured["right_velocities"] == (-0.1,) * 7
+    assert captured["left_torques"] == pytest.approx(expected_limits)
+    assert captured["right_torques"] == pytest.approx(
+        tuple(-value for value in expected_limits)
+    )
+    assert captured["left_mit_kp"] == captured["right_mit_kp"] == 20.0
+    assert captured["left_mit_kd"] == captured["right_mit_kd"] == 1.0
+
+
+def test_public_dual_raw_mit_is_not_used_by_examples() -> None:
+    examples = Path(__file__).parents[1] / "arx_d_can" / "examples"
+    assert all(
+        "submit_raw_mit" not in path.read_text(encoding="utf-8")
+        for path in examples.rglob("*.py")
+    )
 
 
 def test_dual_ordinary_pv_submits_one_atomic_batch_and_shared_velocity() -> None:

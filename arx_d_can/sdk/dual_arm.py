@@ -597,6 +597,58 @@ class ArxDCanDualArm:
             mode="mit",
         )
 
+    def submit_raw_mit(
+        self,
+        *,
+        left_positions: Sequence[float],
+        right_positions: Sequence[float],
+        left_velocities: Sequence[float] | None = None,
+        right_velocities: Sequence[float] | None = None,
+        kp: float | Sequence[float] | None = None,
+        kd: float | Sequence[float] | None = None,
+        left_feedforward_torques: Sequence[float] | None = None,
+        right_feedforward_torques: Sequence[float] | None = None,
+    ) -> None:
+        """原子提交一帧完整双臂 raw MIT 命令。
+
+        这是供高级控制器使用的流式接口，要求双臂以 MIT 模式连接并已经使能。每次
+        调用必须同时提供左右臂目标；Runtime 只保留最新完整帧，并按底层实际控制
+        周期发送。调用方必须在命令看门狗超时前持续更新，否则 Runtime 会进入安全
+        保持。
+
+        位置单位为 rad，速度单位为 rad/s，前馈力矩单位为 N·m。``kp`` 和 ``kd``
+        对左右臂使用同一组标量或七关节向量；省略时使用产品配置值。省略速度或前馈
+        力矩时对应值为零。前馈力矩会逐关节裁剪到 URDF ``effort`` 的 80%。该裁剪
+        只约束 ``tau_ff``；MIT 的 Kp/Kd 反馈项仍会根据位置和速度误差产生额外力矩，
+        不能把 80% 理解为电机最终总输出力矩的硬上限。
+        """
+        left_torques = (
+            None
+            if left_feedforward_torques is None
+            else self.left._clip_raw_mit_feedforward_torques(
+                left_feedforward_torques
+            )
+        )
+        right_torques = (
+            None
+            if right_feedforward_torques is None
+            else self.right._clip_raw_mit_feedforward_torques(
+                right_feedforward_torques
+            )
+        )
+        self._submit_joint_positions(
+            left=left_positions,
+            right=right_positions,
+            left_velocities=left_velocities,
+            right_velocities=right_velocities,
+            left_torques=left_torques,
+            right_torques=right_torques,
+            left_mit_kp=kp,
+            right_mit_kp=kp,
+            left_mit_kd=kd,
+            right_mit_kd=kd,
+        )
+
     def set_joint_pv(
         self,
         *,
