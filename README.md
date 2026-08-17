@@ -115,8 +115,10 @@ robot = ArxDCanDualArm(
 
 双臂类同时公开 `submit_raw_mit()`，供重力补偿、遥操作控制器等需要逐帧设置
 `q/dq/Kp/Kd/tau_ff` 的高级应用使用，但不在普通用户 example 中调用。该接口保持
-左右 14 轴原子更新和 Runtime 流式看门狗语义，并把逐关节 `tau_ff` 裁剪到 URDF
-`effort` 的 80%；Kp/Kd 反馈项产生的力矩不属于该前馈限幅。
+左右 14 轴原子更新和 Runtime 流式看门狗语义。当前 SDK 会基于每次提交时的最新
+反馈计算完整 MIT 合成力矩，并把它限制到逐关节 URDF `effort` 的 80%；超限时同步
+缩小该关节的 Kp、Kd 和 `tau_ff`。后续会把同一保护下沉到 Runtime 的每个底层发送
+周期。
 
 ## 重力补偿
 

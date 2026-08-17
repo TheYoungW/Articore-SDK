@@ -627,35 +627,45 @@ class ArxDCanDualArm:
 
         位置单位为 rad，速度单位为 rad/s，前馈力矩单位为 N·m。``kp`` 和 ``kd``
         对左右臂使用同一组标量或七关节向量；省略时使用产品配置值。省略速度或前馈
-        力矩时对应值为零。前馈力矩会逐关节裁剪到 URDF ``effort`` 的 80%。该裁剪
-        只约束 ``tau_ff``；MIT 的 Kp/Kd 反馈项仍会根据位置和速度误差产生额外力矩，
-        不能把 80% 理解为电机最终总输出力矩的硬上限。
+        力矩时对应值为零。SDK 会使用提交时的最新缓存 ``q/dq`` 估算完整的
+        ``Kp·位置误差 + Kd·速度误差 + tau_ff``；超过逐关节 URDF ``effort`` 的
+        80% 时，按比例同步缩小该关节的 Kp、Kd 和 ``tau_ff``。这是提交帧级保护，
+        后续下沉到 Runtime 后才能在每个底层发送周期重新计算。
         """
-        left_torques = (
-            None
-            if left_feedforward_torques is None
-            else self.left._clip_raw_mit_feedforward_torques(
-                left_feedforward_torques
+        state = self.read_cached_state()
+        left_velocity, left_kp, left_kd, left_torques = (
+            self.left._limit_raw_mit_resultant_torque(
+                positions=left_positions,
+                velocities=left_velocities,
+                kp=kp,
+                kd=kd,
+                feedforward_torques=left_feedforward_torques,
+                current_positions=state.left.arm.positions,
+                current_velocities=state.left.arm.velocities,
             )
         )
-        right_torques = (
-            None
-            if right_feedforward_torques is None
-            else self.right._clip_raw_mit_feedforward_torques(
-                right_feedforward_torques
+        right_velocity, right_kp, right_kd, right_torques = (
+            self.right._limit_raw_mit_resultant_torque(
+                positions=right_positions,
+                velocities=right_velocities,
+                kp=kp,
+                kd=kd,
+                feedforward_torques=right_feedforward_torques,
+                current_positions=state.right.arm.positions,
+                current_velocities=state.right.arm.velocities,
             )
         )
         self._submit_joint_positions(
             left=left_positions,
             right=right_positions,
-            left_velocities=left_velocities,
-            right_velocities=right_velocities,
+            left_velocities=left_velocity,
+            right_velocities=right_velocity,
             left_torques=left_torques,
             right_torques=right_torques,
-            left_mit_kp=kp,
-            right_mit_kp=kp,
-            left_mit_kd=kd,
-            right_mit_kd=kd,
+            left_mit_kp=left_kp,
+            right_mit_kp=right_kp,
+            left_mit_kd=left_kd,
+            right_mit_kd=right_kd,
         )
 
     def set_joint_pv(

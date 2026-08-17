@@ -12,7 +12,7 @@ from arx_d_can import (
     SafetyHealth,
     SafetyState,
 )
-from arx_d_can.driver import CallError
+from arx_d_can.driver import CallError, damiao_model_limits
 from arx_d_can.sdk.arm import _PreparedJointPositionBatch
 
 
@@ -426,7 +426,7 @@ def test_dual_mit_send_forwards_each_side_parameters() -> None:
     assert all(command.position == 0.0 for command in submitted[0])
 
 
-def test_public_dual_raw_mit_clips_feedforward_torque_to_80_percent() -> None:
+def test_public_dual_raw_mit_limits_resultant_torque_to_80_percent() -> None:
     robot = ArxDCanDualArm(
         control_mode="mit",
         left_gripper=False,
@@ -436,29 +436,108 @@ def test_public_dual_raw_mit_clips_feedforward_torque_to_80_percent() -> None:
     robot._submit_joint_positions = (  # type: ignore[method-assign]
         lambda **kwargs: captured.update(kwargs)
     )
+    feedback_arm = SimpleNamespace(
+        arm=SimpleNamespace(
+            positions=(0.0,) * 7,
+            velocities=(0.0,) * 7,
+        )
+    )
+    robot.read_cached_state = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        left=feedback_arm,
+        right=feedback_arm,
+    )
+    targets = (0.3,) * 7
+    zeros = (0.0,) * 7
 
     robot.submit_raw_mit(
-        left_positions=VALID_POSITIONS,
-        right_positions=VALID_POSITIONS,
-        left_velocities=(0.1,) * 7,
-        right_velocities=(-0.1,) * 7,
-        kp=20.0,
-        kd=1.0,
-        left_feedforward_torques=(100.0,) * 7,
-        right_feedforward_torques=(-100.0,) * 7,
+        left_positions=targets,
+        right_positions=targets,
+        left_velocities=zeros,
+        right_velocities=zeros,
+        kp=400.0,
+        kd=0.0,
+        left_feedforward_torques=zeros,
+        right_feedforward_torques=zeros,
     )
 
-    expected_limits = (32.0, 32.0, 21.6, 21.6, 5.6, 5.6, 5.6)
-    assert captured["left"] == VALID_POSITIONS
-    assert captured["right"] == VALID_POSITIONS
-    assert captured["left_velocities"] == (0.1,) * 7
-    assert captured["right_velocities"] == (-0.1,) * 7
-    assert captured["left_torques"] == pytest.approx(expected_limits)
-    assert captured["right_torques"] == pytest.approx(
-        tuple(-value for value in expected_limits)
+    assert captured["left"] == targets
+    assert captured["right"] == targets
+    assert captured["left_velocities"] == zeros
+    assert captured["right_velocities"] == zeros
+    assert captured["left_torques"] == zeros
+    assert captured["right_torques"] == zeros
+
+    for arm, prefix in ((robot.left, "left"), (robot.right, "right")):
+        sent_kp = captured[f"{prefix}_mit_kp"]
+        sent_kd = captured[f"{prefix}_mit_kd"]
+        assert sent_kd == zeros
+        assert any(value < 400.0 for value in sent_kp)
+        for index, joint in enumerate(arm.config.arm_joints):
+            _, _, native_torque = damiao_model_limits(joint.model)
+            configured_torque = joint.torque_range or native_torque
+            resultant = (
+                configured_torque
+                / native_torque
+                * sent_kp[index]
+                * targets[index]
+            )
+            effort = joint.effort_limit or configured_torque
+            assert abs(resultant) <= 0.8 * effort + 1e-9
+
+
+def test_public_dual_raw_mit_limits_feedforward_before_resultant() -> None:
+    robot = ArxDCanDualArm(
+        control_mode="mit",
+        left_gripper=False,
+        right_gripper=False,
     )
-    assert captured["left_mit_kp"] == captured["right_mit_kp"] == 20.0
-    assert captured["left_mit_kd"] == captured["right_mit_kd"] == 1.0
+    captured: dict[str, object] = {}
+    robot._submit_joint_positions = (  # type: ignore[method-assign]
+        lambda **kwargs: captured.update(kwargs)
+    )
+    feedback_arm = SimpleNamespace(
+        arm=SimpleNamespace(
+            positions=(0.0,) * 7,
+            velocities=(0.0,) * 7,
+        )
+    )
+    robot.read_cached_state = lambda: SimpleNamespace(  # type: ignore[method-assign]
+        left=feedback_arm,
+        right=feedback_arm,
+    )
+
+    # joint1 上，P 项约为 -100 N·m，而请求的 +100 N·m tau_ff 几乎抵消它。
+    # 如果先按抵消后的合力判断、再由下游单独把 tau_ff 裁到 effort=40 N·m，
+    # 最终合力会重新超限。因此必须先约束 tau_ff，再限制完整合力。
+    targets = (-0.3375,) * 7
+    zeros = (0.0,) * 7
+    robot.submit_raw_mit(
+        left_positions=targets,
+        right_positions=targets,
+        left_velocities=zeros,
+        right_velocities=zeros,
+        kp=400.0,
+        kd=0.0,
+        left_feedforward_torques=(100.0,) * 7,
+        right_feedforward_torques=(100.0,) * 7,
+    )
+
+    for arm, prefix in ((robot.left, "left"), (robot.right, "right")):
+        sent_kp = captured[f"{prefix}_mit_kp"]
+        sent_tau = captured[f"{prefix}_torques"]
+        for index, joint in enumerate(arm.config.arm_joints):
+            _, _, native_torque = damiao_model_limits(joint.model)
+            configured_torque = joint.torque_range or native_torque
+            effort = joint.effort_limit or configured_torque
+            resultant = (
+                configured_torque
+                / native_torque
+                * sent_kp[index]
+                * targets[index]
+                + sent_tau[index]
+            )
+            assert abs(sent_tau[index]) <= effort + 1e-9
+            assert abs(resultant) <= 0.8 * effort + 1e-9
 
 
 def test_public_dual_raw_mit_is_not_used_by_examples() -> None:

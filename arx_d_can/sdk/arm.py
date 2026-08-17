@@ -55,7 +55,7 @@ from .state import (
 
 
 MAX_ORDINARY_MIT_VELOCITY = math.radians(200.0)
-RAW_MIT_FEEDFORWARD_TORQUE_RATIO = 0.8
+RAW_MIT_RESULTANT_TORQUE_RATIO = 0.8
 
 
 def _load_profile(config_path: str | Path | None, *, model: str | None) -> dict:
@@ -1091,38 +1091,133 @@ class ArxDCanArm(_SafetyMixin):
 
         raise ValueError("mode must be 'posvel' or 'mit'")
 
-    def _clip_raw_mit_feedforward_torques(
+    def _limit_raw_mit_resultant_torque(
         self,
-        torques: Sequence[float],
-    ) -> tuple[float, ...]:
-        """按逐关节 URDF effort 的 80% 裁剪公开 raw MIT 前馈力矩。"""
-        values = np.asarray(torques, dtype=np.float64).reshape(-1)
-        if len(values) != len(self.config.arm_joints):
-            raise ValueError(
-                f"expected {len(self.config.arm_joints)} joint feedforward torques, "
-                f"got {len(values)}"
-            )
-        if not np.all(np.isfinite(values)):
-            raise ValueError("joint feedforward torques must be finite")
+        *,
+        positions: Sequence[float],
+        velocities: Sequence[float] | None,
+        kp: float | Sequence[float] | None,
+        kd: float | Sequence[float] | None,
+        feedforward_torques: Sequence[float] | None,
+        current_positions: Sequence[float],
+        current_velocities: Sequence[float],
+    ) -> tuple[
+        tuple[float, ...],
+        tuple[float, ...],
+        tuple[float, ...],
+        tuple[float, ...],
+    ]:
+        """按最新反馈把公开 raw MIT 的合成力矩缩放到 URDF effort 的 80%。"""
+        joint_count = len(self.config.arm_joints)
 
-        limits = []
-        for joint in self.config.arm_joints:
-            _, _, native_torque = damiao_model_limits(joint.model)
+        def vector(
+            values: Sequence[float] | None,
+            *,
+            name: str,
+            default: Sequence[float],
+        ) -> np.ndarray:
+            result = np.asarray(default if values is None else values, dtype=np.float64)
+            result = result.reshape(-1)
+            if len(result) != joint_count:
+                raise ValueError(
+                    f"expected {joint_count} joint {name}, got {len(result)}"
+                )
+            if not np.all(np.isfinite(result)):
+                raise ValueError(f"joint {name} must be finite")
+            return result
+
+        target_positions = vector(
+            positions,
+            name="positions",
+            default=(),
+        )
+        target_velocities = vector(
+            velocities,
+            name="velocities",
+            default=np.zeros(joint_count),
+        )
+        actual_positions = vector(
+            current_positions,
+            name="feedback positions",
+            default=(),
+        )
+        actual_velocities = vector(
+            current_velocities,
+            name="feedback velocities",
+            default=(),
+        )
+        stiffness = _mit_gain_vector(kp, joint_count=joint_count, name="Kp")
+        if stiffness is None:
+            stiffness = np.asarray(
+                [joint.mit_kp for joint in self.config.arm_joints],
+                dtype=np.float64,
+            )
+        damping = _mit_gain_vector(kd, joint_count=joint_count, name="Kd")
+        if damping is None:
+            damping = np.asarray(
+                [joint.mit_kd for joint in self.config.arm_joints],
+                dtype=np.float64,
+            )
+        feedforward = vector(
+            feedforward_torques,
+            name="feedforward torques",
+            default=np.zeros(joint_count),
+        )
+
+        proportional = np.zeros(joint_count, dtype=np.float64)
+        derivative = np.zeros(joint_count, dtype=np.float64)
+        limits = np.zeros(joint_count, dtype=np.float64)
+        feedforward_limits = np.zeros(joint_count, dtype=np.float64)
+        for index, joint in enumerate(self.config.arm_joints):
+            _, native_velocity, native_torque = damiao_model_limits(joint.model)
+            configured_velocity = (
+                native_velocity
+                if joint.velocity_range is None
+                else joint.velocity_range
+            )
             configured_torque = (
                 native_torque
                 if joint.torque_range is None
                 else joint.torque_range
+            )
+            velocity_command_scale = native_velocity / configured_velocity
+            torque_feedback_scale = configured_torque / native_torque
+            proportional[index] = (
+                torque_feedback_scale
+                * stiffness[index]
+                * (target_positions[index] - actual_positions[index])
+            )
+            derivative[index] = (
+                torque_feedback_scale
+                * damping[index]
+                * velocity_command_scale
+                * (target_velocities[index] - actual_velocities[index])
             )
             logical_limit = (
                 configured_torque
                 if joint.effort_limit is None
                 else joint.effort_limit
             )
-            limits.append(
-                RAW_MIT_FEEDFORWARD_TORQUE_RATIO * logical_limit
-            )
-        clipped = np.clip(values, -np.asarray(limits), np.asarray(limits))
-        return tuple(float(value) for value in clipped)
+            feedforward_limits[index] = logical_limit
+            limits[index] = RAW_MIT_RESULTANT_TORQUE_RATIO * logical_limit
+
+        # 保持后续协议映射的输入范围一致，避免底层再次裁剪 tau_ff 后改变这里估算的
+        # 合成结果；安全比例仍施加在下面的完整 P + D + FF 上。
+        feedforward = np.clip(
+            feedforward,
+            -feedforward_limits,
+            feedforward_limits,
+        )
+        requested = proportional + derivative + feedforward
+        scale = np.ones(joint_count, dtype=np.float64)
+        saturated = np.abs(requested) > limits
+        scale[saturated] = limits[saturated] / np.abs(requested[saturated])
+        return (
+            tuple(float(value) for value in target_velocities),
+            tuple(float(value) for value in stiffness * scale),
+            tuple(float(value) for value in damping * scale),
+            tuple(float(value) for value in feedforward * scale),
+        )
 
     def _submit_joint_positions(
         self,
