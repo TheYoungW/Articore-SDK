@@ -50,10 +50,10 @@ class _SafetyMixin:
                 "motor_communication_timeout_ms must be in 1..=214748364"
             )
 
-    def _require_operational(self) -> None:
+    def _require_operational(self, *, sync_runtime_health: bool = True) -> None:
         self._require_connected()
         runtime = self._single_safety_runtime
-        if runtime is not None:
+        if runtime is not None and sync_runtime_health:
             self._sync_runtime_flags(runtime.health)
         if self._faulted:
             raise RuntimeError(

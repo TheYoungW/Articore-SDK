@@ -195,7 +195,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.7 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.8 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -312,7 +312,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.7 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.8 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -426,12 +426,10 @@ class ArxDCanDualArm:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
         native 句柄和资源租用由 motor-drive-layer 的正式 Runtime 封装管理。
+        Runtime 未确认全部电机失能时立即停止，保留所有下游资源以供诊断和重试。
         """
+        self._release_runtime()
         errors: list[Exception] = []
-        try:
-            self._release_runtime()
-        except Exception as exc:
-            errors.append(exc)
         group = self._controller_group
         if group is not None:
             try:
@@ -539,7 +537,6 @@ class ArxDCanDualArm:
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        self._sync_python_safety_flags(runtime.health)
         left_batch = self.left._prepare_parallel_joint_positions(
             left,
             velocities=left_velocities,
@@ -562,13 +559,20 @@ class ArxDCanDualArm:
             raise RuntimeError("left and right arms must use the same control mode")
 
         commands = left_batch.commands + right_batch.commands
+        batch = type(left_batch)(mode=left_batch.mode, commands=commands)
         try:
-            batch = type(left_batch)(mode=left_batch.mode, commands=commands)
             (runtime.submit_pv if left_batch.mode == "pv" else runtime.submit_mit)(
                 _runtime_raw_commands(batch)
             )
-        finally:
-            self._sync_python_safety_flags(runtime.health)
+        except Exception:
+            # raw submit 是控制循环热路径。native Runtime 会原子校验状态并拒绝
+            # 非 RUNNING 提交；只在失败时读取完整 health，避免成功路径与
+            # 500 Hz transport worker 争用命令锁。
+            try:
+                self._sync_python_safety_flags(runtime.health)
+            except Exception:
+                pass
+            raise
 
     def _set_joint_position(
         self,
@@ -640,7 +644,10 @@ class ArxDCanDualArm:
         80% 时，按比例同步缩小该关节的 Kp、Kd 和 ``tau_ff``。这是提交帧级保护，
         后续下沉到 Runtime 后才能在每个底层发送周期重新计算。
         """
-        state = self.read_cached_state()
+        # 合力限制只需要两臂 q/dq。不要调用双臂 read_cached_state()，因为后者
+        # 还会读取 Runtime 夹爪 health，导致流式提交与 native worker 争锁。
+        left_state = self.left.read_cached_state()
+        right_state = self.right.read_cached_state()
         left_velocity, left_kp, left_kd, left_torques = (
             self.left._limit_raw_mit_resultant_torque(
                 positions=left_positions,
@@ -648,8 +655,8 @@ class ArxDCanDualArm:
                 kp=kp,
                 kd=kd,
                 feedforward_torques=left_feedforward_torques,
-                current_positions=state.left.arm.positions,
-                current_velocities=state.left.arm.velocities,
+                current_positions=left_state.arm.positions,
+                current_velocities=left_state.arm.velocities,
             )
         )
         right_velocity, right_kp, right_kd, right_torques = (
@@ -659,8 +666,8 @@ class ArxDCanDualArm:
                 kp=kp,
                 kd=kd,
                 feedforward_torques=right_feedforward_torques,
-                current_positions=state.right.arm.positions,
-                current_velocities=state.right.arm.velocities,
+                current_positions=right_state.arm.positions,
+                current_velocities=right_state.arm.velocities,
             )
         )
         self._submit_joint_positions(

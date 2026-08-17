@@ -55,14 +55,12 @@ def _blend(start, target, progress: float) -> tuple[float, ...]:
 
 
 def _feedback_stats(robot: ArxDCanDualArm):
-    return {
-        **robot.left.robot.get_feedback_stats(
-            joint_names=list(robot.left.joint_names)
-        ),
-        **robot.right.robot.get_feedback_stats(
-            joint_names=list(robot.right.joint_names)
-        ),
-    }
+    result = {}
+    for arm in (robot.left, robot.right):
+        result.update(
+            arm.robot.get_feedback_stats(joint_names=arm._active_joint_names())
+        )
+    return result
 
 
 def _feedback_integrity_stats(robot: ArxDCanDualArm):
@@ -247,8 +245,8 @@ def test_dual_raw_mit_uses_runtime_effective_control_rate() -> None:
             f"median={statistics.median(rates.values()):.2f} Hz，"
             f"max={max(rates.values()):.2f} Hz"
         )
-        for name in (*robot.left.joint_names, *robot.right.joint_names):
-            print(f"  {name}: {rates[name]:.2f} Hz")
+        for name, rate in rates.items():
+            print(f"  {name}: {rate:.2f} Hz")
         print("左臂最终误差(°)：", [round(value, 3) for value in left_error])
         print("右臂最终误差(°)：", [round(value, 3) for value in right_error])
 

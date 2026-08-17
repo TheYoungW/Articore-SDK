@@ -279,7 +279,7 @@ def test_single_arm_exposes_no_user_hold_or_open_close_aliases() -> None:
     assert not hasattr(arm, "close_gripper")
 
 
-def test_single_arm_close_failure_still_releases_official_runtime_ownership() -> None:
+def test_single_arm_close_failure_preserves_official_runtime_ownership() -> None:
     arm = ArxDCanArm(
         config=ArxDCanConfig(arm_joints=(JOINT,)),
         enable_gripper=False,
@@ -287,6 +287,8 @@ def test_single_arm_close_failure_still_releases_official_runtime_ownership() ->
     events: list[str] = []
 
     class Runtime:
+        closed = False
+
         def close(self) -> None:
             events.append("runtime")
             raise RuntimeError("joint1 did not confirm disable")
@@ -308,10 +310,10 @@ def test_single_arm_close_failure_still_releases_official_runtime_ownership() ->
     with pytest.raises(RuntimeError, match="did not confirm disable"):
         arm.close()
 
-    assert events == ["runtime", "group", "transport"]
-    assert arm._single_safety_runtime is None
-    assert arm._single_controller_group is None
-    assert not arm.connected
+    assert events == ["runtime"]
+    assert arm._single_safety_runtime is runtime
+    assert arm._single_controller_group is group
+    assert arm.connected
 
 
 def test_parallel_pv_batch_accepts_velocity_limits() -> None:
@@ -379,6 +381,48 @@ def test_parallel_mit_batch_uses_defaults_and_accepts_overrides() -> None:
             "torques": (0.2,),
         },
     ]
+
+
+def test_single_successful_raw_submit_does_not_read_runtime_health() -> None:
+    config = ArxDCanConfig(
+        arm_control_mode="mit",
+        arm_joints=(JOINT,),
+    )
+    arm = ArxDCanArm(config=config, enable_gripper=False)
+    health_reads = 0
+    submitted = []
+
+    class ArmGroup:
+        @staticmethod
+        def _make_mit_batch_commands(target, *, vel, kp, kd, tau):
+            return tuple(
+                SimpleNamespace(
+                    motor=object(), pos=pos, vel=dq, kp=p, kd=d, tau=t
+                )
+                for pos, dq, p, d, t in zip(target, vel, kp, kd, tau)
+            )
+
+    class Runtime:
+        @property
+        def health(self):
+            nonlocal health_reads
+            health_reads += 1
+            return _health()
+
+        @staticmethod
+        def submit_mit(commands) -> None:
+            submitted.append(tuple(commands))
+
+    arm.robot = SimpleNamespace(arm=ArmGroup())
+    arm._connected = True
+    arm._configured = True
+    arm._enabled = True
+    arm._single_safety_runtime = Runtime()  # type: ignore[assignment]
+
+    arm._submit_joint_positions([0.25])
+
+    assert len(submitted) == 1
+    assert health_reads == 0
 
 
 @pytest.mark.parametrize(

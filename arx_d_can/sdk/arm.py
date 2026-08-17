@@ -581,7 +581,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.7 ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.8 ArticoreRuntime is unavailable"
                 )
         except Exception:
             try:
@@ -617,13 +617,11 @@ class ArxDCanArm(_SafetyMixin):
         """停止生成控制命令并关闭总线。
 
         motor-drive-layer 负责 Runtime 句柄和租用生命周期；SDK 只按
-        Runtime → ControllerGroup → Controller 的顺序关闭。
+        Runtime → ControllerGroup → Controller 的顺序关闭。Runtime 未确认物理
+        失能时保留完整所有权链，以便读取报告并重试。
         """
+        self._release_single_runtime()
         errors: list[Exception] = []
-        try:
-            self._release_single_runtime()
-        except Exception as exc:
-            errors.append(exc)
         if self._connected:
             try:
                 self.robot.disconnect(disable=False)
@@ -988,10 +986,11 @@ class ArxDCanArm(_SafetyMixin):
         mit_kd: float | Sequence[float] | None = None,
         require_enabled: bool = True,
         enforce_position_limits: bool = True,
+        sync_runtime_health: bool = True,
     ) -> _PreparedJointPositionBatch:
         """校验一侧关节目标，并生成可交给 ControllerGroup 的命令。"""
         self._require_connected()
-        self._require_operational()
+        self._require_operational(sync_runtime_health=sync_runtime_health)
         if require_enabled and not self._enabled:
             raise RuntimeError("ARX-D-CAN arm is not enabled")
         joint_count = len(self.config.arm_joints)
@@ -1249,13 +1248,20 @@ class ArxDCanArm(_SafetyMixin):
             mit_kd=mit_kd,
             require_enabled=require_enabled,
             enforce_position_limits=enforce_position_limits,
+            sync_runtime_health=False,
         )
         try:
             (runtime.submit_pv if batch.mode == "pv" else runtime.submit_mit)(
                 _runtime_raw_commands(batch)
             )
-        finally:
-            self._sync_runtime_flags(runtime.health)
+        except Exception:
+            # 成功的 raw submit 必须保持为非阻塞热路径；native Runtime 已在提交时
+            # 校验状态，只有拒绝命令时才需要同步完整健康快照。
+            try:
+                self._sync_runtime_flags(runtime.health)
+            except Exception:
+                pass
+            raise
 
     def _ordinary_joint_position_targets(
         self,

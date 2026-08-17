@@ -66,10 +66,10 @@ def test_dual_arm_keeps_runtime_effective_control_rate_internal() -> None:
     assert robot._effective_control_hz == pytest.approx(500.0)
 
     class Runtime:
-        control_hz = 400
+        control_hz = 250
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    assert robot._effective_control_hz == pytest.approx(400.0)
+    assert robot._effective_control_hz == pytest.approx(250.0)
 
 
 def test_dual_arm_only_exposes_tested_modes() -> None:
@@ -446,10 +446,8 @@ def test_public_dual_raw_mit_limits_resultant_torque_to_80_percent() -> None:
             velocities=(0.0,) * 7,
         )
     )
-    robot.read_cached_state = lambda: SimpleNamespace(  # type: ignore[method-assign]
-        left=feedback_arm,
-        right=feedback_arm,
-    )
+    robot.left.read_cached_state = lambda: feedback_arm  # type: ignore[method-assign]
+    robot.right.read_cached_state = lambda: feedback_arm  # type: ignore[method-assign]
     targets = (0.3,) * 7
     zeros = (0.0,) * 7
 
@@ -505,10 +503,8 @@ def test_public_dual_raw_mit_limits_feedforward_before_resultant() -> None:
             velocities=(0.0,) * 7,
         )
     )
-    robot.read_cached_state = lambda: SimpleNamespace(  # type: ignore[method-assign]
-        left=feedback_arm,
-        right=feedback_arm,
-    )
+    robot.left.read_cached_state = lambda: feedback_arm  # type: ignore[method-assign]
+    robot.right.read_cached_state = lambda: feedback_arm  # type: ignore[method-assign]
 
     # joint1 上，P 项约为 -100 N·m，而请求的 +100 N·m tau_ff 几乎抵消它。
     # 如果先按抵消后的合力判断、再由下游单独把 tau_ff 裁到 effort=40 N·m，
@@ -641,21 +637,73 @@ def test_dual_ordinary_pv_synchronizes_native_health() -> None:
     assert robot.safety_health.state is SafetyState.RUNNING
 
 
-def test_native_fault_is_synchronized_before_preparing_next_command() -> None:
+def test_native_fault_is_synchronized_when_raw_submit_is_rejected() -> None:
     robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
 
     class Runtime:
         health = _health(SafetyState.FAULT, disable_confirmed=True)
 
+        @staticmethod
+        def submit_mit(_commands) -> None:
+            raise RuntimeError("runtime is faulted")
+
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
     robot._controller_group = object()  # type: ignore[assignment]
-    robot.left._connected = True
-    robot.right._connected = True
+    batch = _PreparedJointPositionBatch(
+        "mit",
+        (
+            SimpleNamespace(
+                motor=object(), pos=0.0, vel=0.0, kp=1.0, kd=1.0, tau=0.0
+            ),
+        ),
+    )
+    robot.left._prepare_parallel_joint_positions = (  # type: ignore[method-assign]
+        lambda _positions, **_kwargs: batch
+    )
+    robot.right._prepare_parallel_joint_positions = (  # type: ignore[method-assign]
+        lambda _positions, **_kwargs: batch
+    )
 
     with pytest.raises(RuntimeError, match="faulted"):
         robot._submit_joint_positions(left=VALID_POSITIONS, right=VALID_POSITIONS)
     assert robot.left.faulted and robot.right.faulted
     assert not robot.left.enabled and not robot.right.enabled
+
+
+def test_successful_raw_submit_does_not_read_blocking_runtime_health() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    health_reads = 0
+
+    class Runtime:
+        @property
+        def health(self):
+            nonlocal health_reads
+            health_reads += 1
+            return _health()
+
+        @staticmethod
+        def submit_mit(_commands) -> None:
+            return None
+
+    batch = _PreparedJointPositionBatch(
+        "mit",
+        (
+            SimpleNamespace(
+                motor=object(), pos=0.0, vel=0.0, kp=1.0, kd=1.0, tau=0.0
+            ),
+        ),
+    )
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    robot.left._prepare_parallel_joint_positions = (  # type: ignore[method-assign]
+        lambda _positions, **_kwargs: batch
+    )
+    robot.right._prepare_parallel_joint_positions = (  # type: ignore[method-assign]
+        lambda _positions, **_kwargs: batch
+    )
+
+    robot._submit_joint_positions(left=VALID_POSITIONS, right=VALID_POSITIONS)
+
+    assert health_reads == 0
 
 
 @pytest.mark.parametrize(
@@ -962,11 +1010,13 @@ def test_close_stops_native_runtime_before_group_and_controllers() -> None:
     assert events == ["runtime", "group", "left", "right"]
 
 
-def test_close_failure_still_releases_official_runtime_ownership() -> None:
+def test_close_failure_preserves_official_runtime_ownership() -> None:
     robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
     events: list[str] = []
 
     class Runtime:
+        closed = False
+
         def close(self) -> None:
             events.append("runtime")
             raise RuntimeError("one motor did not confirm disable")
@@ -989,8 +1039,8 @@ def test_close_failure_still_releases_official_runtime_ownership() -> None:
     with pytest.raises(RuntimeError, match="did not confirm disable"):
         robot.close()
 
-    assert events == ["runtime", "group", "left", "right"]
-    assert robot._safety_runtime is None
-    assert robot._controller_group is None
-    assert not robot.left._dual_runtime_managed
-    assert not robot.right._dual_runtime_managed
+    assert events == ["runtime"]
+    assert robot._safety_runtime is runtime
+    assert robot._controller_group is group
+    assert robot.left._dual_runtime_managed
+    assert robot.right._dual_runtime_managed
