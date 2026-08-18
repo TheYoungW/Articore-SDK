@@ -40,7 +40,7 @@ def main(args: argparse.Namespace) -> None:
         with gravity:
             internal_hz = gravity._update_hz
             print(
-                f"正在录制双臂 {args.seconds:g} 秒，调用频率 {args.hz:g} Hz；"
+                f"正在录制双臂 {args.seconds:g} 秒，采样频率 {args.hz:g} Hz；"
                 "按 Ctrl+C 可安全停止"
             )
             timestamps, samples = record(
@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--hz",
         type=positive_hz,
         default=100.0,
-        help="录制和重力补偿的调用频率，必须大于 0；默认 100",
+        help="反馈录制频率；重力控制周期由 Runtime 独立执行，默认 100",
     )
     return parser
 

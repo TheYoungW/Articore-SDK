@@ -14,6 +14,8 @@ from motor_drive_layer import (
     ArticoreRuntime,
     DisableReport,
     EnableReport,
+    GravityCompensationStatus,
+    GravityProductBinding,
     GripperCommand,
     GripperHealth,
     GripperProductBinding,
@@ -25,6 +27,7 @@ from motor_drive_layer import (
     RuntimeMotor,
     RuntimePvCommand,
     RuntimeTransportHealth,
+    RobotSide,
     SafetyHealth,
     SafetyState,
 )
@@ -322,6 +325,14 @@ class ArxDCanArm(_SafetyMixin):
         )
 
     @property
+    def gravity_compensation_status(self) -> GravityCompensationStatus:
+        """返回 Runtime 原生重力补偿状态。"""
+        runtime = self._single_safety_runtime
+        if runtime is None:
+            raise RuntimeError("native gravity compensation runtime is not connected")
+        return runtime.gravity_compensation_status
+
+    @property
     def communication_health(self) -> RuntimeTransportHealth:
         """直接返回 motor 提供的结构化通信健康状态。"""
         return self.safety_health.left_transport
@@ -357,10 +368,7 @@ class ArxDCanArm(_SafetyMixin):
         return tuple(descriptors)
 
     def _runtime_joint_configs(self) -> tuple[JointControlConfig, ...]:
-        """生成 Runtime 使用的有效位置限位和 MIT 默认参数。"""
-        margin = self.config.soft_limit_margin
-        if not math.isfinite(margin) or margin < 0.0:
-            raise ValueError("soft_limit_margin must be finite and non-negative")
+        """按完整标定关节范围生成 Runtime 限位和 MIT 默认参数。"""
         configs = []
         for joint in self.config.arm_joints:
             position_range, native_velocity, native_torque = damiao_model_limits(
@@ -372,12 +380,6 @@ class ArxDCanArm(_SafetyMixin):
             logical_upper = (
                 position_range if joint.upper_limit is None else joint.upper_limit
             )
-            logical_lower += margin
-            logical_upper -= margin
-            if logical_lower >= logical_upper:
-                raise ValueError(
-                    f"{joint.name}: soft limit margin leaves no valid joint range"
-                )
             motor_limits = (
                 joint.direction * logical_lower,
                 joint.direction * logical_upper,
@@ -433,6 +435,35 @@ class ArxDCanArm(_SafetyMixin):
             ),
         )
 
+    def _runtime_gravity_bindings(
+        self,
+        *,
+        runtime_side: int = 0,
+    ) -> tuple[GravityProductBinding, ...]:
+        """把内置 Yunyi 七轴产品绑定到 Runtime 原生模型。"""
+        robot_side = {
+            "yunyi_v1_0_left": RobotSide.LEFT,
+            "yunyi_v1_0_right": RobotSide.RIGHT,
+        }.get(self.config.model)
+        if robot_side is None:
+            return ()
+        expected_suffixes = {f"joint{index}" for index in range(1, 8)}
+        actual_suffixes = {
+            name.rsplit("-", 1)[-1] for name in self.config.joint_names
+        }
+        if len(self.config.arm_joints) != 7 or actual_suffixes != expected_suffixes:
+            raise ValueError(
+                f"{self.config.model}: native gravity compensation requires "
+                "exactly one joint1..joint7"
+            )
+        return (
+            GravityProductBinding(
+                runtime_side=runtime_side,
+                robot_side=robot_side,
+                product_id="yunyi_v1_0",
+            ),
+        )
+
     def _runtime_config(self) -> RuntimeConfig:
         return RuntimeConfig(
             control_hz=max(1, round(self.config.control_hz)),
@@ -477,6 +508,9 @@ class ArxDCanArm(_SafetyMixin):
             runtime.configure_joints(self._runtime_joint_configs())
             runtime.configure_gripper_products(
                 self._runtime_gripper_bindings()
+            )
+            runtime.configure_gravity_products(
+                self._runtime_gravity_bindings()
             )
             runtime.connect()
         except Exception:
@@ -545,7 +579,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.10 ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.11 ArticoreRuntime is unavailable"
                 )
         except Exception:
             try:
@@ -643,6 +677,37 @@ class ArxDCanArm(_SafetyMixin):
             else:
                 self._sync_runtime_flags(health)
             raise
+        self._sync_runtime_flags(runtime.health)
+
+    def start_gravity_compensation(self, *, transition_ms: int = 0) -> None:
+        """启动 Runtime 原生重力补偿。
+
+        必须使用内置 Yunyi 七轴产品、以 MIT 模式连接并已经使能。
+        ``transition_ms=0`` 使用 Runtime 默认的 500 ms 渐入时间。
+        """
+        self._require_operational()
+        if self._mode != "mit":
+            raise RuntimeError("native gravity compensation requires MIT mode")
+        if not self._runtime_gravity_bindings():
+            raise RuntimeError(
+                "native gravity compensation is only available for built-in "
+                "yunyi_v1_0 products"
+            )
+        runtime = self._single_safety_runtime
+        if runtime is None:
+            raise RuntimeError("native gravity compensation runtime is not connected")
+        if not self.enabled:
+            raise RuntimeError("enable the arm in MIT mode before gravity compensation")
+        runtime.start_gravity_compensation(transition_ms=transition_ms)
+        self._sync_runtime_flags(runtime.health)
+
+    def stop_gravity_compensation(self) -> None:
+        """平滑退出原生重力补偿并恢复当前位置 MIT 保持。"""
+        self._require_connected()
+        runtime = self._single_safety_runtime
+        if runtime is None:
+            raise RuntimeError("native gravity compensation runtime is not connected")
+        runtime.stop_gravity_compensation()
         self._sync_runtime_flags(runtime.health)
 
     def recover(self) -> None:
@@ -1095,8 +1160,12 @@ class ArxDCanArm(_SafetyMixin):
             for joint, position in zip(self.config.arm_joints, values)
         )
 
-    def _ordinary_joint_velocity(self, velocity: float, *, mode: str) -> float:
-        value = float(velocity)
+    def _ordinary_joint_velocity(
+        self,
+        velocity: float | None,
+        *,
+        mode: str,
+    ) -> float:
         hardware_maximum = min(
             joint.pv_vlim for joint in self.config.arm_joints
         )
@@ -1105,6 +1174,9 @@ class ArxDCanArm(_SafetyMixin):
             if mode == "mit"
             else hardware_maximum
         )
+        if velocity is None:
+            return maximum
+        value = float(velocity)
         if not math.isfinite(value) or not 0.0 < value <= maximum:
             limit = (
                 f"{maximum:g} rad/s (200 deg/s)"
@@ -1120,7 +1192,7 @@ class ArxDCanArm(_SafetyMixin):
         self,
         positions: Sequence[float],
         *,
-        velocity: float,
+        velocity: float | None,
         mode: str,
     ) -> None:
         if self._dual_runtime_managed:
@@ -1144,18 +1216,18 @@ class ArxDCanArm(_SafetyMixin):
         self,
         positions: Sequence[float],
         *,
-        velocity: float = 1.0,
+        velocity: float | None = None,
     ) -> None:
-        """以统一速度设置普通 MIT 最终位置；中间 reference 由 Runtime 生成。"""
+        """设置普通 MIT 最终位置；默认使用当前机型允许的最大统一速度。"""
         self._set_joint_position(positions, velocity=velocity, mode="mit")
 
     def set_joint_pv(
         self,
         positions: Sequence[float],
         *,
-        velocity: float = 1.0,
+        velocity: float | None = None,
     ) -> None:
-        """以统一速度设置普通 PV 最终位置；中间 reference 由 Runtime 生成。"""
+        """设置普通 PV 最终位置；默认使用当前机型允许的最大统一速度。"""
         self._set_joint_position(positions, velocity=velocity, mode="pv")
 
     def set_zero(

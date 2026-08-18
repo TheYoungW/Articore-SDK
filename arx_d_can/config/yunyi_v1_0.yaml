@@ -4,12 +4,9 @@ urdf_path: models/yunyi_v1_0.urdf
 # CAN-FD 的 1 Mbps/5 Mbps 位时序由 Linux ip link 预先配置，SDK 显式开启 BRS。
 transport: socketcanfd
 # 0.10.8 已验证非阻塞 raw mailbox 的 500 Hz 吞吐；0.10.10/ABI 2.6 在逐原生
-# 周期按配置的完整力矩上限执行 MIT 合力保护。
+# 周期按配置的完整力矩上限执行 MIT 合力保护；0.10.11/ABI 2.8 提供 Runtime
+# 私有精确整臂模型、刚体动力学和原生重力补偿。
 rate: 500
-
-# 普通位置 reference 在 URDF 限位两端各预留 1°。
-joint_safety:
-  soft_limit_margin_deg: 1.0
 
 safety:
   command_timeout_s: 0.25

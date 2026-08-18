@@ -5,6 +5,10 @@ import math
 from types import SimpleNamespace
 
 import pytest
+from motor_drive_layer import (
+    GravityCompensationPhase,
+    GravityCompensationStatus,
+)
 
 from arx_d_can import (
     ArxDCanArm,
@@ -139,7 +143,7 @@ def test_single_arm_commands_use_native_runtime() -> None:
 
     assert len(joint_calls) == 1
     assert joint_calls[0][0][0].position == pytest.approx(0.25)
-    assert joint_calls[0][1] == pytest.approx(1.0)
+    assert joint_calls[0][1] == pytest.approx(JOINT.pv_vlim)
     assert gripper_calls[0].opening == pytest.approx(750.0)
     assert gripper_calls[0].speed == pytest.approx(1000.0)
     assert gripper_calls[0].force_level == 5
@@ -451,6 +455,53 @@ def test_single_arm_exposes_native_transport_health() -> None:
     arm, _, _ = _ready_arm()
 
     assert arm.communication_health is arm._single_safety_runtime.health.left_transport
+
+
+def test_single_arm_delegates_native_gravity_lifecycle_and_status() -> None:
+    arm = ArxDCanArm(
+        model="yunyi_v1_0_left",
+        control_mode="mit",
+        enable_gripper=False,
+    )
+    events: list[object] = []
+    status = GravityCompensationStatus(
+        phase=GravityCompensationPhase.ACTIVE,
+        active=True,
+        transition_progress=1.0,
+        control_cycles=10,
+        joints=(),
+        gravity_feedforward_torque=(),
+    )
+
+    class Runtime:
+        health = _health()
+        gravity_compensation_status = status
+
+        @staticmethod
+        def start_gravity_compensation(*, transition_ms: int) -> None:
+            events.append(("start", transition_ms))
+
+        @staticmethod
+        def stop_gravity_compensation() -> None:
+            events.append("stop")
+
+    arm._connected = True
+    arm._configured = True
+    arm._enabled = True
+    arm._single_safety_runtime = Runtime()  # type: ignore[assignment]
+
+    arm.start_gravity_compensation(transition_ms=750)
+    assert arm.gravity_compensation_status is status
+    arm.stop_gravity_compensation()
+
+    assert events == [("start", 750), "stop"]
+
+
+def test_single_arm_native_gravity_requires_mit_mode() -> None:
+    arm, _, _ = _ready_arm()
+
+    with pytest.raises(RuntimeError, match="requires MIT mode"):
+        arm.start_gravity_compensation()
 
 
 def test_read_cached_state_uses_native_motor_cache_without_feedback_request() -> None:

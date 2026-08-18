@@ -44,7 +44,6 @@ class ArxDCanConfig:
     arm_joints: tuple[JointMotorConfig, ...] = ()
     gripper: JointMotorConfig | None = None
     gripper_profile: str | None = None
-    soft_limit_margin: float = 0.0
     command_timeout_s: float = 0.25
     enable_grace_s: float = 2.0
     safe_hold_hz: float = 100.0
@@ -142,7 +141,6 @@ def _config_from_loaded(
     groups = data.get("groups", {})
     arm_names = groups.get("arm", {}).get("joints", [])
     gripper_names = groups.get("gripper", {}).get("joints", [])
-    joint_safety = data.get("joint_safety", {}) or {}
     safety = data.get("safety", {}) or {}
     raw_gripper_profile = data.get("gripper_profile")
     gripper_profile = (
@@ -170,9 +168,6 @@ def _config_from_loaded(
         arm_joints=tuple(joints_by_name[name] for name in arm_names),
         gripper=joints_by_name.get(gripper_names[0]) if gripper_names else None,
         gripper_profile=gripper_profile,
-        soft_limit_margin=math.radians(
-            joint_safety.get("soft_limit_margin_deg", 0.0)
-        ),
         command_timeout_s=float(safety.get("command_timeout_s", 0.25)),
         enable_grace_s=float(safety.get("enable_grace_s", 2.0)),
         safe_hold_hz=float(safety.get("safe_hold_hz", 100.0)),
@@ -262,9 +257,6 @@ def _actuator_config_from_sdk(config: ArxDCanConfig) -> dict:
         "groups": groups,
         "joints": joints,
         "gripper_profile": config.gripper_profile,
-        "joint_safety": {
-            "soft_limit_margin_deg": math.degrees(config.soft_limit_margin),
-        },
         "safety": {
             "command_timeout_s": config.command_timeout_s,
             "enable_grace_s": config.enable_grace_s,

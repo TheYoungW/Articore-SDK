@@ -569,7 +569,6 @@ def load_cfg(
         "groups": groups,
         "joints": joints,
         "motion": _optional_mapping(data, "motion"),
-        "joint_safety": _optional_mapping(data, "joint_safety"),
         "gripper_profile": (
             None
             if data.get("gripper_profile") is None

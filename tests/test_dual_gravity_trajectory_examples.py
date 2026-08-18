@@ -54,7 +54,7 @@ def test_replay_parser_defaults_to_safe_atomic_start() -> None:
     assert math.degrees(args.velocity_tolerance) == pytest.approx(2.0)
 
 
-def test_replay_clips_both_sides_to_runtime_soft_limits() -> None:
+def test_replay_clips_both_sides_to_full_joint_limits() -> None:
     robot = ArxDCanDualArm(control_mode="pv")
     left = [0.0] * len(robot.left.joint_names)
     right = [0.0] * len(robot.right.joint_names)
@@ -65,14 +65,8 @@ def test_replay_clips_both_sides_to_runtime_soft_limits() -> None:
     safe, clipped = replay_example._safe_samples(robot, [sample])
 
     assert clipped == 1
-    left_expected = (
-        robot.left.config.arm_joints[5].upper_limit
-        - robot.left.config.soft_limit_margin
-    )
-    right_expected = (
-        robot.right.config.arm_joints[5].lower_limit
-        + robot.right.config.soft_limit_margin
-    )
+    left_expected = robot.left.config.arm_joints[5].upper_limit
+    right_expected = robot.right.config.arm_joints[5].lower_limit
     assert safe[0].left_positions[5] == pytest.approx(left_expected)
     assert safe[0].right_positions[5] == pytest.approx(right_expected)
 
@@ -95,10 +89,7 @@ def test_move_to_start_uses_runtime_effective_rate_for_raw_pv(monkeypatch) -> No
                 lower_limit=-1.0,
                 upper_limit=1.0,
             )
-            config = SimpleNamespace(
-                arm_joints=(joint,),
-                soft_limit_margin=0.0,
-            )
+            config = SimpleNamespace(arm_joints=(joint,))
             self.left = SimpleNamespace(config=config, _mode="pv")
             self.right = SimpleNamespace(config=config, _mode="pv")
             self.raw_commands = []

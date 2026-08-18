@@ -24,17 +24,16 @@ CACHED_FEEDBACK_CROSS_MATCH_TOLERANCE = math.radians(0.05)
 CACHED_FEEDBACK_CROSS_HISTORY_SECONDS = 0.05
 
 
-def _soft_clamp(arm, positions) -> tuple[float, ...]:
-    margin = arm.config.soft_limit_margin
+def _limit_clamp(arm, positions) -> tuple[float, ...]:
     output = []
     for value, joint in zip(positions, arm.config.arm_joints):
         model_limit, _, _ = damiao_model_limits(joint.model)
         lower = (
             -model_limit if joint.lower_limit is None else joint.lower_limit
-        ) + margin
+        )
         upper = (
             model_limit if joint.upper_limit is None else joint.upper_limit
-        ) - margin
+        )
         output.append(max(lower, min(upper, float(value))))
     return tuple(output)
 
@@ -205,8 +204,8 @@ def test_dual_raw_mit_uses_runtime_effective_control_rate() -> None:
         assert control_hz == pytest.approx(EXPECTED_DUAL_CONTROL_HZ)
         robot.enable()
         initial = robot.read_cached_state()
-        left_start = _soft_clamp(robot.left, initial.left.arm.positions)
-        right_start = _soft_clamp(robot.right, initial.right.arm.positions)
+        left_start = _limit_clamp(robot.left, initial.left.arm.positions)
+        right_start = _limit_clamp(robot.right, initial.right.arm.positions)
         left_target = _target(len(left_start))
         right_target = _target(len(right_start))
 
@@ -276,8 +275,8 @@ def test_dual_raw_mit_cached_feedback_isolated_by_channel() -> None:
     try:
         robot.enable()
         initial = robot.read_cached_state()
-        left_target = _soft_clamp(robot.left, initial.left.arm.positions)
-        right_target = _soft_clamp(robot.right, initial.right.arm.positions)
+        left_target = _limit_clamp(robot.left, initial.left.arm.positions)
+        right_target = _limit_clamp(robot.right, initial.right.arm.positions)
         integrity_before = _feedback_integrity_stats(robot)
 
         history_capacity = max(

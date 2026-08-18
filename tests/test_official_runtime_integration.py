@@ -7,8 +7,11 @@ from arx_d_can import ArxDCanArm
 
 
 def test_runtime_supports_connect_feedback_barrier() -> None:
-    assert motor_drive_layer.get_version() == "0.10.10"
-    assert motor_drive_layer.articore_runtime_abi_version() == "2.6"
+    assert motor_drive_layer.get_version() == "0.10.11"
+    assert motor_drive_layer.articore_runtime_abi_version() == "2.8"
+    capabilities = motor_drive_layer.articore_runtime_capabilities()
+    assert capabilities["native_robot_model"]
+    assert capabilities["native_gravity_compensation"]
     assert (
         motor_drive_layer.articore_runtime_capabilities()[
             "transport_aware_control_rate"
@@ -42,6 +45,17 @@ def test_public_runtime_reports_are_motor_drive_layer_types() -> None:
         arx_d_can.RuntimeTransactionError
         is motor_drive_layer.RuntimeTransactionError
     )
+    assert (
+        arx_d_can.GravityCompensationPhase
+        is motor_drive_layer.GravityCompensationPhase
+    )
+    assert (
+        arx_d_can.GravityCompensationStatus
+        is motor_drive_layer.GravityCompensationStatus
+    )
+    assert arx_d_can.NativeRobotModel is motor_drive_layer.NativeRobotModel
+    assert arx_d_can.RobotSide is motor_drive_layer.RobotSide
+    assert arx_d_can.JacobianReference is motor_drive_layer.JacobianReference
 
 
 def test_yunyi_builds_official_runtime_configuration_types() -> None:
@@ -69,3 +83,18 @@ def test_yunyi_builds_official_runtime_configuration_types() -> None:
         isinstance(item, motor_drive_layer.GripperProductBinding)
         for item in arm._runtime_gripper_bindings()
     )
+    gravity = arm._runtime_gravity_bindings()
+    assert len(gravity) == 1
+    assert isinstance(gravity[0], motor_drive_layer.GravityProductBinding)
+    assert gravity[0].runtime_side == 0
+    assert gravity[0].robot_side == motor_drive_layer.RobotSide.LEFT
+    assert gravity[0].product_id == "yunyi_v1_0"
+
+
+def test_yunyi_right_native_gravity_binding_uses_right_model_side() -> None:
+    arm = ArxDCanArm(model="yunyi_v1_0_right", enable_gripper=False)
+
+    binding = arm._runtime_gravity_bindings(runtime_side=1)[0]
+
+    assert binding.runtime_side == 1
+    assert binding.robot_side == motor_drive_layer.RobotSide.RIGHT

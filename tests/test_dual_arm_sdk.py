@@ -288,6 +288,9 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
         def configure_gripper_products(self, _bindings) -> None:
             events.append("grippers")
 
+        def configure_gravity_products(self, _bindings) -> None:
+            events.append("gravity")
+
         def connect(self) -> None:
             events.append("connect")
             raise RuntimeError("injected connect failure")
@@ -314,11 +317,50 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
         "create",
         "joints",
         "grippers",
+        "gravity",
         "connect",
         "close",
     ]
     assert len(configs) == 1
     assert configs[0].feedback_max_age_ms == 300
+
+
+def test_dual_runtime_builds_left_and_right_gravity_bindings() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+
+    bindings = robot._runtime_gravity_bindings()
+
+    assert [(item.runtime_side, item.robot_side, item.product_id) for item in bindings] == [
+        (0, 0, "yunyi_v1_0"),
+        (1, 1, "yunyi_v1_0"),
+    ]
+
+
+def test_dual_arm_delegates_native_gravity_lifecycle() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    calls: list[object] = []
+
+    class Runtime:
+        health = _health()
+
+        @staticmethod
+        def start_gravity_compensation(*, transition_ms: int) -> None:
+            calls.append(("start", transition_ms))
+
+        @staticmethod
+        def stop_gravity_compensation() -> None:
+            calls.append("stop")
+
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    for arm in (robot.left, robot.right):
+        arm._connected = True
+        arm._configured = True
+        arm._enabled = True
+
+    robot.start_gravity_compensation(transition_ms=1000)
+    robot.stop_gravity_compensation()
+
+    assert calls == [("start", 1000), "stop"]
 
 
 def test_dual_raw_send_validates_both_sides_before_submission() -> None:
@@ -547,22 +589,22 @@ def test_dual_ordinary_pv_synchronizes_native_health() -> None:
         left_gripper=False,
         right_gripper=False,
     )
-    calls: list[tuple[object, ...]] = []
+    calls: list[tuple[tuple[object, ...], float]] = []
 
     class Runtime:
         health = _health()
 
-        def set_joint_pv(self, targets, _velocity) -> None:
-            calls.append(tuple(targets))
+        def set_joint_pv(self, targets, velocity) -> None:
+            calls.append((tuple(targets), float(velocity)))
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
     robot.left._ordinary_joint_position_targets = lambda _positions: (("l0", 0.0),)  # type: ignore[method-assign]
     robot.right._ordinary_joint_position_targets = lambda _positions: (("r0", 0.0),)  # type: ignore[method-assign]
-    robot.left._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
-    robot.right._ordinary_joint_velocity = lambda value, **_kwargs: float(value)  # type: ignore[method-assign]
+    robot.left._ordinary_joint_velocity = lambda value, **_kwargs: 4.0 if value is None else float(value)  # type: ignore[method-assign]
+    robot.right._ordinary_joint_velocity = lambda value, **_kwargs: 3.0 if value is None else float(value)  # type: ignore[method-assign]
     robot.set_joint_pv(left=VALID_POSITIONS, right=VALID_POSITIONS)
 
-    assert calls == [(('l0', 0.0), ('r0', 0.0))]
+    assert calls == [((('l0', 0.0), ('r0', 0.0)), 3.0)]
     assert robot.safety_health.state is SafetyState.RUNNING
 
 

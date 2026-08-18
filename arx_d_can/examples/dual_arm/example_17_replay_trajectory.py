@@ -20,17 +20,16 @@ from arx_d_can.service_tools.dual_trajectory_recording import (
 
 
 def _safe_positions(arm, values) -> tuple[float, ...]:
-    """将录制反馈裁剪为该侧 Runtime 的软限位目标。"""
-    margin = arm.config.soft_limit_margin
+    """将录制反馈裁剪为该侧完整标定关节限位目标。"""
     result = []
     for value, joint in zip(values, arm.config.arm_joints):
         position_range, _, _ = damiao_model_limits(joint.model)
         lower = (
             -position_range if joint.lower_limit is None else joint.lower_limit
-        ) + margin
+        )
         upper = (
             position_range if joint.upper_limit is None else joint.upper_limit
-        ) - margin
+        )
         result.append(max(lower, min(upper, float(value))))
     return tuple(result)
 
@@ -199,7 +198,7 @@ def main(args: argparse.Namespace) -> None:
             control_hz=control_hz,
         )
         if clipped:
-            print(f"已将 {clipped} 个越界采样点裁剪到双臂软命令限位")
+            print(f"已将 {clipped} 个越界采样点裁剪到双臂完整命令限位")
         print(
             f"开始原子回放 {len(samples)} 个双臂轨迹点，"
             f"控制模式：{args.mode.upper()}，插值模式：{args.interpolation}；"

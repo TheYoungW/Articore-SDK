@@ -181,21 +181,20 @@ def test_yunyi_arm_and_gripper_share_500_hz_normal_control_rate() -> None:
         assert arm.config.safe_hold_hz == pytest.approx(100.0)
 
 
-def test_yunyi_uses_one_degree_command_limit_margin() -> None:
+def test_yunyi_runtime_uses_full_calibrated_joint_limits() -> None:
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         arm = ArxDCanArm(model=model, enable_gripper=False)
         arm.robot._motor_map.update(
             {joint.name: object() for joint in arm.config.arm_joints}
         )
 
-        assert arm.config.soft_limit_margin == pytest.approx(math.radians(1.0))
         native = arm._runtime_joint_configs()
         for joint, limits in zip(arm.config.arm_joints, native):
             assert joint.lower_limit is not None
             assert joint.upper_limit is not None
             expected = (
-                joint.direction * (joint.lower_limit + math.radians(1.0)),
-                joint.direction * (joint.upper_limit - math.radians(1.0)),
+                joint.direction * joint.lower_limit,
+                joint.direction * joint.upper_limit,
             )
             assert limits.lower_position == pytest.approx(min(expected))
             assert limits.upper_position == pytest.approx(max(expected))

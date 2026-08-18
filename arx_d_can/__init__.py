@@ -33,6 +33,9 @@ from .sdk import (
     DisableReport,
     EnableMotorResult,
     EnableReport,
+    GravityCompensationPhase,
+    GravityCompensationStatus,
+    GravityProductBinding,
     GripperState,
     GripperControlState,
     GripperForceLevel,
@@ -43,6 +46,13 @@ from .sdk import (
     MotorState,
     RuntimeTransactionError,
     RuntimeTransportHealth,
+    IkOptions,
+    IkResult,
+    JacobianReference,
+    NativeRobotModel,
+    RobotModelInfo,
+    RobotPose,
+    RobotSide,
     SafetyHealth,
     SafetyState,
     default_config,
@@ -77,6 +87,18 @@ def __getattr__(name: str) -> Any:
             "DualArmGravityCompensationMode": DualArmGravityCompensationMode,
             "DualArmGravityCompensationSample": DualArmGravityCompensationSample,
         }[name]
+    if name in {"NativeArmModel", "NativeIkResult", "load_native_robot_model"}:
+        from .native_robotics import (
+            NativeArmModel,
+            NativeIkResult,
+            load_native_robot_model,
+        )
+
+        return {
+            "NativeArmModel": NativeArmModel,
+            "NativeIkResult": NativeIkResult,
+            "load_native_robot_model": load_native_robot_model,
+        }[name]
     if name in {"actuator", "controllers", "dynamics", "kinematics", "trajectory"}:
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -98,6 +120,9 @@ __all__ = [
     "DisableReport",
     "EnableMotorResult",
     "EnableReport",
+    "GravityCompensationPhase",
+    "GravityCompensationStatus",
+    "GravityProductBinding",
     "DualArmGravityCompensationMode",
     "DualArmGravityCompensationSample",
     "FeedbackError",
@@ -112,6 +137,15 @@ __all__ = [
     "MotorState",
     "RuntimeTransactionError",
     "RuntimeTransportHealth",
+    "IkOptions",
+    "IkResult",
+    "JacobianReference",
+    "NativeArmModel",
+    "NativeIkResult",
+    "NativeRobotModel",
+    "RobotModelInfo",
+    "RobotPose",
+    "RobotSide",
     "SafetyHealth",
     "SafetyState",
     "MotorFaultError",
@@ -125,5 +159,6 @@ __all__ = [
     "dynamics",
     "kinematics",
     "load_cfg",
+    "load_native_robot_model",
     "trajectory",
 ]

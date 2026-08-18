@@ -9,6 +9,8 @@ from motor_drive_layer import (
     ArticoreRuntime,
     DisableReport,
     EnableReport,
+    GravityCompensationStatus,
+    GravityProductBinding,
     GripperCommand,
     GripperHealth,
     RuntimeConfig,
@@ -154,6 +156,14 @@ class ArxDCanDualArm:
         )
 
     @property
+    def gravity_compensation_status(self) -> GravityCompensationStatus:
+        """返回双臂 Runtime 的原生重力补偿状态。"""
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm gravity compensation runtime is not connected")
+        return runtime.gravity_compensation_status
+
+    @property
     def last_enable_report(self) -> EnableReport | None:
         """返回最近一次双臂原子使能报告。"""
         runtime = self._safety_runtime
@@ -183,13 +193,19 @@ class ArxDCanDualArm:
             *self.right._runtime_gripper_bindings(),
         )
 
+    def _runtime_gravity_bindings(self) -> tuple[GravityProductBinding, ...]:
+        return (
+            *self.left._runtime_gravity_bindings(runtime_side=0),
+            *self.right._runtime_gravity_bindings(runtime_side=1),
+        )
+
     def _create_safety_runtime(
         self,
         group: ControllerGroup,
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.10 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.11 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -243,6 +259,7 @@ class ArxDCanDualArm:
         try:
             runtime.configure_joints(self._runtime_joint_configs())
             runtime.configure_gripper_products(self._runtime_gripper_bindings())
+            runtime.configure_gravity_products(self._runtime_gravity_bindings())
             runtime.connect()
         except Exception:
             # connect() 失败时局部 Runtime 仍持有 Group/Controller/Motor 租用。
@@ -305,7 +322,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.10 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.11 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -414,6 +431,34 @@ class ArxDCanDualArm:
             raise
         else:
             self._sync_python_safety_flags(runtime.health)
+
+    def start_gravity_compensation(self, *, transition_ms: int = 0) -> None:
+        """原子启动左右七轴 Runtime 原生重力补偿。"""
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm gravity compensation runtime is not connected")
+        if self.left._mode != "mit" or self.right._mode != "mit":
+            raise RuntimeError("native gravity compensation requires dual-arm MIT mode")
+        bindings = self._runtime_gravity_bindings()
+        if len(bindings) != 2:
+            raise RuntimeError(
+                "native dual-arm gravity compensation requires built-in left and "
+                "right yunyi_v1_0 products"
+            )
+        if not self.enabled:
+            raise RuntimeError(
+                "enable both arms in MIT mode before gravity compensation"
+            )
+        runtime.start_gravity_compensation(transition_ms=transition_ms)
+        self._sync_python_safety_flags(runtime.health)
+
+    def stop_gravity_compensation(self) -> None:
+        """平滑退出双臂原生重力补偿并恢复当前位置 MIT 保持。"""
+        runtime = self._safety_runtime
+        if runtime is None:
+            raise RuntimeError("dual-arm gravity compensation runtime is not connected")
+        runtime.stop_gravity_compensation()
+        self._sync_python_safety_flags(runtime.health)
 
     def close(self) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
@@ -572,7 +617,7 @@ class ArxDCanDualArm:
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float,
+        velocity: float | None,
         mode: str,
     ) -> None:
         expected = {"pv", "posvel"} if mode == "pv" else {"mit"}
@@ -584,6 +629,11 @@ class ArxDCanDualArm:
         self._sync_python_safety_flags(runtime.health)
         left_targets = self.left._ordinary_joint_position_targets(left)
         right_targets = self.right._ordinary_joint_position_targets(right)
+        if velocity is None:
+            velocity = min(
+                self.left._ordinary_joint_velocity(None, mode=mode),
+                self.right._ordinary_joint_velocity(None, mode=mode),
+            )
         left_velocity = self.left._ordinary_joint_velocity(velocity, mode=mode)
         right_velocity = self.right._ordinary_joint_velocity(velocity, mode=mode)
         if left_velocity != right_velocity:
@@ -601,9 +651,9 @@ class ArxDCanDualArm:
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float = 1.0,
+        velocity: float | None = None,
     ) -> None:
-        """原子设置双臂普通 MIT 最终位置，并由 Runtime 以统一速度推进。"""
+        """原子设置双臂 MIT 最终位置；默认使用双臂共同允许的最大速度。"""
         self._set_joint_position(
             left=left,
             right=right,
@@ -655,9 +705,9 @@ class ArxDCanDualArm:
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float = 1.0,
+        velocity: float | None = None,
     ) -> None:
-        """原子设置双臂普通 PV 最终位置，并由 Runtime 以统一速度推进。"""
+        """原子设置双臂 PV 最终位置；默认使用双臂共同允许的最大速度。"""
         self._set_joint_position(
             left=left,
             right=right,
