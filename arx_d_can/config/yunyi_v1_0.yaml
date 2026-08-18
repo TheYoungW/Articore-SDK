@@ -1,5 +1,4 @@
 name: Yunyi V1.0
-urdf_path: models/yunyi_v1_0.urdf
 # Yunyi 默认使用两块刷入 gs_usb 固件的 DM-USB2FDCAN Dual：左臂 can-left、右臂 can-right。
 # CAN-FD 的 1 Mbps/5 Mbps 位时序由 Linux ip link 预先配置，SDK 显式开启 BRS。
 transport: socketcanfd
@@ -48,6 +47,7 @@ arms:
         feedback_id: 0x11
         model: "8009"
         torque_range: 40.0
+        effort_limit: 40.0
         velocity_range: 20.0
         direction: 1
         MIT: {kp: 190.0, kd: 4.55}
@@ -57,6 +57,7 @@ arms:
         feedback_id: 0x12
         model: "8009"
         torque_range: 40.0
+        effort_limit: 40.0
         velocity_range: 20.0
         MIT: {kp: 190.0, kd: 4.5}
         POS_VEL: {vel_kp: 0.008, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 16.0}
@@ -65,6 +66,7 @@ arms:
         feedback_id: 0x13
         model: "4340P"
         torque_range: 27.0
+        effort_limit: 27.0
         velocity_range: 10.0
         MIT: {kp: 70.0, kd: 2.0}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.0, pos_kp: 165.0, pos_ki: 0.0, vlim: 5.0}
@@ -73,6 +75,7 @@ arms:
         feedback_id: 0x14
         model: "4340P"
         torque_range: 27.0
+        effort_limit: 27.0
         velocity_range: 10.0
         direction: -1
         MIT: {kp: 125.0, kd: 2.9}
@@ -82,6 +85,7 @@ arms:
         feedback_id: 0x15
         model: "4310"
         torque_range: 7.0
+        effort_limit: 7.0
         velocity_range: 10.0
         direction: -1
         MIT: {kp: 10.0, kd: 0.7}
@@ -91,6 +95,7 @@ arms:
         feedback_id: 0x16
         model: "4310"
         torque_range: 7.0
+        effort_limit: 7.0
         velocity_range: 10.0
         MIT: {kp: 22.0, kd: 0.89}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 20.0}
@@ -99,6 +104,7 @@ arms:
         feedback_id: 0x17
         model: "4310"
         torque_range: 7.0
+        effort_limit: 7.0
         velocity_range: 10.0
         MIT: {kp: 28.0, kd: 0.84}
         POS_VEL: {vel_kp: 0.006, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 20.0}
@@ -124,6 +130,7 @@ arms:
         feedback_id: 0x11
         model: "8009"
         torque_range: 40.0
+        effort_limit: 40.0
         velocity_range: 10.0
         direction: 1
         MIT: {kp: 190.0, kd: 4.55}
@@ -133,6 +140,7 @@ arms:
         feedback_id: 0x12
         model: "8009"
         torque_range: 40.0
+        effort_limit: 40.0
         velocity_range: 10.0
         MIT: {kp: 190.0, kd: 4.5}
         POS_VEL: {vel_kp: 0.008, vel_ki: 0.0, pos_kp: 50.0, pos_ki: 0.0, vlim: 16.0}
@@ -141,6 +149,7 @@ arms:
         feedback_id: 0x13
         model: "4340P"
         torque_range: 27.0
+        effort_limit: 27.0
         velocity_range: 10.0
         MIT: {kp: 70.0, kd: 2.0}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.0, pos_kp: 165.0, pos_ki: 0.0, vlim: 5.0}
@@ -149,6 +158,7 @@ arms:
         feedback_id: 0x14
         model: "4340P"
         torque_range: 27.0
+        effort_limit: 27.0
         velocity_range: 10.0
         MIT: {kp: 125.0, kd: 2.9}
         POS_VEL: {vel_kp: 0.0125, vel_ki: 0.0, pos_kp: 180.0, pos_ki: 0.0, vlim: 5.0}
@@ -157,6 +167,7 @@ arms:
         feedback_id: 0x15
         model: "4310"
         torque_range: 7.0
+        effort_limit: 7.0
         velocity_range: 10.0
         direction: -1
         MIT: {kp: 10.0, kd: 0.7}
@@ -166,6 +177,7 @@ arms:
         feedback_id: 0x16
         model: "4310"
         torque_range: 7.0
+        effort_limit: 7.0
         velocity_range: 10.0
         direction: -1
         MIT: {kp: 22.0, kd: 0.89}
@@ -175,6 +187,7 @@ arms:
         feedback_id: 0x17
         model: "4310"
         torque_range: 7.0
+        effort_limit: 7.0
         velocity_range: 10.0
         direction: 1
         MIT: {kp: 28.0, kd: 0.84}

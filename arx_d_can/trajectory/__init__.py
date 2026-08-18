@@ -1,6 +1,7 @@
 """ARX-D-CAN 轨迹规划 API。
 
-关节位置采样保持精简依赖；笛卡尔与 CLIK API 依赖 Pinocchio，因此采用延迟加载。
+关节位置采样保持精简依赖；旧笛卡尔与 CLIK API 需要 ``legacy-models``
+可选依赖，因此采用延迟加载。内置产品应直接使用 Runtime 原生 FK/IK/Jacobian。
 """
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 """ARX-D-CAN Python SDK。
 
-本包保持电机控制路径的依赖精简：导入 ``arx_d_can`` 时只加载 USB2CAN SDK 组件。
-运动学、动力学和轨迹规划依赖 Pinocchio，因此采用延迟加载。
+内置产品的运动学和动力学由 Motor Drive Layer 私有模型执行。导入
+``arx_d_can`` 时不加载系统 Pinocchio；自定义旧模型和旧笛卡尔轨迹接口采用延迟加载。
 """
 from __future__ import annotations
 

@@ -46,6 +46,9 @@ _NATIVE_VELOCITY_RANGES = {
     "8009": 45.0,
 }
 _MIT_GAIN_MAX = {"Kp": 500.0, "Kd": 5.0}
+_NATIVE_ROBOT_MODELS = frozenset(
+    {"yunyi_v1_0_left", "yunyi_v1_0_right"}
+)
 
 
 def _validate_mit_gains(kp: np.ndarray, kd: np.ndarray) -> None:
@@ -383,6 +386,31 @@ def _apply_urdf_joint_limits(
                 )
 
 
+def _apply_native_joint_limits(
+    model: str,
+    joints: list[JointCfg],
+) -> None:
+    """从 Runtime 私有产品模型读取内置机械臂的位置边界。"""
+    from ..native_robotics import load_native_robot_model
+
+    by_name = {joint.name: joint for joint in joints}
+    with load_native_robot_model(model) as native:
+        missing = set(native.joint_names).difference(by_name)
+        if missing:
+            raise ValueError(
+                f"{model} native model references unknown joints: "
+                + ", ".join(sorted(missing))
+            )
+        for name, lower, upper in zip(
+            native.joint_names,
+            native.lower_position_limits,
+            native.upper_position_limits,
+        ):
+            joint = by_name[name]
+            joint.lower_limit = float(lower)
+            joint.upper_limit = float(upper)
+
+
 def _optional_mapping(data: dict[str, Any], field: str) -> dict[str, Any]:
     value = data.get(field, {})
     if value is None:
@@ -535,8 +563,12 @@ def load_cfg(
         joints.append(joint)
 
     groups = _validate_groups(data.get("groups"), joints, path=hw_path)
-    urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
-    _apply_urdf_joint_limits(urdf_path, joints)
+    if selected_model in _NATIVE_ROBOT_MODELS:
+        urdf_path = None
+        _apply_native_joint_limits(selected_model, joints)
+    else:
+        urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
+        _apply_urdf_joint_limits(urdf_path, joints)
     end_effector_frame = str(
         data.get("end_effector_frame", "gripper_end")
     ).strip()

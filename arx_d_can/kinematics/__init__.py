@@ -16,7 +16,7 @@ from ..native_robotics import (
 
 def _pinocchio_required(*_args, **_kwargs):
     raise RuntimeError(
-        "this legacy custom-model API requires the optional 'dynamics' "
+        "this legacy custom-model API requires the optional 'legacy-models' "
         "dependency; built-in products should use load_native_robot_model()"
     )
 

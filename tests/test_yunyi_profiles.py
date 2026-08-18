@@ -1,12 +1,11 @@
-import math
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 import pytest
 
 from arx_d_can import ArxDCanArm, available_models, load_cfg
 from arx_d_can.actuator import arx_d_can as actuator_module
 from arx_d_can.driver import damiao_model_limits
+from arx_d_can.native_robotics import load_native_robot_model
 
 
 MODELS_DIR = Path(__file__).resolve().parents[1] / "arx_d_can" / "models"
@@ -75,7 +74,7 @@ def test_yunyi_grippers_use_motor_builtin_product_profile() -> None:
         assert "gripper_protection" not in loaded
 
 
-def test_yunyi_joint_torque_ranges_match_urdf_limits() -> None:
+def test_yunyi_joint_torque_ranges_match_product_limits() -> None:
     expected = [40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0, None]
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         joints = load_cfg(model=model)["joints"]
@@ -143,7 +142,7 @@ def test_yunyi_runtime_ordinary_mit_gains_come_from_yaml() -> None:
         assert tuple(joint.mit_kd for joint in native) == expected_kd
 
 
-def test_yunyi_runtime_torque_limits_match_urdf_effort_limits() -> None:
+def test_yunyi_runtime_torque_limits_match_product_effort_limits() -> None:
     for model in ("yunyi_v1_0_left", "yunyi_v1_0_right"):
         arm = ArxDCanArm(model=model, enable_gripper=False)
         arm.robot._motor_map.update(
@@ -213,82 +212,26 @@ def test_yunyi_runtime_gripper_binding_contains_only_motor_profile_id() -> None:
     assert bindings[0].profile_id == "yunyi_gripper_v1"
 
 
-def test_yunyi_profiles_share_one_authoritative_dual_arm_urdf() -> None:
-    dual_path = MODELS_DIR / "yunyi_v1_0.urdf"
-    root = ET.parse(dual_path).getroot()
-    joints = root.findall("joint")
-    names = {joint.attrib["name"] for joint in joints}
-
-    assert {f"r-joint{i}" for i in range(1, 10)} <= names
-    assert {f"l-joint{i}" for i in range(1, 10)} <= names
-    assert len([joint for joint in joints if joint.attrib["type"] == "revolute"]) == 14
-    assert len([joint for joint in joints if joint.attrib["type"] == "prismatic"]) == 4
-
+def test_yunyi_profiles_take_authoritative_limits_from_native_model() -> None:
     expected_efforts = [40.0, 40.0, 27.0, 27.0, 7.0, 7.0, 7.0]
     expected_velocities = [16.0, 16.0, 5.0, 5.0, 20.0, 20.0, 20.0]
-    for side in ("l", "r"):
-        limits = [
-            root.find(f"joint[@name='{side}-joint{index}']/limit")
-            for index in range(1, 8)
-        ]
-        assert all(limit is not None for limit in limits)
-        assert [float(limit.attrib["effort"]) for limit in limits] == expected_efforts
-        assert [float(limit.attrib["velocity"]) for limit in limits] == expected_velocities
 
-        model = f"yunyi_v1_0_{'left' if side == 'l' else 'right'}"
-        profile_joints = load_cfg(model=model)["joints"][:7]
-        assert [joint.torque_range for joint in profile_joints] == expected_efforts
+    for model in ("yunyi_v1_0_left", "yunyi_v1_0_right"):
+        loaded = load_cfg(model=model)
+        profile_joints = loaded["joints"][:7]
+        with load_native_robot_model(model) as native:
+            assert loaded["urdf_path"] is None
+            assert tuple(joint.name for joint in profile_joints) == native.joint_names
+            assert [joint.lower_limit for joint in profile_joints] == pytest.approx(
+                native.lower_position_limits
+            )
+            assert [joint.upper_limit for joint in profile_joints] == pytest.approx(
+                native.upper_position_limits
+            )
+            assert loaded["end_effector_frame"] == native.end_effector_frame
+        assert [joint.effort_limit for joint in profile_joints] == expected_efforts
         assert [joint.vlim for joint in profile_joints] == expected_velocities
 
-    expected_joint4_limits = {
-        "r": (-0.1744, 2.2678),
-        "l": (-0.1744, 2.2678),
-    }
-    for side in ("r", "l"):
-        joint3 = root.find(f"joint[@name='{side}-joint3']")
-        assert joint3 is not None
-        joint3_limit = joint3.find("limit")
-        assert joint3_limit is not None
-        assert float(joint3_limit.attrib["lower"]) == pytest.approx(-2.5294)
-        assert float(joint3_limit.attrib["upper"]) == pytest.approx(2.5294)
-
-        joint4 = root.find(f"joint[@name='{side}-joint4']")
-        assert joint4 is not None
-        assert tuple(float(value) for value in joint4.find("axis").attrib["xyz"].split()) == (
-            0.0,
-            -1.0,
-            0.0,
-        )
-        joint4_limit = joint4.find("limit")
-        assert joint4_limit is not None
-        expected_joint4_lower, expected_joint4_upper = expected_joint4_limits[side]
-        assert float(joint4_limit.attrib["lower"]) == pytest.approx(
-            expected_joint4_lower
-        )
-        assert float(joint4_limit.attrib["upper"]) == pytest.approx(
-            expected_joint4_upper
-        )
-
-        profile_joint4 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
-            "joints"
-        ][3]
-        profile_joint3 = load_cfg(model=f"yunyi_v1_0_{'right' if side == 'r' else 'left'}")[
-            "joints"
-        ][2]
-        assert profile_joint3.lower_limit == pytest.approx(-2.5294)
-        assert profile_joint3.upper_limit == pytest.approx(2.5294)
-        assert profile_joint4.lower_limit == pytest.approx(expected_joint4_lower)
-        assert profile_joint4.upper_limit == pytest.approx(expected_joint4_upper)
-
-        joint6 = root.find(f"joint[@name='{side}-joint6']")
-        assert joint6 is not None
-        limit = joint6.find("limit")
-        assert limit is not None
-        assert float(limit.attrib["lower"]) == pytest.approx(-0.785)
-        assert float(limit.attrib["upper"]) == pytest.approx(0.785)
-
-    for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
-        assert Path(load_cfg(model=model)["urdf_path"]) == dual_path
-
+    assert not (MODELS_DIR / "yunyi_v1_0.urdf").exists()
     assert not (MODELS_DIR / "yunyi_v1_0_left.urdf").exists()
     assert not (MODELS_DIR / "yunyi_v1_0_right.urdf").exists()

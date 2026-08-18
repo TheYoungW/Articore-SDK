@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dynamics = [
+legacy-models = [
   "pin>=3.0",
 ]
 dev = [
