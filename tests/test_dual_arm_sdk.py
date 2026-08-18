@@ -54,7 +54,7 @@ def test_default_dual_arm_uses_two_yunyi_profiles() -> None:
     assert robot.left.config.transport == "socketcanfd"
     assert robot.right.config.transport == "socketcanfd"
     assert robot.left.config.port == "can0"
-    assert robot.right.config.port == "can1"
+    assert robot.right.config.port == "can3"
     assert robot.left.config.hardware_config_path == robot.right.config.hardware_config_path
     assert robot.left._mode == "mit"
     assert robot.right._mode == "mit"
@@ -285,9 +285,6 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
         def configure_joints(self, _configs) -> None:
             events.append("joints")
 
-        def configure_joint_safety_limits(self, _limits) -> None:
-            events.append("limits")
-
         def configure_gripper_products(self, _bindings) -> None:
             events.append("grippers")
 
@@ -301,7 +298,6 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
     monkeypatch.setattr("arx_d_can.sdk.dual_arm.ArticoreRuntime", Runtime)
     robot._runtime_motors = lambda: ()  # type: ignore[method-assign]
     robot._runtime_joint_configs = lambda: ()  # type: ignore[method-assign]
-    robot._runtime_joint_limits = lambda: ()  # type: ignore[method-assign]
     robot._runtime_gripper_bindings = lambda: ()  # type: ignore[method-assign]
     group = SimpleNamespace(_ptr=1)
     left_controller = SimpleNamespace(_ptr=1)
@@ -317,7 +313,6 @@ def test_dual_runtime_connect_failure_releases_runtime_lease(monkeypatch) -> Non
     assert events == [
         "create",
         "joints",
-        "limits",
         "grippers",
         "connect",
         "close",

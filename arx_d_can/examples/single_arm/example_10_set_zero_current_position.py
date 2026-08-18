@@ -17,9 +17,7 @@ def main(args: argparse.Namespace) -> None:
         enable_gripper=True,
     )
 
-    arm.connect()
-    print("机器人连接成功，电机保持失能状态")
-
+    print("正在以维护模式连接；不会配置 PV/MIT，也不会使能电机")
     try:
         completed = arm.set_zero()
         print("零点设置完成：", ", ".join(completed))

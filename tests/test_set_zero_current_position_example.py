@@ -11,9 +11,6 @@ def test_zero_example_connects_and_zeros_all_active_motors_without_enabling(
     class FakeArm:
         joint_names = ("joint1", "joint2")
 
-        def connect(self) -> None:
-            captured["calls"].append("connect")
-
         def set_zero(self):
             captured["calls"].append("set_zero")
             return ("joint1", "joint2", "gripper")
@@ -38,4 +35,4 @@ def test_zero_example_connects_and_zeros_all_active_motors_without_enabling(
 
     assert captured["port"] == "/dev/ttyACM0"
     assert captured["enable_gripper"] is True
-    assert captured["calls"] == ["connect", "set_zero", "close"]
+    assert captured["calls"] == ["set_zero", "close"]

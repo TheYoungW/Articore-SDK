@@ -9,9 +9,9 @@ SDK 不把公共接口绑定到具体产品：
 - `ArxDCanDualArm` 组合左右两条独立 CAN 通道；
 - 机型差异全部由 YAML 配置描述。
 
-当前双臂默认配置是 Yunyi V1.0，默认通过刷入 `gs_usb` 固件的
-DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can0`/`can1` 通信。以后增加其他产品时
-不需要再创建产品专用 Python 类。
+当前双臂默认配置是 Yunyi V1.0，默认通过两块刷入 `gs_usb` 固件的
+DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can0`/`can3` 分别连接左右臂。以后增加
+其他产品时不需要再创建产品专用 Python 类。
 
 ## 安装
 
@@ -321,8 +321,8 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcan` | `can0` | Linux 经典 CAN |
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
-Yunyi 默认使用刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配置 CAN-FD
-接口，SDK 默认打开 `can0`/`can1` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
+Yunyi 默认使用两块刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配置 CAN-FD
+接口，SDK 默认打开 `can0`/`can3` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
 需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.8` 的平台 wheel 会自动
 加载随包提供的厂商运行库。
 
@@ -330,7 +330,7 @@ Yunyi 默认使用刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配�
 wheel 使用 `macosx_26_0` 标签，不声明对更早 macOS 版本兼容。
 
 `ArxDCanArm(model="yunyi_v1_0_left")` 默认使用 `can0`，
-`ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 `can1`；`ArxDCanDualArm()` 默认同时
+`ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 `can3`；`ArxDCanDualArm()` 默认同时
 打开这两个 SocketCAN-FD 接口。原厂 `dm-device` 和 `dm-serial` 后端仍可显式选择。
 
 DM Device 默认正式使用 CAN-FD+BRS，仲裁速率为 1 Mbps、数据速率为 5 Mbps；5 Mbps
@@ -368,11 +368,11 @@ sudo ip link set can0 type can bitrate 1000000 sample-point 0.75 \
 sudo ip link set can0 txqueuelen 1000
 sudo ip link set can0 up
 
-sudo ip link set can1 down
-sudo ip link set can1 type can bitrate 1000000 sample-point 0.75 \
+sudo ip link set can3 down
+sudo ip link set can3 type can bitrate 1000000 sample-point 0.75 \
   dbitrate 5000000 dsample-point 0.875 fd on
-sudo ip link set can1 txqueuelen 1000
-sudo ip link set can1 up
+sudo ip link set can3 txqueuelen 1000
+sudo ip link set can3 up
 ```
 
 SDK 会显式调用 `Controller.from_socketcanfd(channel, enable_brs=True)`，确保帧包含
@@ -421,17 +421,16 @@ except RuntimeTransactionError as exc:
 `motor_communication_timeout_ms`（Yunyi 默认 500 ms），由电机固件在主机进程消失后
 执行最终通信超时失能。
 
-SDK 在 `runtime.connect()` 前把 URDF 边界作为机械硬限位，并由产品 YAML 生成软限位和
-动态制动参数。Yunyi 默认在硬限位两端各预留 1°，并使用 5° 减速区：
+SDK 在 `runtime.connect()` 前根据 URDF 边界生成有效命令限位。Yunyi 默认在两端
+各预留 1°：
 
 ```yaml
 joint_safety:
-  soft_limit_margin: 0.01745329252       # 1°
-  soft_limit_braking_zone: 0.08726646260 # 5°
-  braking_acceleration: 2.0              # rad/s²
+  soft_limit_margin_deg: 1.0
 ```
 
-Runtime 在发送前校验命令位置、速度和力矩限位。motor-drive-layer 0.10.8 不再把反馈
+SDK 不实现接近限位减速；超出有效位置范围的目标会在发送前被拒绝，范围内的运动速度
+由调用者指定。Runtime 同时校验命令速度和力矩限位。motor-drive-layer 0.10.8 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。重力补偿使用真实反馈计算和录制，但会把由反馈生成的 MIT 保持
 位置裁剪到 URDF 上下限后再提交。首次普通 MIT/PV 命令即使从超出配置硬限位的实际

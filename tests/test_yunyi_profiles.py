@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -32,7 +33,7 @@ def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
     assert left.config.gripper.name == "l-gripper"
     assert right.config.transport == "socketcanfd"
     assert left.config.transport == "socketcanfd"
-    assert right.config.port == "can1"
+    assert right.config.port == "can3"
     assert left.config.port == "can0"
     assert right.config.max_cached_feedback_age_s == pytest.approx(0.3)
     assert left.config.max_cached_feedback_age_s == pytest.approx(0.3)
@@ -180,26 +181,24 @@ def test_yunyi_arm_and_gripper_share_500_hz_normal_control_rate() -> None:
         assert arm.config.safe_hold_hz == pytest.approx(100.0)
 
 
-def test_yunyi_uses_one_degree_soft_limit_margin_and_dynamic_braking() -> None:
+def test_yunyi_uses_one_degree_command_limit_margin() -> None:
     for model in ("yunyi_v1_0_right", "yunyi_v1_0_left"):
         arm = ArxDCanArm(model=model, enable_gripper=False)
         arm.robot._motor_map.update(
             {joint.name: object() for joint in arm.config.arm_joints}
         )
 
-        assert arm.config.soft_limit_margin == pytest.approx(0.01745329252)
-        assert arm.config.soft_limit_braking_zone == pytest.approx(0.08726646260)
-        assert arm.config.braking_acceleration == pytest.approx(2.0)
-        native = arm._runtime_joint_limits()
+        assert arm.config.soft_limit_margin == pytest.approx(math.radians(1.0))
+        native = arm._runtime_joint_configs()
         for joint, limits in zip(arm.config.arm_joints, native):
             assert joint.lower_limit is not None
             assert joint.upper_limit is not None
-            assert (
-                limits.hard_upper_position - limits.soft_upper_position
-            ) == pytest.approx(0.01745329252)
-            assert (
-                limits.soft_lower_position - limits.hard_lower_position
-            ) == pytest.approx(0.01745329252)
+            expected = (
+                joint.direction * (joint.lower_limit + math.radians(1.0)),
+                joint.direction * (joint.upper_limit - math.radians(1.0)),
+            )
+            assert limits.lower_position == pytest.approx(min(expected))
+            assert limits.upper_position == pytest.approx(max(expected))
 
 
 def test_yunyi_runtime_gripper_binding_contains_only_motor_profile_id() -> None:

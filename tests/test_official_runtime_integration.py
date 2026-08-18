@@ -59,10 +59,6 @@ def test_yunyi_builds_official_runtime_configuration_types() -> None:
         for item in arm._runtime_joint_configs()
     )
     assert all(
-        isinstance(item, motor_drive_layer.JointSafetyLimits)
-        for item in arm._runtime_joint_limits()
-    )
-    assert all(
         isinstance(item, motor_drive_layer.GripperProductBinding)
         for item in arm._runtime_gripper_bindings()
     )

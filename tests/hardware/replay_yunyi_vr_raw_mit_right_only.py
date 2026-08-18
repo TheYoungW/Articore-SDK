@@ -81,7 +81,7 @@ def main() -> int:
     args = parser.parse_args()
 
     targets, frames = _load_frames(args.trace, args.control_hz)
-    capture = CanMemoryTrace(("can1",), 5.0)
+    capture = CanMemoryTrace(("can3",), 5.0)
     robot = ArxDCanArm(model="yunyi_v1_0_right", control_mode="mit")
     robot.config = replace(robot.config, control_hz=float(args.control_hz))
     result: dict[str, Any] = {

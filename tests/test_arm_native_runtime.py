@@ -531,3 +531,40 @@ def test_single_clear_faults_uses_unconfigured_maintenance_connection() -> None:
         ("close", False),
     ]
     assert not arm.connected
+
+
+def test_single_set_zero_uses_unconfigured_maintenance_connection() -> None:
+    arm = ArxDCanArm(model="yunyi_v1_0_left", enable_gripper=False)
+    events: list[object] = []
+
+    class Robot:
+        @staticmethod
+        def connect() -> None:
+            events.append("connect")
+
+        @staticmethod
+        def set_zero(**kwargs) -> tuple[str, ...]:
+            events.append(("zero", kwargs))
+            return ("l-joint1",)
+
+        @staticmethod
+        def disconnect(*, disable: bool) -> None:
+            events.append(("close", disable))
+
+    arm.robot = Robot()  # type: ignore[assignment]
+
+    assert arm.set_zero() == ("l-joint1",)
+    assert events == [
+        "connect",
+        (
+            "zero",
+            {
+                "joint_names": None,
+                "verify_tolerance": 0.02,
+                "verify_velocity": 0.05,
+                "verify_samples": 3,
+            },
+        ),
+        ("close", False),
+    ]
+    assert not arm.connected

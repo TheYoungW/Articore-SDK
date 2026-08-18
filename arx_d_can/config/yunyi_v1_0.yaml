@@ -1,17 +1,15 @@
 name: Yunyi V1.0
 urdf_path: models/yunyi_v1_0.urdf
-# Yunyi 默认使用刷入 gs_usb 固件的 DM-USB2FDCAN Dual：左臂 can0、右臂 can1。
+# Yunyi 默认使用两块刷入 gs_usb 固件的 DM-USB2FDCAN Dual：左臂 can0、右臂 can3。
 # CAN-FD 的 1 Mbps/5 Mbps 位时序由 Linux ip link 预先配置，SDK 显式开启 BRS。
 transport: socketcanfd
 # motor-drive-layer 0.10.8 的非阻塞 raw mailbox 和内部快照锁缓存路径已完成双臂真机
 # 验收：公开 SDK raw MIT 以 500 Hz 持续 30 秒，16 台反馈均接近 500 Hz。
 rate: 500
 
-# ABI 2.5：URDF 限位作为机械硬限位；普通位置 reference 在两端各预留 1°。
+# 普通位置 reference 在 URDF 限位两端各预留 1°。
 joint_safety:
-  soft_limit_margin: 0.01745329252
-  soft_limit_braking_zone: 0.08726646260
-  braking_acceleration: 2.0
+  soft_limit_margin_deg: 1.0
 
 safety:
   command_timeout_s: 0.25
@@ -116,7 +114,7 @@ arms:
 
   right:
     name: Yunyi V1.0 Right Arm
-    channel: can1
+    channel: can3
     end_effector_frame: r-link7
     groups:
       arm:

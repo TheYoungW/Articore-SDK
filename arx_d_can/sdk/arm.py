@@ -19,7 +19,6 @@ from motor_drive_layer import (
     GripperProductBinding,
     JointControlConfig,
     JointPositionTarget,
-    JointSafetyLimits,
     RuntimeConfig,
     RuntimeControlMode,
     RuntimeMitCommand,
@@ -350,7 +349,10 @@ class ArxDCanArm(_SafetyMixin):
         return tuple(descriptors)
 
     def _runtime_joint_configs(self) -> tuple[JointControlConfig, ...]:
-        """生成 runtime 使用的原生坐标限位和 MIT 默认参数。"""
+        """生成 Runtime 使用的有效位置限位和 MIT 默认参数。"""
+        margin = self.config.soft_limit_margin
+        if not math.isfinite(margin) or margin < 0.0:
+            raise ValueError("soft_limit_margin must be finite and non-negative")
         configs = []
         for joint in self.config.arm_joints:
             position_range, native_velocity, native_torque = damiao_model_limits(
@@ -362,6 +364,12 @@ class ArxDCanArm(_SafetyMixin):
             logical_upper = (
                 position_range if joint.upper_limit is None else joint.upper_limit
             )
+            logical_lower += margin
+            logical_upper -= margin
+            if logical_lower >= logical_upper:
+                raise ValueError(
+                    f"{joint.name}: soft limit margin leaves no valid joint range"
+                )
             motor_limits = (
                 joint.direction * logical_lower,
                 joint.direction * logical_upper,
@@ -398,57 +406,6 @@ class ArxDCanArm(_SafetyMixin):
                 )
             )
         return tuple(configs)
-
-    def _runtime_joint_limits(self) -> tuple[JointSafetyLimits, ...]:
-        """由 URDF 硬限位和产品余量生成 Runtime 2.0 分层限位。"""
-        margin = self.config.soft_limit_margin
-        braking_zone = self.config.soft_limit_braking_zone
-        braking_acceleration = self.config.braking_acceleration
-        if any(
-            not math.isfinite(value) or value < 0.0
-            for value in (margin, braking_zone, braking_acceleration)
-        ) or braking_acceleration == 0.0:
-            raise ValueError("joint safety values must be finite and non-negative")
-        limits = []
-        for joint in self.config.arm_joints:
-            position_range, _, _ = damiao_model_limits(joint.model)
-            logical_hard_lower = (
-                -position_range if joint.lower_limit is None else joint.lower_limit
-            )
-            logical_hard_upper = (
-                position_range if joint.upper_limit is None else joint.upper_limit
-            )
-            logical_soft_lower = logical_hard_lower + margin
-            logical_soft_upper = logical_hard_upper - margin
-            if logical_soft_lower >= logical_soft_upper:
-                raise ValueError(
-                    f"{joint.name}: soft limit margin leaves no valid joint range"
-                )
-            soft_span = logical_soft_upper - logical_soft_lower
-            if braking_zone > soft_span:
-                raise ValueError(
-                    f"{joint.name}: soft limit braking zone exceeds the soft range"
-                )
-            hard_motor = (
-                joint.direction * logical_hard_lower,
-                joint.direction * logical_hard_upper,
-            )
-            soft_motor = (
-                joint.direction * logical_soft_lower,
-                joint.direction * logical_soft_upper,
-            )
-            limits.append(
-                JointSafetyLimits(
-                    motor=self.robot._motor_map[joint.name],
-                    hard_lower_position=min(hard_motor),
-                    hard_upper_position=max(hard_motor),
-                    soft_lower_position=min(soft_motor),
-                    soft_upper_position=max(soft_motor),
-                    soft_limit_braking_zone=braking_zone,
-                    braking_acceleration=braking_acceleration,
-                )
-            )
-        return tuple(limits)
 
     def _runtime_gripper_bindings(
         self,
@@ -510,7 +467,6 @@ class ArxDCanArm(_SafetyMixin):
                 motors=descriptors,
             )
             runtime.configure_joints(self._runtime_joint_configs())
-            runtime.configure_joint_safety_limits(self._runtime_joint_limits())
             runtime.configure_gripper_products(
                 self._runtime_gripper_bindings()
             )
@@ -1355,16 +1311,23 @@ class ArxDCanArm(_SafetyMixin):
 
         默认处理当前启用的全部电机；产品夹爪已启用时也会一起调零。更换末端并
         禁用夹爪后，默认只处理机械臂关节。``joint_names`` 仅用于显式选择部分电机。
-        机械臂必须已连接、无故障且处于失能状态。验证要求连续 ``verify_samples``
-        个新鲜样本均满足位置和速度容差。
+        未连接时使用不配置 PV/MIT、也不创建 Runtime 的临时维护连接。验证要求连续
+        ``verify_samples`` 个新鲜样本均满足位置和速度容差。
         """
-        self._require_operational()
-        if self._enabled:
-            raise RuntimeError("disable the arm before writing motor zero positions")
         if self._dual_runtime_managed:
             raise RuntimeError(
                 "this arm is managed by ArxDCanDualArm; use robot.set_zero()"
             )
+        if not self._connected:
+            return self._set_zero_maintenance(
+                joint_names=joint_names,
+                verify_tolerance=verify_tolerance,
+                verify_velocity=verify_velocity,
+                verify_samples=verify_samples,
+            )
+        self._require_operational()
+        if self._enabled:
+            raise RuntimeError("disable the arm before writing motor zero positions")
         recreate_runtime = self._single_safety_runtime is not None
         if recreate_runtime:
             self._release_single_runtime()
@@ -1378,6 +1341,36 @@ class ArxDCanArm(_SafetyMixin):
         finally:
             if recreate_runtime:
                 self._create_single_safety_runtime()
+
+    def _set_zero_maintenance(
+        self,
+        *,
+        joint_names: Sequence[str] | None,
+        verify_tolerance: float,
+        verify_velocity: float,
+        verify_samples: int,
+    ) -> tuple[str, ...]:
+        """通过不配置控制模式的临时连接设置单臂电机零点。"""
+        connected = False
+        try:
+            self.robot.connect()
+            connected = True
+            return self.robot.set_zero(
+                joint_names=list(joint_names) if joint_names is not None else None,
+                verify_tolerance=verify_tolerance,
+                verify_velocity=verify_velocity,
+                verify_samples=verify_samples,
+            )
+        finally:
+            if connected:
+                self.robot.disconnect(disable=False)
+            with self._state_lock:
+                self._connected = False
+                self._configured = False
+                self._enabled = False
+                self._faulted = False
+                self._fault_reason = None
+                self._safe_holding = False
 
     def set_gripper_opening(
         self,
