@@ -19,3 +19,6 @@ arx_d_can/_articore_runtime_native*.pyd
 /*_trajectory*.json
 /trajectories/*.json
 /calibration_data/
+
+# Local hardware diagnostic captures can be hundreds of megabytes.
+/artifacts/
