@@ -18,7 +18,7 @@ def main(args: argparse.Namespace) -> None:
         enable_gripper=True,
     )
 
-    arm.connect()
+    arm.connect(read_only=True)
     print("机器人连接成功", flush=True)
 
     try:

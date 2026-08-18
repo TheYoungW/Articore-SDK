@@ -19,7 +19,7 @@ def main(args: argparse.Namespace) -> None:
         baud=args.baud,
         enable_gripper=True,
     )
-    arm.connect()
+    arm.connect(read_only=True)
     print("机器人连接成功")
 
     try:

@@ -555,6 +555,64 @@ def test_builtin_model_rejects_connection_without_native_runtime() -> None:
     assert not arm.connected
 
 
+def test_single_read_only_connect_skips_motor_configuration() -> None:
+    arm = ArxDCanArm(model="yunyi_v1_0_left", enable_gripper=False)
+    events: list[str] = []
+
+    class Robot:
+        arm = object()
+
+        @staticmethod
+        def connect() -> None:
+            events.append("transport")
+
+        @staticmethod
+        def disconnect(*, disable: bool = True) -> None:
+            assert not disable
+
+    arm.robot = Robot()  # type: ignore[assignment]
+    arm._configure = lambda: events.append("configure")  # type: ignore[method-assign]
+
+    def create_runtime() -> None:
+        events.append("runtime")
+        arm._single_safety_runtime = object()  # type: ignore[assignment]
+
+    arm._create_single_safety_runtime = create_runtime  # type: ignore[method-assign]
+
+    arm.connect(read_only=True)
+
+    assert events == ["transport", "runtime"]
+    assert arm.connected
+    assert not arm._configured
+
+
+def test_single_enable_configures_after_read_only_connection() -> None:
+    arm = ArxDCanArm(
+        config=ArxDCanConfig(arm_control_mode="mit", arm_joints=(JOINT,)),
+        enable_gripper=False,
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Runtime:
+        health = _health()
+
+        @staticmethod
+        def enable(mode: str) -> None:
+            calls.append(("runtime", mode))
+
+    def configure() -> None:
+        calls.append(("configure", None))
+        arm._configured = True
+
+    arm._connected = True
+    arm._configure = configure  # type: ignore[method-assign]
+    arm._single_safety_runtime = Runtime()  # type: ignore[assignment]
+
+    arm.enable()
+
+    assert calls == [("configure", None), ("runtime", 2)]
+
+
 def test_single_clear_faults_uses_unconfigured_maintenance_connection() -> None:
     arm = ArxDCanArm(model="yunyi_v1_0_left", enable_gripper=False)
     events: list[object] = []

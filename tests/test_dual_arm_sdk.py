@@ -218,6 +218,41 @@ def test_connect_creates_one_native_group_and_closes_it_before_arms(
     ]
 
 
+def test_dual_read_only_connect_forwards_to_both_arms(monkeypatch) -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+    calls: list[tuple[str, bool]] = []
+
+    class FakeControllerGroup:
+        def __init__(self, _controllers) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "arx_d_can.sdk.dual_arm.ControllerGroup",
+        FakeControllerGroup,
+    )
+
+    def connect(arm, name: str, *, read_only: bool = False) -> None:
+        calls.append((name, read_only))
+        arm._connected = True
+
+    robot.left.connect = lambda **kwargs: connect(  # type: ignore[method-assign]
+        robot.left, "left", **kwargs
+    )
+    robot.right.connect = lambda **kwargs: connect(  # type: ignore[method-assign]
+        robot.right, "right", **kwargs
+    )
+    robot.left._controller_for_parallel_batch = lambda: object()  # type: ignore[method-assign]
+    robot.right._controller_for_parallel_batch = lambda: object()  # type: ignore[method-assign]
+    robot._create_safety_runtime = lambda *_args: object()  # type: ignore[method-assign]
+
+    robot.connect(read_only=True)
+
+    assert calls == [("left", True), ("right", True)]
+
+
 @pytest.mark.parametrize(
     ("mode", "method_name"),
     (("pv", "submit_pv"), ("mit", "submit_mit")),

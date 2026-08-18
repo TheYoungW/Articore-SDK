@@ -444,6 +444,9 @@ ABI 2.4 的 `connect()` 会并行获取全部已配置关节和已安装夹爪�
 屏障通过后才进入 `READY`；因此连接成功后可以立即调用 `read_state()` 或
 `read_cached_state()`。`READY` 状态的低频反馈刷新同样由 Runtime 负责，SDK 不会绕过
 Runtime 主动请求反馈，也不会用零值掩盖缺失电机。
+只读取或诊断时使用 `connect(read_only=True)`：该连接仍会创建反馈 Runtime，但不会
+写入 MIT/PV 模式、通信看门狗或其他电机寄存器。官方读取、读取频率和诊断示例均使用
+该路径；之后若调用 `enable()`，SDK 才会先完成模式和通信参数配置。
 SDK 的通用反馈新鲜度窗口默认为 50 ms；Yunyi 双通道产品配置使用 300 ms，
 反馈健康检查仍为 100 Hz。缺失或超过窗口的反馈会累计到结构化健康诊断，但不会仅因
 反馈超时把运行中的 Runtime 切换到 `SAFE_HOLD` 或 `FAULT`。

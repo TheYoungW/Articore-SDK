@@ -304,15 +304,22 @@ class ArxDCanDualArm:
                 }
                 arm._fault_reason = health.fault_reason
 
-    def connect(self) -> None:
-        """连接左右臂，并为两条通道创建常驻并行发送线程。"""
+    def connect(self, *, read_only: bool = False) -> None:
+        """连接左右臂，并为两条通道创建常驻并行反馈线程。
+
+        ``read_only=True`` 时不写入电机控制模式或通信参数，适合状态读取和诊断。
+        """
         if self.connected and self._controller_group is not None:
             return
         self.left._set_dual_runtime_managed(True)
         self.right._set_dual_runtime_managed(True)
         try:
-            self.left.connect()
-            self.right.connect()
+            if read_only:
+                self.left.connect(read_only=True)
+                self.right.connect(read_only=True)
+            else:
+                self.left.connect()
+                self.right.connect()
             left_controller = self.left._controller_for_parallel_batch()
             right_controller = self.right._controller_for_parallel_batch()
             group = ControllerGroup([left_controller, right_controller])

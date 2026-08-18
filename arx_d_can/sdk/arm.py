@@ -559,10 +559,12 @@ class ArxDCanArm(_SafetyMixin):
             }
             self._fault_reason = health.fault_reason
 
-    def connect(self) -> None:
+    def connect(self, *, read_only: bool = False) -> None:
         """打开配置的总线并重置 SDK 临时状态。
 
-        电机模式和设备通信参数会在创建 Runtime 前配置；连接不会使能电机。
+        默认会在创建 Runtime 前配置电机模式和设备通信参数，但不会使能电机。
+        ``read_only=True`` 时只建立通信和反馈 Runtime，不写入控制模式、通信看门狗
+        或其他电机寄存器，适合状态读取和诊断。
         """
         if self._connected:
             return
@@ -575,7 +577,8 @@ class ArxDCanArm(_SafetyMixin):
             self._fault_reason = None
             self._safe_holding = False
         try:
-            self._configure()
+            if not read_only:
+                self._configure()
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
@@ -635,7 +638,7 @@ class ArxDCanArm(_SafetyMixin):
         """
         self._require_operational()
         if not self._configured:
-            raise RuntimeError("motor mode was not configured before Runtime creation")
+            self._configure()
         runtime = self._single_safety_runtime
         if runtime is None:
             raise RuntimeError("native safety runtime is not connected")

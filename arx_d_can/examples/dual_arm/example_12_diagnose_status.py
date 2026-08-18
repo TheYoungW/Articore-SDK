@@ -12,7 +12,7 @@ from arx_d_can.sdk.diagnostics import print_diagnostic_summary
 
 def main(args: argparse.Namespace) -> None:
     robot = ArxDCanDualArm()
-    robot.connect()
+    robot.connect(read_only=True)
     print("机器人连接成功")
     try:
         left = []

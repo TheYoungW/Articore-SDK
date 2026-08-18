@@ -35,8 +35,8 @@ def test_once_mode_reads_one_feedback_sample(monkeypatch) -> None:
     calls: list[object] = []
 
     class Robot:
-        def connect(self) -> None:
-            calls.append("connect")
+        def connect(self, *, read_only: bool = False) -> None:
+            calls.append(("connect", read_only))
 
         def read_state(self):
             calls.append("read")
@@ -49,7 +49,7 @@ def test_once_mode_reads_one_feedback_sample(monkeypatch) -> None:
 
     example.main(example.build_parser().parse_args([]))
 
-    assert calls == ["connect", "read", "close"]
+    assert calls == [("connect", True), "read", "close"]
 
 
 def test_continuous_mode_uses_100_hz_until_interrupted(monkeypatch) -> None:
@@ -59,8 +59,8 @@ def test_continuous_mode_uses_100_hz_until_interrupted(monkeypatch) -> None:
     now = 0.0
 
     class Robot:
-        def connect(self) -> None:
-            pass
+        def connect(self, *, read_only: bool = False) -> None:
+            assert read_only
 
         def read_state(self):
             nonlocal reads

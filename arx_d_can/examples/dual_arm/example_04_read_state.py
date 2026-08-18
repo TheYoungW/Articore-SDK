@@ -66,7 +66,7 @@ def _display_hz(text: str) -> float:
 
 def main(args: argparse.Namespace) -> None:
     robot = ArxDCanDualArm()
-    robot.connect()
+    robot.connect(read_only=True)
     print("机器人连接成功")
     try:
         if args.mode == "once":
