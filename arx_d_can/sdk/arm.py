@@ -95,6 +95,29 @@ def _runtime_raw_commands(batch: _PreparedJointPositionBatch) -> tuple[object, .
     )
 
 
+def _finite_vector(
+    values: Sequence[float],
+    *,
+    count: int,
+    name: str,
+) -> np.ndarray:
+    result = np.asarray(values, dtype=np.float64).reshape(-1)
+    if len(result) != count:
+        raise ValueError(f"expected {count} joint {name}, got {len(result)}")
+    if not np.all(np.isfinite(result)):
+        raise ValueError(f"joint {name} must be finite")
+    return result
+
+
+def _optional_finite_vector(
+    values: Sequence[float] | None,
+    *,
+    count: int,
+    name: str,
+) -> np.ndarray | None:
+    return None if values is None else _finite_vector(values, count=count, name=name)
+
+
 class ArxDCanArm(_SafetyMixin):
     """通过 DM Device、dm-serial 或 Linux SocketCAN 控制机械臂。"""
 
@@ -262,20 +285,7 @@ class ArxDCanArm(_SafetyMixin):
             last_rx_age_ns=None,
             last_error=None,
         )
-        inactive = RuntimeTransportHealth(
-            connected=False,
-            healthy=False,
-            consecutive_send_failures=0,
-            consecutive_feedback_failures=0,
-            last_feedback_age_ns=None,
-            tx_frames=0,
-            rx_frames=0,
-            send_errors=0,
-            receive_errors=0,
-            last_tx_age_ns=None,
-            last_rx_age_ns=None,
-            last_error=None,
-        )
+        inactive = replace(transport, connected=False, healthy=False)
         return SafetyHealth(
             state=state,
             safe_holding=self.safe_holding,
@@ -325,17 +335,16 @@ class ArxDCanArm(_SafetyMixin):
     ) -> tuple[RuntimeMotor, ...]:
         """生成供 Articore C++ runtime 使用的通用电机描述。"""
         prefix = "" if label is None else f"{label}/"
-        descriptors = []
-        for joint in self.config.arm_joints:
-            descriptors.append(
-                RuntimeMotor(
-                    motor=self.robot._motor_map[joint.name],
-                    side=side,
-                    name=f"{prefix}{joint.name}",
-                    safe_kp=self.config.safe_hold_mit_kp,
-                    safe_kd=self.config.safe_hold_mit_kd,
-                )
+        descriptors = [
+            RuntimeMotor(
+                motor=self.robot._motor_map[joint.name],
+                side=side,
+                name=f"{prefix}{joint.name}",
+                safe_kp=self.config.safe_hold_mit_kp,
+                safe_kd=self.config.safe_hold_mit_kd,
             )
+            for joint in self.config.arm_joints
+        ]
         if self.enable_gripper and self.config.gripper is not None:
             gripper = self.config.gripper
             descriptors.append(
@@ -577,21 +586,13 @@ class ArxDCanArm(_SafetyMixin):
         失能时保留完整所有权链，以便读取报告并重试。
         """
         self._release_single_runtime()
-        errors: list[Exception] = []
         if self._connected:
-            try:
-                self.robot.disconnect(disable=False)
-            except Exception as exc:
-                errors.append(exc)
-            else:
-                self._connected = False
-        if not self._connected:
-            with self._state_lock:
-                self._configured = False
-                self._safe_holding = False
-                self._enabled = False
-        if errors:
-            raise errors[0]
+            self.robot.disconnect(disable=False)
+            self._connected = False
+        with self._state_lock:
+            self._configured = False
+            self._safe_holding = False
+            self._enabled = False
 
     def enable(self) -> None:
         """通过原生原子事务使能活动电机并启动命令安全监控。
@@ -956,30 +957,17 @@ class ArxDCanArm(_SafetyMixin):
         )
         logical_position = np.asarray(values, dtype=np.float64)
 
-        def optional_vector(
-            vector: Sequence[float] | None,
-            *,
-            name: str,
-        ) -> np.ndarray | None:
-            if vector is None:
-                return None
-            result = np.asarray(vector, dtype=np.float64).reshape(-1)
-            if len(result) != joint_count:
-                raise ValueError(
-                    f"expected {joint_count} joint {name}, got {len(result)}"
-                )
-            if not np.all(np.isfinite(result)):
-                raise ValueError(f"joint {name} must be finite")
-            return result
-
-        velocity_target = optional_vector(velocities, name="velocities")
-        velocity_limit_target = optional_vector(
-            velocity_limits,
-            name="velocity limits",
+        velocity_target = _optional_finite_vector(
+            velocities, count=joint_count, name="velocities"
+        )
+        velocity_limit_target = _optional_finite_vector(
+            velocity_limits, count=joint_count, name="velocity limits"
         )
         if velocity_limit_target is not None and np.any(velocity_limit_target <= 0.0):
             raise ValueError("joint velocity limits must be positive")
-        torque_target = optional_vector(torques, name="torques")
+        torque_target = _optional_finite_vector(
+            torques, count=joint_count, name="torques"
+        )
         kp_target = _mit_gain_vector(mit_kp, joint_count=joint_count, name="Kp")
         kd_target = _mit_gain_vector(mit_kd, joint_count=joint_count, name="Kd")
         configured_velocity_limits = np.asarray(
@@ -1065,41 +1053,20 @@ class ArxDCanArm(_SafetyMixin):
         """按最新反馈把公开 raw MIT 的合成力矩缩放到 URDF effort 的 80%。"""
         joint_count = len(self.config.arm_joints)
 
-        def vector(
-            values: Sequence[float] | None,
-            *,
-            name: str,
-            default: Sequence[float],
-        ) -> np.ndarray:
-            result = np.asarray(default if values is None else values, dtype=np.float64)
-            result = result.reshape(-1)
-            if len(result) != joint_count:
-                raise ValueError(
-                    f"expected {joint_count} joint {name}, got {len(result)}"
-                )
-            if not np.all(np.isfinite(result)):
-                raise ValueError(f"joint {name} must be finite")
-            return result
-
-        target_positions = vector(
-            positions,
-            name="positions",
-            default=(),
+        zeros = np.zeros(joint_count)
+        target_positions = _finite_vector(
+            positions, count=joint_count, name="positions"
         )
-        target_velocities = vector(
-            velocities,
+        target_velocities = _finite_vector(
+            zeros if velocities is None else velocities,
+            count=joint_count,
             name="velocities",
-            default=np.zeros(joint_count),
         )
-        actual_positions = vector(
-            current_positions,
-            name="feedback positions",
-            default=(),
+        actual_positions = _finite_vector(
+            current_positions, count=joint_count, name="feedback positions"
         )
-        actual_velocities = vector(
-            current_velocities,
-            name="feedback velocities",
-            default=(),
+        actual_velocities = _finite_vector(
+            current_velocities, count=joint_count, name="feedback velocities"
         )
         stiffness = _mit_gain_vector(kp, joint_count=joint_count, name="Kp")
         if stiffness is None:
@@ -1113,10 +1080,10 @@ class ArxDCanArm(_SafetyMixin):
                 [joint.mit_kd for joint in self.config.arm_joints],
                 dtype=np.float64,
             )
-        feedforward = vector(
-            feedforward_torques,
+        feedforward = _finite_vector(
+            zeros if feedforward_torques is None else feedforward_torques,
+            count=joint_count,
             name="feedforward torques",
-            default=np.zeros(joint_count),
         )
 
         proportional = np.zeros(joint_count, dtype=np.float64)
@@ -1379,12 +1346,10 @@ class ArxDCanArm(_SafetyMixin):
         speed: float = 1000.0,
         force_level: GripperForceLevel = GripperForceLevel.LEVEL_5,
     ) -> None:
-        """使用简单的 ``0``～``1000`` 刻度设置夹爪开合度。
+        """设置夹爪开合度；``0`` 为闭合，``1000`` 为张开，超出范围自动限幅。
 
-        ``0`` 表示完全闭合，``1000`` 表示完全张开，超出范围的值会自动限幅。
-        ``speed`` 使用 ``(0, 1000]`` 产品归一化刻度；``1000`` 对应配置中的最大
-        标定速度。``force_level`` 必须使用 :class:`GripperForceLevel` 枚举，具体
-        接触、过载和保持参数由产品配置固定，普通用户不能逐项覆盖。
+        ``speed`` 范围为 ``(0, 1000]``，``force_level`` 使用
+        :class:`GripperForceLevel` 枚举。
         """
         self._require_connected()
         if self._dual_runtime_managed:

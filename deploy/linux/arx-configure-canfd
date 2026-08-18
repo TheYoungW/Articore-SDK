@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+interface=${1:-}
+case "$interface" in
+    can-left|can-right) ;;
+    *)
+        echo "unsupported ARX CAN interface: $interface" >&2
+        exit 2
+        ;;
+esac
+
+/usr/sbin/ip link set dev "$interface" down 2>/dev/null || true
+/usr/sbin/ip link set dev "$interface" type can \
+    bitrate 1000000 sample-point 0.75 \
+    dbitrate 5000000 dsample-point 0.875 \
+    fd on
+/usr/sbin/ip link set dev "$interface" txqueuelen 1000
+/usr/sbin/ip link set dev "$interface" up

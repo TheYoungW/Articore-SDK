@@ -40,8 +40,8 @@ class ArxDCanDualArm:
 
     当前默认机型是 Yunyi V1.0 左右臂，以后其他双臂产品可以分别传入自己的
     ``left_model`` 和 ``right_model``，无需新增产品专用 Python 类。连接参数默认
-    来自产品配置；Yunyi 默认使用两块独立 SocketCAN-FD 适配器的 ``can0`` 和
-    ``can3``。控制模式默认使用 MIT，构造参数仅用于显式覆盖。
+    来自产品配置；Yunyi 默认使用两块独立 SocketCAN-FD 适配器的 ``can-left`` 和
+    ``can-right``。控制模式默认使用 MIT，构造参数仅用于显式覆盖。
     """
 
     def __init__(

@@ -1,0 +1,3 @@
+# The used channel of each dual-channel adapter is selected by USB serial and dev_port.
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="can*", ATTR{dev_port}=="@LEFT_PORT@", ATTRS{serial}=="@LEFT_SERIAL@", NAME="can-left", TAG+="systemd", ENV{SYSTEMD_WANTS}+="arx-canfd@can-left.service"
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="can*", ATTR{dev_port}=="@RIGHT_PORT@", ATTRS{serial}=="@RIGHT_SERIAL@", NAME="can-right", TAG+="systemd", ENV{SYSTEMD_WANTS}+="arx-canfd@can-right.service"

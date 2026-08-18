@@ -53,8 +53,8 @@ def test_default_dual_arm_uses_two_yunyi_profiles() -> None:
     assert len(robot.right.joint_names) == 7
     assert robot.left.config.transport == "socketcanfd"
     assert robot.right.config.transport == "socketcanfd"
-    assert robot.left.config.port == "can0"
-    assert robot.right.config.port == "can3"
+    assert robot.left.config.port == "can-left"
+    assert robot.right.config.port == "can-right"
     assert robot.left.config.hardware_config_path == robot.right.config.hardware_config_path
     assert robot.left._mode == "mit"
     assert robot.right._mode == "mit"

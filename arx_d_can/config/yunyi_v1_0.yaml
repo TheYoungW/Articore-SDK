@@ -1,6 +1,6 @@
 name: Yunyi V1.0
 urdf_path: models/yunyi_v1_0.urdf
-# Yunyi 默认使用两块刷入 gs_usb 固件的 DM-USB2FDCAN Dual：左臂 can0、右臂 can3。
+# Yunyi 默认使用两块刷入 gs_usb 固件的 DM-USB2FDCAN Dual：左臂 can-left、右臂 can-right。
 # CAN-FD 的 1 Mbps/5 Mbps 位时序由 Linux ip link 预先配置，SDK 显式开启 BRS。
 transport: socketcanfd
 # motor-drive-layer 0.10.8 的非阻塞 raw mailbox 和内部快照锁缓存路径已完成双臂真机
@@ -37,7 +37,7 @@ gripper_profile: yunyi_gripper_v1
 arms:
   left:
     name: Yunyi V1.0 Left Arm
-    channel: can0
+    channel: can-left
     end_effector_frame: l-link7
     # 普通 MIT 增益当前按左右臂镜像配置；真机标定结果需在完整目标姿态下分别复核。
     groups:
@@ -114,7 +114,7 @@ arms:
 
   right:
     name: Yunyi V1.0 Right Arm
-    channel: can3
+    channel: can-right
     end_effector_frame: r-link7
     groups:
       arm:

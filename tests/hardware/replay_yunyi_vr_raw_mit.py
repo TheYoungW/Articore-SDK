@@ -208,7 +208,7 @@ class CanMemoryTrace:
         peak_motoring_w = 0.0
         peak_regenerative_w = 0.0
         for event in events:
-            if event["interface"] != "can3" or event["kind"] != "feedback":
+            if event["interface"] != "can-right" or event["kind"] != "feedback":
                 continue
             motor_id = event["can_id"] & 0x0F
             if motor_id not in RIGHT_MOTOR_LIMITS:
@@ -269,7 +269,7 @@ class CanMemoryTrace:
         tx = [
             event["monotonic_ns"]
             for event in self.events
-            if event["interface"] == "can0"
+            if event["interface"] == "can-left"
             and event["can_id"] == 1
             and event["kind"] == "command"
             and event["data"] not in {
@@ -539,7 +539,7 @@ def _wait_at_start(
 
 def run(args: argparse.Namespace) -> int:
     targets, frames = _load_frames(args.trace, args.control_hz)
-    capture = CanMemoryTrace(("can0", "can3"), args.history_seconds)
+    capture = CanMemoryTrace(("can-left", "can-right"), args.history_seconds)
     robot = ArxDCanDualArm(control_mode="mit")
     # The product profile defaults to 500 Hz.  A/B replay must change both
     # inputs to the Runtime constructor before connect without editing the
@@ -584,7 +584,7 @@ def run(args: argparse.Namespace) -> int:
             )
         robot.enable()
         vbus_sampler = RegisterSampler(
-            "can3",
+            "can-right",
             {
                 1: ("r-joint1", 0x201),
                 2: ("r-joint2", 0x202),

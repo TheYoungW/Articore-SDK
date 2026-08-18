@@ -10,7 +10,7 @@ SDK 不把公共接口绑定到具体产品：
 - 机型差异全部由 YAML 配置描述。
 
 当前双臂默认配置是 Yunyi V1.0，默认通过两块刷入 `gs_usb` 固件的
-DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can0`/`can3` 分别连接左右臂。以后增加
+DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can-left`/`can-right` 分别连接左右臂。以后增加
 其他产品时不需要再创建产品专用 Python 类。
 
 ## 安装
@@ -322,15 +322,15 @@ arx_d_can/config/yunyi_v1_0.yaml
 | `socketcanfd` | `can0` | Linux CAN-FD |
 
 Yunyi 默认使用两块刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配置 CAN-FD
-接口，SDK 默认打开 `can0`/`can3` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
+接口，SDK 默认打开 `can-left`/`can-right` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
 需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.8` 的平台 wheel 会自动
 加载随包提供的厂商运行库。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
 wheel 使用 `macosx_26_0` 标签，不声明对更早 macOS 版本兼容。
 
-`ArxDCanArm(model="yunyi_v1_0_left")` 默认使用 `can0`，
-`ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 `can3`；`ArxDCanDualArm()` 默认同时
+`ArxDCanArm(model="yunyi_v1_0_left")` 默认使用 `can-left`，
+`ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 `can-right`；`ArxDCanDualArm()` 默认同时
 打开这两个 SocketCAN-FD 接口。原厂 `dm-device` 和 `dm-serial` 后端仍可显式选择。
 
 DM Device 默认正式使用 CAN-FD+BRS，仲裁速率为 1 Mbps、数据速率为 5 Mbps；5 Mbps
@@ -359,21 +359,20 @@ ip -details -statistics link show can0
 ```
 
 SocketCAN 速率由 `ip link` 设置，Python 的 `baud` 不会修改 Linux CAN 接口。
-Yunyi 电机需要设置为 `CAN_BR=9`，并在使用 SDK 前配置两个默认接口：
+Yunyi 电机需要设置为 `CAN_BR=9`。两块适配器首次安装时，根据序列号和实际使用的
+通道号安装热插拔规则：
 
 ```bash
-sudo ip link set can0 down
-sudo ip link set can0 type can bitrate 1000000 sample-point 0.75 \
-  dbitrate 5000000 dsample-point 0.875 fd on
-sudo ip link set can0 txqueuelen 1000
-sudo ip link set can0 up
-
-sudo ip link set can3 down
-sudo ip link set can3 type can bitrate 1000000 sample-point 0.75 \
-  dbitrate 5000000 dsample-point 0.875 fd on
-sudo ip link set can3 txqueuelen 1000
-sudo ip link set can3 up
+sudo ./deploy/linux/install-yunyi-canfd.sh \
+  LEFT_ADAPTER_SERIAL LEFT_CHANNEL \
+  RIGHT_ADAPTER_SERIAL RIGHT_CHANNEL
 ```
+
+安装后，udev 会把两路稳定命名为 `can-left`、`can-right`；systemd 会在开机和每次
+USB 重新插入时自动设置 1 Mbps 仲裁速率、5 Mbps 数据速率、CAN-FD 和
+`txqueuelen=1000`，无需再次手工运行 `ip link`。适配器具有两个物理通道，通道号使用
+`0` 或 `1`。可以通过 `udevadm info /sys/class/net/canX` 查看序列号，通过
+`cat /sys/class/net/canX/dev_port` 查看通道号。
 
 SDK 会显式调用 `Controller.from_socketcanfd(channel, enable_brs=True)`，确保帧包含
 `CANFD_BRS`。部分 `gs_usb` 固件不支持 `berr-reporting` 或 `restart-ms`，因此默认

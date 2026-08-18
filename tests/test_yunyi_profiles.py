@@ -33,8 +33,8 @@ def test_yunyi_profiles_are_registered_as_independent_arms() -> None:
     assert left.config.gripper.name == "l-gripper"
     assert right.config.transport == "socketcanfd"
     assert left.config.transport == "socketcanfd"
-    assert right.config.port == "can3"
-    assert left.config.port == "can0"
+    assert right.config.port == "can-right"
+    assert left.config.port == "can-left"
     assert right.config.max_cached_feedback_age_s == pytest.approx(0.3)
     assert left.config.max_cached_feedback_age_s == pytest.approx(0.3)
 
