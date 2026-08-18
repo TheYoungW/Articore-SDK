@@ -7,7 +7,7 @@ from arx_d_can import ArxDCanArm
 
 
 def test_runtime_supports_connect_feedback_barrier() -> None:
-    assert motor_drive_layer.get_version() == "0.10.11"
+    assert motor_drive_layer.get_version() == "0.10.12"
     assert motor_drive_layer.articore_runtime_abi_version() == "2.8"
     capabilities = motor_drive_layer.articore_runtime_capabilities()
     assert capabilities["native_robot_model"]

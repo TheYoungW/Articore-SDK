@@ -34,6 +34,7 @@ from motor_drive_layer import (
 
 from ..actuator.arx_d_can import ArxDCan
 from ..driver import (
+    CallError,
     ControllerGroup,
     build_scan_command,
     damiao_model_limits,
@@ -57,6 +58,21 @@ from .state import (
 
 
 MAX_ORDINARY_MIT_VELOCITY = math.radians(200.0)
+
+
+def _set_can_timeout_with_readback(motor, timeout_ms: int) -> None:
+    """Write the watchdog with fail-closed protection for a missed ACK."""
+    try:
+        motor.set_can_timeout_ms(timeout_ms)
+        return
+    except CallError as write_error:
+        expected_ticks = min(int(timeout_ms) * 20, 0xFFFFFFFF)
+        try:
+            actual_ticks = motor.get_register_u32(9, timeout_ms=200)
+        except CallError:
+            raise write_error
+        if actual_ticks != expected_ticks:
+            raise write_error
 
 
 def _load_profile(config_path: str | Path | None, *, model: str | None) -> dict:
@@ -188,6 +204,7 @@ class ArxDCanArm(_SafetyMixin):
             joint_names=active_joint_names,
         )
         self._connected = False
+        self._read_only_connection = False
         self._enabled = False
         self._configured = False
         self._faulted = False
@@ -564,13 +581,15 @@ class ArxDCanArm(_SafetyMixin):
 
         默认会在创建 Runtime 前配置电机模式和设备通信参数，但不会使能电机。
         ``read_only=True`` 时只建立通信和反馈 Runtime，不写入控制模式、通信看门狗
-        或其他电机寄存器，适合状态读取和诊断。
+        或其他电机寄存器，适合状态读取和诊断。只读 Runtime 持有 Motor lease；如需
+        控制，必须先 :meth:`close`，再以普通模式重新连接。
         """
         if self._connected:
             return
         self.robot.connect()
         with self._state_lock:
             self._connected = True
+            self._read_only_connection = bool(read_only)
             self._configured = False
             self._enabled = False
             self._faulted = False
@@ -582,7 +601,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.11 ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.12 ArticoreRuntime is unavailable"
                 )
         except Exception:
             try:
@@ -590,6 +609,7 @@ class ArxDCanArm(_SafetyMixin):
             finally:
                 with self._state_lock:
                     self._connected = False
+                    self._read_only_connection = False
             raise
 
     def _configure(self) -> None:
@@ -606,8 +626,9 @@ class ArxDCanArm(_SafetyMixin):
                 if not self.robot.gripper.mode_mit():
                     raise RuntimeError("ARX-D-CAN gripper did not enter MIT mode")
             for name in self._active_joint_names():
-                self.robot._motor_map[name].set_can_timeout_ms(
-                    self.config.motor_communication_timeout_ms
+                _set_can_timeout_with_readback(
+                    self.robot._motor_map[name],
+                    self.config.motor_communication_timeout_ms,
                 )
         except Exception as exc:
             self._trip_fault(f"configuration failed: {exc}")
@@ -626,6 +647,7 @@ class ArxDCanArm(_SafetyMixin):
             self.robot.disconnect(disable=False)
             self._connected = False
         with self._state_lock:
+            self._read_only_connection = False
             self._configured = False
             self._safe_holding = False
             self._enabled = False
@@ -637,8 +659,13 @@ class ArxDCanArm(_SafetyMixin):
         motor-drive-layer 的正式 :class:`ArticoreRuntime` 完成。
         """
         self._require_operational()
+        if self._read_only_connection:
+            raise RuntimeError(
+                "a read-only connection cannot be enabled; call close(), then "
+                "connect() normally before enable()"
+            )
         if not self._configured:
-            self._configure()
+            raise RuntimeError("motor mode is not configured")
         runtime = self._single_safety_runtime
         if runtime is None:
             raise RuntimeError("native safety runtime is not connected")
@@ -802,6 +829,11 @@ class ArxDCanArm(_SafetyMixin):
         总线必须已连接、没有锁存故障且电机已经失能。
         """
         self._require_operational()
+        if self._read_only_connection:
+            raise RuntimeError(
+                "a read-only connection cannot change control mode; call close(), "
+                "then connect() normally"
+            )
         if self._enabled:
             raise RuntimeError(
                 "cannot switch control mode while the arm is enabled; "

@@ -161,6 +161,14 @@ def _feedback_request_error(
     return TransportError(f"fresh feedback request failed: {exc}", **context)
 
 
+def _mode_matches_register_after_error(motor: Any, mode: Mode) -> bool:
+    """Fail-closed readback protection for a missed mode-write ACK."""
+    try:
+        return motor.get_register_u32(10, timeout_ms=200) == int(mode)
+    except CallError:
+        return False
+
+
 def _read_yaml_mapping(path: Path, *, description: str) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"{description} not found: {path}")
@@ -1021,8 +1029,11 @@ class JointGroup:
             try:
                 self._mm[jc.name].ensure_mode(Mode.MIT, 1000)
             except CallError as e:
-                print(f"[{self.name}/mode_mit/{jc.name}] {e}")
-                ok = False
+                if not _mode_matches_register_after_error(
+                    self._mm[jc.name], Mode.MIT
+                ):
+                    print(f"[{self.name}/mode_mit/{jc.name}] {e}")
+                    ok = False
             time.sleep(0.05)
         time.sleep(0.2)
         return ok
@@ -1042,8 +1053,11 @@ class JointGroup:
             try:
                 self._mm[jc.name].ensure_mode(Mode.POS_VEL, 1000)
             except CallError as e:
-                print(f"[{self.name}/mode_pos_vel/{jc.name}] {e}")
-                ok = False
+                if not _mode_matches_register_after_error(
+                    self._mm[jc.name], Mode.POS_VEL
+                ):
+                    print(f"[{self.name}/mode_pos_vel/{jc.name}] {e}")
+                    ok = False
             time.sleep(0.05)
         time.sleep(0.2)
         return ok

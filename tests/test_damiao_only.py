@@ -45,6 +45,83 @@ def test_setup_motors_registers_damiao_motor_without_motor_brand_config():
     assert arm._fake_controller.added_motors == [(1, 0x11, "4340P")]
 
 
+def test_mit_mode_accepts_matching_register_after_fast_ack_timeout(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+
+    class Motor:
+        reads = 0
+
+        @staticmethod
+        def ensure_mode(_mode, _timeout_ms) -> None:
+            raise CallError("register write ack timed out")
+
+        def get_register_u32(self, rid, *, timeout_ms):
+            assert (rid, timeout_ms) == (10, 200)
+            self.reads += 1
+            return 1
+
+    motor = Motor()
+    joint = JointCfg(
+        name="joint1", motor_id=1, feedback_id=0x11, model="4340P"
+    )
+    group = JointGroup(
+        "arm", [joint.name], [joint], {joint.name: motor}, {}
+    )
+
+    assert group.mode_mit()
+    assert motor.reads == 1
+
+
+def test_mit_mode_rejects_mismatched_register_after_write_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+
+    class Motor:
+        @staticmethod
+        def ensure_mode(_mode, _timeout_ms) -> None:
+            raise CallError("register write ack timed out")
+
+        @staticmethod
+        def get_register_u32(_rid, *, timeout_ms):
+            assert timeout_ms == 200
+            return 2
+
+    joint = JointCfg(
+        name="joint1", motor_id=1, feedback_id=0x11, model="4340P"
+    )
+    group = JointGroup(
+        "arm", [joint.name], [joint], {joint.name: Motor()}, {}
+    )
+
+    assert not group.mode_mit()
+
+
+def test_mit_mode_rejects_failed_register_readback(monkeypatch) -> None:
+    monkeypatch.setattr(actuator_module.time, "sleep", lambda _seconds: None)
+
+    class Motor:
+        @staticmethod
+        def ensure_mode(_mode, _timeout_ms) -> None:
+            raise CallError("register write ack timed out")
+
+        @staticmethod
+        def get_register_u32(_rid, *, timeout_ms):
+            assert timeout_ms == 200
+            raise CallError("register read timed out")
+
+    joint = JointCfg(
+        name="joint1", motor_id=1, feedback_id=0x11, model="4340P"
+    )
+    group = JointGroup(
+        "arm", [joint.name], [joint], {joint.name: Motor()}, {}
+    )
+
+    assert not group.mode_mit()
+
+
 @pytest.mark.parametrize(
     ("enable_gripper", "expected_names", "has_gripper"),
     [

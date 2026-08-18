@@ -19,8 +19,9 @@ DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can-left`/`can-right` 分别连接左�
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时使用 `motor-drive-layer==0.10.11`（Runtime ABI 2.8）。
-0.10.11 官方预编译包面向 Linux x86_64 和 ARM64；Wheel 已包含 DM Device 运行库，
+底层通信与原生安全运行时使用 `motor-drive-layer==0.10.12`（Motor ABI
+0.5.0-cpp，Runtime ABI 2.8）。0.10.12 官方预编译包面向 Linux x86_64 和 ARM64；
+Wheel 已包含 DM Device 运行库，
 并在私有 `lib/robotics/` 中携带 Pinocchio、Boost.Serialization 及所需 C++ 运行库。
 普通用户不需要另行下载 DM_SDK，也不需要配置系统 Pinocchio 或 ROS 动态库路径。
 内置 Yunyi 模型的 FK、IK、Jacobian 和刚体动力学不需要安装 Pinocchio；用于控制计算的
@@ -258,7 +259,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.10.11 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.10.12 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -375,10 +376,10 @@ arx_d_can/config/yunyi_v1_0.yaml
 
 Yunyi 默认使用两块刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配置 CAN-FD
 接口，SDK 默认打开 `can-left`/`can-right` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
-需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.11` 的 Linux wheel 会自动
+需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.12` 的 Linux wheel 会自动
 加载随包提供的厂商运行库。
 
-0.10.11 不提供官方 macOS 或 Windows 预编译包。
+0.10.12 不提供官方 macOS 或 Windows 预编译包。
 
 `ArxDCanArm(model="yunyi_v1_0_left")` 默认使用 `can-left`，
 `ArxDCanArm(model="yunyi_v1_0_right")` 默认使用 `can-right`；`ArxDCanDualArm()` 默认同时
@@ -432,7 +433,7 @@ SDK 会显式调用 `Controller.from_socketcanfd(channel, enable_brs=True)`，�
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.10.11 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
+motor-drive-layer 0.10.12 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
 ctypes 结构、函数签名、native 句柄所有权和报告转换全部由 motor-drive-layer 维护，
 Articore-SDK 只提供机器人产品配置并提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
@@ -446,7 +447,12 @@ ABI 2.4 的 `connect()` 会并行获取全部已配置关节和已安装夹爪�
 Runtime 主动请求反馈，也不会用零值掩盖缺失电机。
 只读取或诊断时使用 `connect(read_only=True)`：该连接仍会创建反馈 Runtime，但不会
 写入 MIT/PV 模式、通信看门狗或其他电机寄存器。官方读取、读取频率和诊断示例均使用
-该路径；之后若调用 `enable()`，SDK 才会先完成模式和通信参数配置。
+该路径。只读 Runtime 持有 Motor lease，因此不能在同一连接上直接调用 `enable()`；
+需要控制时必须先 `close()`，再用普通 `connect()` 重新连接后调用 `enable()`。
+0.10.12 修复了寄存器写 ACK 在 `send()` 返回前到达时被误判为旧响应的竞态，覆盖
+`ensure_mode()` 和 `set_can_timeout_ms()`。SDK 仍保留 fail-closed 寄存器读回保护：
+只有模式寄存器 10 或看门狗寄存器 9 与目标值完全一致时才接受写 ACK 异常，读回失败
+或数值不一致仍然终止配置。
 SDK 的通用反馈新鲜度窗口默认为 50 ms；Yunyi 双通道产品配置使用 300 ms，
 反馈健康检查仍为 100 Hz。缺失或超过窗口的反馈会累计到结构化健康诊断，但不会仅因
 反馈超时把运行中的 Runtime 切换到 `SAFE_HOLD` 或 `FAULT`。
@@ -478,7 +484,7 @@ except RuntimeTransactionError as exc:
 SDK 在 `runtime.connect()` 前根据完整的 URDF 标定边界生成命令限位和原生产品绑定，
 不再在两端额外
 扣除 1°。SDK 不实现接近限位减速；超出标定位置范围的目标会在发送前被拒绝，范围内的运动速度
-由调用者指定。Runtime 同时校验命令速度和力矩限位。motor-drive-layer 0.10.11 不再把反馈
+由调用者指定。Runtime 同时校验命令速度和力矩限位。motor-drive-layer 0.10.12 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。原生重力补偿直接使用有限、已使能的实际七轴反馈，不经过 Python
 保持目标。首次普通 MIT/PV 命令即使从超出配置硬限位的实际
@@ -501,7 +507,7 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程自动调度，安全保持同样由底层管理。调度周期会根据实际控制器拓扑自动选择，
-但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.11 承担。Runtime ABI
+但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.12 承担。Runtime ABI
 2.6 在两侧 Controller 均报告 `socketcanfd + can_fd + can_fd_brs` 时允许原生 Runtime
 最高运行到 500 Hz。motor-drive-layer 0.10.8 消除了 raw mailbox 提交与物理发送之间的
 锁竞争，并让缓存状态读取只使用 MotorHandle 内部快照锁。标准 SDK 公开

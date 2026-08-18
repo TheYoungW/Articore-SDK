@@ -137,7 +137,7 @@ def test_explicit_dm_device_uses_physical_channels_zero_and_one() -> None:
     assert robot.right.config.port == "1"
 
 
-def test_dual_mit_enable_configures_both_sides_before_atomic_runtime_enable() -> None:
+def test_dual_mit_enable_uses_preconfigured_atomic_runtime() -> None:
     robot = ArxDCanDualArm(
         control_mode="mit",
         left_gripper=False,
@@ -152,15 +152,59 @@ def test_dual_mit_enable_configures_both_sides_before_atomic_runtime_enable() ->
             calls.append(("runtime", mode))
 
     robot._safety_runtime = Runtime()  # type: ignore[assignment]
-    robot.left._configure = lambda: calls.append(("configure-left", None))  # type: ignore[method-assign]
-    robot.right._configure = lambda: calls.append(("configure-right", None))  # type: ignore[method-assign]
+    robot.left._configured = True
+    robot.right._configured = True
     robot.enable()
 
-    assert calls == [
-        ("configure-left", None),
-        ("configure-right", None),
-        ("runtime", 2),
-    ]
+    assert calls == [("runtime", 2)]
+
+
+def test_dual_enable_rejects_read_only_connection() -> None:
+    robot = ArxDCanDualArm(
+        control_mode="mit",
+        left_gripper=False,
+        right_gripper=False,
+    )
+    calls: list[tuple[str, object]] = []
+
+    class Runtime:
+        health = _health(SafetyState.READY, disable_confirmed=True)
+
+        def enable(self, mode: str) -> None:
+            calls.append(("runtime", mode))
+
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+    robot.left._read_only_connection = True
+    robot.right._read_only_connection = True
+    robot.left._configured = True
+    robot.right._configured = True
+
+    with pytest.raises(
+        RuntimeError,
+        match="read-only dual-arm connection cannot be enabled",
+    ):
+        robot.enable()
+
+    assert calls == []
+
+
+def test_dual_configure_mode_rejects_read_only_connection() -> None:
+    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
+
+    class Runtime:
+        health = _health(SafetyState.READY, disable_confirmed=True)
+
+    robot.left._connected = True
+    robot.right._connected = True
+    robot.left._read_only_connection = True
+    robot.right._read_only_connection = True
+    robot._safety_runtime = Runtime()  # type: ignore[assignment]
+
+    with pytest.raises(
+        RuntimeError,
+        match="read-only dual-arm connection cannot change control mode",
+    ):
+        robot.configure_mode("mit")
 
 
 def test_connect_creates_one_native_group_and_closes_it_before_arms(

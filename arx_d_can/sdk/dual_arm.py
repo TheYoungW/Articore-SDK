@@ -205,7 +205,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.11 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.12 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -308,6 +308,8 @@ class ArxDCanDualArm:
         """连接左右臂，并为两条通道创建常驻并行反馈线程。
 
         ``read_only=True`` 时不写入电机控制模式或通信参数，适合状态读取和诊断。
+        只读 Runtime 持有双臂 Motor lease；如需控制，必须先 :meth:`close`，再以普通
+        模式重新连接。
         """
         if self.connected and self._controller_group is not None:
             return
@@ -329,7 +331,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.11 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.12 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -347,17 +349,20 @@ class ArxDCanDualArm:
     def enable(self) -> None:
         """按构造时确定的模式，通过一个原生原子事务使能双臂。
 
-        Python 只在调用前配置左右臂控制模式和电机参数；Runtime 负责并行刷新
+        普通连接在创建 Runtime 前配置左右臂控制模式和电机参数；Runtime 负责并行刷新
         CH0/CH1 反馈、生成当前位置保持目标、物理使能、确认和失败回滚。普通用户
         无需传入参数。
         """
         runtime = self._safety_runtime
         if runtime is None:
             raise RuntimeError("dual-arm safety runtime is not connected")
-        if not self.left._configured:
-            self.left._configure()
-        if not self.right._configured:
-            self.right._configure()
+        if self.left._read_only_connection or self.right._read_only_connection:
+            raise RuntimeError(
+                "a read-only dual-arm connection cannot be enabled; call close(), "
+                "then connect() normally before enable()"
+            )
+        if not self.left._configured or not self.right._configured:
+            raise RuntimeError("dual-arm motor modes are not configured")
         try:
             runtime.enable(
                 RuntimeControlMode.PV
@@ -384,6 +389,11 @@ class ArxDCanDualArm:
         if runtime is None or not self.connected:
             raise RuntimeError("dual-arm safety runtime is not connected")
         self._sync_python_safety_flags(runtime.health)
+        if self.left._read_only_connection or self.right._read_only_connection:
+            raise RuntimeError(
+                "a read-only dual-arm connection cannot change control mode; "
+                "call close(), then connect() normally"
+            )
         if self.enabled:
             raise RuntimeError(
                 "cannot switch control mode while the dual arm is enabled; "

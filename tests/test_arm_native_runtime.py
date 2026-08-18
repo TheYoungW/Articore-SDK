@@ -18,6 +18,8 @@ from arx_d_can import (
     SafetyHealth,
     SafetyState,
 )
+from arx_d_can.driver import CallError
+from arx_d_can.sdk import arm as arm_module
 
 
 JOINT = JointMotorConfig(
@@ -46,6 +48,58 @@ GRIPPER = JointMotorConfig(
     pv_pos_ki=0.0,
     pv_vlim=1.0,
 )
+
+
+def test_can_timeout_accepts_matching_register_after_fast_ack_timeout() -> None:
+    class Motor:
+        @staticmethod
+        def set_can_timeout_ms(_timeout_ms: int) -> None:
+            raise CallError("register write ack timed out")
+
+        @staticmethod
+        def get_register_u32(rid: int, *, timeout_ms: int) -> int:
+            assert (rid, timeout_ms) == (9, 200)
+            return 10_000
+
+    arm_module._set_can_timeout_with_readback(Motor(), 500)
+
+
+def test_can_timeout_preserves_error_when_register_does_not_match() -> None:
+    error = CallError("register write ack timed out")
+
+    class Motor:
+        @staticmethod
+        def set_can_timeout_ms(_timeout_ms: int) -> None:
+            raise error
+
+        @staticmethod
+        def get_register_u32(_rid: int, *, timeout_ms: int) -> int:
+            assert timeout_ms == 200
+            return 0
+
+    with pytest.raises(CallError) as caught:
+        arm_module._set_can_timeout_with_readback(Motor(), 500)
+
+    assert caught.value is error
+
+
+def test_can_timeout_preserves_error_when_register_readback_fails() -> None:
+    error = CallError("register write ack timed out")
+
+    class Motor:
+        @staticmethod
+        def set_can_timeout_ms(_timeout_ms: int) -> None:
+            raise error
+
+        @staticmethod
+        def get_register_u32(_rid: int, *, timeout_ms: int) -> int:
+            assert timeout_ms == 200
+            raise CallError("register read timed out")
+
+    with pytest.raises(CallError) as caught:
+        arm_module._set_can_timeout_with_readback(Motor(), 500)
+
+    assert caught.value is error
 
 
 @pytest.mark.parametrize(
@@ -583,10 +637,11 @@ def test_single_read_only_connect_skips_motor_configuration() -> None:
 
     assert events == ["transport", "runtime"]
     assert arm.connected
+    assert arm._read_only_connection
     assert not arm._configured
 
 
-def test_single_enable_configures_after_read_only_connection() -> None:
+def test_single_enable_rejects_read_only_connection() -> None:
     arm = ArxDCanArm(
         config=ArxDCanConfig(arm_control_mode="mit", arm_joints=(JOINT,)),
         enable_gripper=False,
@@ -600,17 +655,30 @@ def test_single_enable_configures_after_read_only_connection() -> None:
         def enable(mode: str) -> None:
             calls.append(("runtime", mode))
 
-    def configure() -> None:
-        calls.append(("configure", None))
-        arm._configured = True
-
     arm._connected = True
-    arm._configure = configure  # type: ignore[method-assign]
+    arm._read_only_connection = True
+    arm._configured = True
     arm._single_safety_runtime = Runtime()  # type: ignore[assignment]
 
-    arm.enable()
+    with pytest.raises(RuntimeError, match="read-only connection cannot be enabled"):
+        arm.enable()
 
-    assert calls == [("configure", None), ("runtime", 2)]
+    assert calls == []
+
+
+def test_single_configure_mode_rejects_read_only_connection() -> None:
+    arm = ArxDCanArm(
+        config=ArxDCanConfig(arm_control_mode="mit", arm_joints=(JOINT,)),
+        enable_gripper=False,
+    )
+    arm._connected = True
+    arm._read_only_connection = True
+
+    with pytest.raises(
+        RuntimeError,
+        match="read-only connection cannot change control mode",
+    ):
+        arm.configure_mode("mit")
 
 
 def test_single_clear_faults_uses_unconfigured_maintenance_connection() -> None:
