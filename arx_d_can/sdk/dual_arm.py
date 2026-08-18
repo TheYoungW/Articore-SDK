@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 import math
 from typing import Sequence
 
-from motor_drive_layer import (
+from arx_d_can._motor_abi import (
     ArticoreRuntime,
     DisableReport,
     EnableReport,
@@ -205,7 +205,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.13 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 SDK ABI 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -331,7 +331,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.13 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.14 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -480,7 +480,7 @@ class ArxDCanDualArm:
     def close(self) -> None:
         """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
 
-        native 句柄和资源租用由 motor-drive-layer 的正式 Runtime 封装管理。
+        native 句柄和资源租用由 SDK 私有 Runtime ABI 封装管理。
         Runtime 未确认全部电机失能时立即停止，保留所有下游资源以供诊断和重试。
         """
         self._release_runtime()

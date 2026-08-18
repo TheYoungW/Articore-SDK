@@ -31,7 +31,7 @@ def test_build_scan_command_uses_dm_serial_arguments():
     assert command[:4] == [
         "/usr/bin/python3",
         "-m",
-        "motor_drive_layer.cli",
+        "arx_d_can._motor_abi.cli",
         "scan",
     ]
     assert command[command.index("--transport") + 1] == "dm-serial"

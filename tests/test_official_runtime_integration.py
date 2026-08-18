@@ -1,61 +1,61 @@
 from __future__ import annotations
 
-import motor_drive_layer
+from arx_d_can import _motor_abi as native_binding
 
 import arx_d_can
 from arx_d_can import ArxDCanArm
 
 
 def test_runtime_supports_connect_feedback_barrier() -> None:
-    assert motor_drive_layer.get_version() == "0.10.13"
-    assert motor_drive_layer.articore_runtime_abi_version() == "2.8"
-    capabilities = motor_drive_layer.articore_runtime_capabilities()
+    assert native_binding.get_version() == "0.10.14"
+    assert native_binding.articore_runtime_abi_version() == "2.8"
+    capabilities = native_binding.articore_runtime_capabilities()
     assert capabilities["native_robot_model"]
     assert capabilities["native_gravity_compensation"]
     assert (
-        motor_drive_layer.articore_runtime_capabilities()[
+        native_binding.articore_runtime_capabilities()[
             "transport_aware_control_rate"
         ]
         is True
     )
     assert (
-        motor_drive_layer.articore_runtime_capabilities()[
+        native_binding.articore_runtime_capabilities()[
             "connect_feedback_barrier"
         ]
         is True
     )
     assert (
-        motor_drive_layer.articore_runtime_capabilities()[
+        native_binding.articore_runtime_capabilities()[
             "per_cycle_mit_torque_limit"
         ]
         is True
     )
 
 
-def test_public_runtime_reports_are_motor_drive_layer_types() -> None:
-    assert arx_d_can.ConnectReport is motor_drive_layer.ConnectReport
-    assert arx_d_can.ConnectChannelResult is motor_drive_layer.ConnectChannelResult
-    assert arx_d_can.ConnectErrorCode is motor_drive_layer.ConnectErrorCode
-    assert arx_d_can.ConnectMotorResult is motor_drive_layer.ConnectMotorResult
-    assert arx_d_can.SafetyHealth is motor_drive_layer.SafetyHealth
-    assert arx_d_can.SafetyState is motor_drive_layer.SafetyState
-    assert arx_d_can.EnableReport is motor_drive_layer.EnableReport
-    assert arx_d_can.DisableReport is motor_drive_layer.DisableReport
+def test_public_runtime_reports_are_native_binding_types() -> None:
+    assert arx_d_can.ConnectReport is native_binding.ConnectReport
+    assert arx_d_can.ConnectChannelResult is native_binding.ConnectChannelResult
+    assert arx_d_can.ConnectErrorCode is native_binding.ConnectErrorCode
+    assert arx_d_can.ConnectMotorResult is native_binding.ConnectMotorResult
+    assert arx_d_can.SafetyHealth is native_binding.SafetyHealth
+    assert arx_d_can.SafetyState is native_binding.SafetyState
+    assert arx_d_can.EnableReport is native_binding.EnableReport
+    assert arx_d_can.DisableReport is native_binding.DisableReport
     assert (
         arx_d_can.RuntimeTransactionError
-        is motor_drive_layer.RuntimeTransactionError
+        is native_binding.RuntimeTransactionError
     )
     assert (
         arx_d_can.GravityCompensationPhase
-        is motor_drive_layer.GravityCompensationPhase
+        is native_binding.GravityCompensationPhase
     )
     assert (
         arx_d_can.GravityCompensationStatus
-        is motor_drive_layer.GravityCompensationStatus
+        is native_binding.GravityCompensationStatus
     )
-    assert arx_d_can.NativeRobotModel is motor_drive_layer.NativeRobotModel
-    assert arx_d_can.RobotSide is motor_drive_layer.RobotSide
-    assert arx_d_can.JacobianReference is motor_drive_layer.JacobianReference
+    assert arx_d_can.NativeRobotModel is native_binding.NativeRobotModel
+    assert arx_d_can.RobotSide is native_binding.RobotSide
+    assert arx_d_can.JacobianReference is native_binding.JacobianReference
 
 
 def test_yunyi_builds_official_runtime_configuration_types() -> None:
@@ -65,29 +65,29 @@ def test_yunyi_builds_official_runtime_configuration_types() -> None:
     )
 
     config = arm._runtime_config()
-    assert isinstance(config, motor_drive_layer.RuntimeConfig)
+    assert isinstance(config, native_binding.RuntimeConfig)
     assert config.command_timeout_ms == 250
     assert config.enable_grace_ms == 2000
     assert config.feedback_max_age_ms == 300
     assert config.gripper_control_hz == round(arm.config.control_hz)
 
     assert all(
-        isinstance(item, motor_drive_layer.RuntimeMotor)
+        isinstance(item, native_binding.RuntimeMotor)
         for item in arm._runtime_motors()
     )
     assert all(
-        isinstance(item, motor_drive_layer.JointControlConfig)
+        isinstance(item, native_binding.JointControlConfig)
         for item in arm._runtime_joint_configs()
     )
     assert all(
-        isinstance(item, motor_drive_layer.GripperProductBinding)
+        isinstance(item, native_binding.GripperProductBinding)
         for item in arm._runtime_gripper_bindings()
     )
     gravity = arm._runtime_gravity_bindings()
     assert len(gravity) == 1
-    assert isinstance(gravity[0], motor_drive_layer.GravityProductBinding)
+    assert isinstance(gravity[0], native_binding.GravityProductBinding)
     assert gravity[0].runtime_side == 0
-    assert gravity[0].robot_side == motor_drive_layer.RobotSide.LEFT
+    assert gravity[0].robot_side == native_binding.RobotSide.LEFT
     assert gravity[0].product_id == "yunyi_v1_0"
 
 
@@ -97,4 +97,4 @@ def test_yunyi_right_native_gravity_binding_uses_right_model_side() -> None:
     binding = arm._runtime_gravity_bindings(runtime_side=1)[0]
 
     assert binding.runtime_side == 1
-    assert binding.robot_side == motor_drive_layer.RobotSide.RIGHT
+    assert binding.robot_side == native_binding.RobotSide.RIGHT

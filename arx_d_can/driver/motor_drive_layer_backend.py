@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from math import isfinite
 
-from motor_drive_layer import (
+from arx_d_can._motor_abi import (
     CallError,
     Controller,
     ControllerGroup,
@@ -111,7 +111,7 @@ def build_scan_command(
     command = [
         python_executable,
         "-m",
-        "motor_drive_layer.cli",
+        "arx_d_can._motor_abi.cli",
         "scan",
         "--vendor",
         "damiao",

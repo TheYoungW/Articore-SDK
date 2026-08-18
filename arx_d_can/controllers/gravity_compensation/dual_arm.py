@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 import time
 
-from motor_drive_layer import GravityCompensationPhase
+from arx_d_can._motor_abi import GravityCompensationPhase
 
 from ...sdk import ArxDCanDualArm
 from .core import GravityCompensationSample

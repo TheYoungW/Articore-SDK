@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from motor_drive_layer import (
+from arx_d_can._motor_abi import (
     GravityCompensationPhase,
     GravityCompensationStatus,
 )

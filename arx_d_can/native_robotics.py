@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-from motor_drive_layer import (
+from arx_d_can._motor_abi import (
     IkOptions as RuntimeIkOptions,
     JacobianReference,
     NativeRobotModel,

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 import numpy as np
-from motor_drive_layer import (
+from arx_d_can._motor_abi import (
     ArticoreRuntime,
     DisableReport,
     EnableReport,
@@ -90,7 +90,7 @@ class _PreparedJointPositionBatch:
 
 
 def _runtime_raw_commands(batch: _PreparedJointPositionBatch) -> tuple[object, ...]:
-    """把 SDK 内部命令转换为 motor-drive-layer 的正式 Runtime 类型。"""
+    """把 SDK 内部命令转换为私有 ABI 层的 Runtime 类型。"""
     if batch.mode == "pv":
         return tuple(
             RuntimePvCommand(
@@ -601,7 +601,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.13 ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.14 ArticoreRuntime is unavailable"
                 )
         except Exception:
             try:
@@ -638,7 +638,7 @@ class ArxDCanArm(_SafetyMixin):
     def close(self) -> None:
         """停止生成控制命令并关闭总线。
 
-        motor-drive-layer 负责 Runtime 句柄和租用生命周期；SDK 只按
+        SDK 私有 ABI 层负责 Runtime 句柄和租用生命周期；上层只按
         Runtime → ControllerGroup → Controller 的顺序关闭。Runtime 未确认物理
         失能时保留完整所有权链，以便读取报告并重试。
         """
@@ -656,7 +656,7 @@ class ArxDCanArm(_SafetyMixin):
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接，物理使能、当前位置保持、反馈确认和失败回滚均由
-        motor-drive-layer 的正式 :class:`ArticoreRuntime` 完成。
+        C++ Runtime ABI 对应的 :class:`ArticoreRuntime` 完成。
         """
         self._require_operational()
         if self._read_only_connection:
