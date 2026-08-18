@@ -19,7 +19,7 @@ DM-USB2FDCAN Dual，以 SocketCAN-FD 的 `can-left`/`can-right` 分别连接左�
 python -m pip install -e .
 ```
 
-底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.8`（Runtime ABI 2.5）。平台 wheel 已包含对应的
+底层通信与原生安全运行时固定使用 `motor-drive-layer==0.10.10`（Runtime ABI 2.6）。平台 wheel 已包含对应的
 DM_Device 厂商运行库；普通用户不需要另行下载 DM_SDK、执行 DM Device 安装命令或
 配置厂商动态库路径。
 Linux x86_64 wheel 同时包含 v1.0 和 v1.1，默认使用已完成扫描与重连真机验证的
@@ -116,10 +116,10 @@ robot = ArxDCanDualArm(
 
 双臂类同时公开 `submit_raw_mit()`，供重力补偿、遥操作控制器等需要逐帧设置
 `q/dq/Kp/Kd/tau_ff` 的高级应用使用，但不在普通用户 example 中调用。该接口保持
-左右 14 轴原子更新和 Runtime 流式看门狗语义。当前 SDK 会基于每次提交时的最新
-反馈计算完整 MIT 合成力矩，并把它限制到逐关节 URDF `effort` 的 80%；超限时同步
-缩小该关节的 Kp、Kd 和 `tau_ff`。后续会把同一保护下沉到 Runtime 的每个底层发送
-周期。
+左右 14 轴原子更新和 Runtime 流式看门狗语义。SDK 成功热路径只校验/转换数组，并
+非阻塞写入容量为一的 latest-target mailbox，不读取 Python 反馈。Runtime ABI 2.6 在每个
+真实发送周期使用最新原生 q/dq 重新计算完整 MIT 合成力矩，把它限制在逐关节
+配置的完整 `torque_limit` 内；超限时同比缩小该关节的 Kp、Kd 和 `tau_ff`，未超限时不修改命令。
 
 ## 重力补偿
 
@@ -206,7 +206,7 @@ python -m arx_d_can.examples.single_arm.example_04_send_position \
 python -m arx_d_can.examples.dual_arm.example_04_read_state
 ```
 
-ID 扫描由 motor-drive-layer 0.10.8 在每条通道的一次连接内批量完成；扫描过程只请求
+ID 扫描由 motor-drive-layer 0.10.10 在每条通道的一次连接内批量完成；扫描过程只请求
 反馈，结束时不会发送使能、失能或运动控制帧。
 
 默认读取一次；需要以 100 Hz 持续读取时使用：
@@ -323,7 +323,7 @@ arx_d_can/config/yunyi_v1_0.yaml
 
 Yunyi 默认使用两块刷入 `gs_usb` 固件的 DM-USB2FDCAN Dual。Linux 负责配置 CAN-FD
 接口，SDK 默认打开 `can-left`/`can-right` 并显式启用 BRS。原厂 `dm-device` 后端继续保留，
-需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.8` 的平台 wheel 会自动
+需要时可以在构造对象时显式覆盖；`motor-drive-layer==0.10.10` 的平台 wheel 会自动
 加载随包提供的厂商运行库。
 
 达妙官方 macOS v1.1 dylib 声明的最低系统版本为 macOS 26，因此包含该运行库的
@@ -381,7 +381,7 @@ SDK 会显式调用 `Controller.from_socketcanfd(channel, enable_brs=True)`，�
 ## 安全与通信健康
 
 `ArxDCanArm` 和 `ArxDCanDualArm` 在真实 motor-drive-layer Controller 上启用由
-motor-drive-layer 0.10.8 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
+motor-drive-layer 0.10.10 提供的正式 Python `ArticoreRuntime`。Runtime ABI、capability、
 ctypes 结构、函数签名、native 句柄所有权和报告转换全部由 motor-drive-layer 维护，
 Articore-SDK 只提供机器人产品配置并提交完整的单臂或双臂命令。常驻原生线程使用
 `steady_clock` 执行看门狗、反馈检查、安全保持、故障锁存和失能确认，不依赖 Python GIL。状态为
@@ -411,7 +411,7 @@ except RuntimeTransactionError as exc:
     raise
 ```
 
-0.10.8 在 DM Device 回调入口复制完整帧并保留物理 channel，底层同时校验 channel、
+0.10.10 保留了 DM Device 回调入口复制完整帧并保留物理 channel 的行为，底层同时校验 channel、
 仲裁 ID 和 payload CAN ID；与反馈速度明显不相容的单帧位置跳变会在进入缓存前丢弃，
 继续保留上一帧，不触发全局 `FAULT` 或失能。SDK 不重复实现这些过滤，
 `read_cached_state()` 的调用方式保持不变。底层完整性统计仅供内部硬件诊断使用，不加入
@@ -429,7 +429,7 @@ joint_safety:
 ```
 
 SDK 不实现接近限位减速；超出有效位置范围的目标会在发送前被拒绝，范围内的运动速度
-由调用者指定。Runtime 同时校验命令速度和力矩限位。motor-drive-layer 0.10.8 不再把反馈
+由调用者指定。Runtime 同时校验命令速度和力矩限位。motor-drive-layer 0.10.10 不再把反馈
 位置、速度或力矩与命令限位比较，因此实际反馈轻微越界不会单独触发 `FAULT`、
 `SAFE_HOLD` 或失能。重力补偿使用真实反馈计算和录制，但会把由反馈生成的 MIT 保持
 位置裁剪到 URDF 上下限后再提交。首次普通 MIT/PV 命令即使从超出配置硬限位的实际
@@ -452,8 +452,8 @@ print(health.disable_confirmed)
 单臂 `ArxDCanArm` 使用只包含一个 Controller 的同一原生运行时。SDK 不再包含
 Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹爪正常运行时统一由原生
 线程自动调度，安全保持同样由底层管理。调度周期会根据实际控制器拓扑自动选择，
-但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.8 承担。Runtime ABI
-2.5 在两侧 Controller 均报告 `socketcanfd + can_fd + can_fd_brs` 时允许原生 Runtime
+但不作为用户调用频率的上限。相关职责由 motor-drive-layer 0.10.10 承担。Runtime ABI
+2.6 在两侧 Controller 均报告 `socketcanfd + can_fd + can_fd_brs` 时允许原生 Runtime
 最高运行到 500 Hz。motor-drive-layer 0.10.8 消除了 raw mailbox 提交与物理发送之间的
 锁竞争，并让缓存状态读取只使用 MotorHandle 内部快照锁。标准 SDK 公开
 `submit_raw_mit()` 已完成双臂 16 台、500 Hz、30 秒真机验收：提交 500.02 Hz，16 台
@@ -461,6 +461,11 @@ Python 看门狗、安全保持或夹爪防堵转执行循环；机械臂和夹�
 SocketCAN-FD+BRS 产品配置默认请求 500 Hz。SDK 始终使用 `runtime.control_hz` 获取真实
 调度频率，不根据 transport capability 自行覆盖产品配置；其他 transport 仍由 Runtime
 按 capability 限频。
+Runtime ABI 2.6 在每个原生 MIT 发送周期（包括重复 mailbox 最新目标）根据最新
+反馈执行完整 P+D+前馈力矩保护。限制值直接使用用户配置的 `torque_limit`：未超限时
+`scale=1.0`，只在超限时同比缩放 Kp、Kd 和 `tau_ff`。任一关节反馈缺失、过期或无效时，
+整批不会继续按未知状态计算，而是进入 Runtime 现有安全保持路径。Yunyi 4310 V1.1 的
+产品力矩范围仍为 7 N·m；底层 `TMAX=10` 只用于 MIT 报文编码映射，不作为机械 effort 上限。
 双臂 MIT 运行时，14 个关节和两个夹爪由同一个 `ControllerGroup` 批次调度；夹爪反馈
 年龄直接读取实时 Motor 缓存，SDK 不再增加单独的夹爪发送或反馈刷新路径。
 

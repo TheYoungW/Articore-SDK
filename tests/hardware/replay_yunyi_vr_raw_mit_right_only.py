@@ -44,25 +44,9 @@ def _wait_at_start(robot: ArxDCanArm, target, velocity: float, timeout_s: float)
 
 
 def _submit_raw(robot: ArxDCanArm, positions) -> None:
-    # Match the public dual-arm API's resultant-torque limiter. The single-arm
-    # SDK does not yet expose a public raw MIT method.
-    state = robot.read_cached_state()
-    velocity, kp, kd, torque = robot._limit_raw_mit_resultant_torque(
-        positions=positions,
-        velocities=None,
-        kp=None,
-        kd=None,
-        feedforward_torques=None,
-        current_positions=state.arm.positions,
-        current_velocities=state.arm.velocities,
-    )
-    robot._submit_joint_positions(
-        positions,
-        velocities=velocity,
-        torques=torque,
-        mit_kp=kp,
-        mit_kd=kd,
-    )
+    # Runtime ABI 2.6 applies complete MIT torque limiting from the latest
+    # native q/dq on every physical send, including repeated mailbox targets.
+    robot._submit_joint_positions(positions)
 
 
 def main() -> int:

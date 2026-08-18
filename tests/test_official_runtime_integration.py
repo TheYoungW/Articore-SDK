@@ -7,7 +7,8 @@ from arx_d_can import ArxDCanArm
 
 
 def test_runtime_supports_connect_feedback_barrier() -> None:
-    assert motor_drive_layer.articore_runtime_abi_version() == "2.5"
+    assert motor_drive_layer.get_version() == "0.10.10"
+    assert motor_drive_layer.articore_runtime_abi_version() == "2.6"
     assert (
         motor_drive_layer.articore_runtime_capabilities()[
             "transport_aware_control_rate"
@@ -17,6 +18,12 @@ def test_runtime_supports_connect_feedback_barrier() -> None:
     assert (
         motor_drive_layer.articore_runtime_capabilities()[
             "connect_feedback_barrier"
+        ]
+        is True
+    )
+    assert (
+        motor_drive_layer.articore_runtime_capabilities()[
+            "per_cycle_mit_torque_limit"
         ]
         is True
     )

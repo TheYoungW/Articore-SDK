@@ -189,7 +189,7 @@ class ArxDCanDualArm:
         left_controller: object,
         right_controller: object,
     ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.8 对象必须具备。
+        # 测试桩可能没有原生句柄；真实 motor-drive-layer 0.10.10 对象必须具备。
         if not all(
             getattr(value, "_ptr", None)
             for value in (group, left_controller, right_controller)
@@ -305,7 +305,7 @@ class ArxDCanDualArm:
             )
             if self._safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.8 dual-arm ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.10 dual-arm ArticoreRuntime is unavailable"
                 )
         except Exception:
             if self._safety_runtime is not None:
@@ -632,48 +632,22 @@ class ArxDCanDualArm:
 
         位置单位为 rad，速度单位为 rad/s，前馈力矩单位为 N·m。``kp`` 和 ``kd``
         对左右臂使用同一组标量或七关节向量；省略时使用产品配置值。省略速度或前馈
-        力矩时对应值为零。SDK 会使用提交时的最新缓存 ``q/dq`` 估算完整的
-        ``Kp·位置误差 + Kd·速度误差 + tau_ff``；超过逐关节 URDF ``effort`` 的
-        80% 时，按比例同步缩小该关节的 Kp、Kd 和 ``tau_ff``。这是提交帧级保护，
-        后续下沉到 Runtime 后才能在每个底层发送周期重新计算。
+        力矩时对应值为零。SDK 只校验并转换这一完整目标，然后非阻塞写入 Runtime
+        容量为一的 latest-target mailbox。Runtime 在每个真实发送周期使用最新原生
+        ``q/dq`` 重新计算 ``Kp·位置误差 + Kd·速度误差 + tau_ff``，并把完整输出
+        限制在逐关节配置的完整力矩上限内。
         """
-        # 合力限制只需要两臂 q/dq。不要调用双臂 read_cached_state()，因为后者
-        # 还会读取 Runtime 夹爪 health，导致流式提交与 native worker 争锁。
-        left_state = self.left.read_cached_state()
-        right_state = self.right.read_cached_state()
-        left_velocity, left_kp, left_kd, left_torques = (
-            self.left._limit_raw_mit_resultant_torque(
-                positions=left_positions,
-                velocities=left_velocities,
-                kp=kp,
-                kd=kd,
-                feedforward_torques=left_feedforward_torques,
-                current_positions=left_state.arm.positions,
-                current_velocities=left_state.arm.velocities,
-            )
-        )
-        right_velocity, right_kp, right_kd, right_torques = (
-            self.right._limit_raw_mit_resultant_torque(
-                positions=right_positions,
-                velocities=right_velocities,
-                kp=kp,
-                kd=kd,
-                feedforward_torques=right_feedforward_torques,
-                current_positions=right_state.arm.positions,
-                current_velocities=right_state.arm.velocities,
-            )
-        )
         self._submit_joint_positions(
             left=left_positions,
             right=right_positions,
-            left_velocities=left_velocity,
-            right_velocities=right_velocity,
-            left_torques=left_torques,
-            right_torques=right_torques,
-            left_mit_kp=left_kp,
-            right_mit_kp=right_kp,
-            left_mit_kd=left_kd,
-            right_mit_kd=right_kd,
+            left_velocities=left_velocities,
+            right_velocities=right_velocities,
+            left_torques=left_feedforward_torques,
+            right_torques=right_feedforward_torques,
+            left_mit_kp=kp,
+            right_mit_kp=kp,
+            left_mit_kd=kd,
+            right_mit_kd=kd,
         )
 
     def set_joint_pv(
