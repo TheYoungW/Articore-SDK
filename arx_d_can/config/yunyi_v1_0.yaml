@@ -1,4 +1,5 @@
 name: Yunyi V1.0
+urdf_path: models/yunyi_v1_0.urdf
 # Yunyi 默认使用两块刷入 gs_usb 固件的 DM-USB2FDCAN Dual：左臂 can-left、右臂 can-right。
 # CAN-FD 的 1 Mbps/5 Mbps 位时序由 Linux ip link 预先配置，SDK 显式开启 BRS。
 transport: socketcanfd

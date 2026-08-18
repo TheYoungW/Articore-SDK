@@ -220,7 +220,7 @@ def test_yunyi_profiles_take_authoritative_limits_from_native_model() -> None:
         loaded = load_cfg(model=model)
         profile_joints = loaded["joints"][:7]
         with load_native_robot_model(model) as native:
-            assert loaded["urdf_path"] is None
+            assert Path(loaded["urdf_path"]) == MODELS_DIR / "yunyi_v1_0.urdf"
             assert tuple(joint.name for joint in profile_joints) == native.joint_names
             assert [joint.lower_limit for joint in profile_joints] == pytest.approx(
                 native.lower_position_limits
@@ -232,6 +232,6 @@ def test_yunyi_profiles_take_authoritative_limits_from_native_model() -> None:
         assert [joint.effort_limit for joint in profile_joints] == expected_efforts
         assert [joint.vlim for joint in profile_joints] == expected_velocities
 
-    assert not (MODELS_DIR / "yunyi_v1_0.urdf").exists()
+    assert (MODELS_DIR / "yunyi_v1_0.urdf").is_file()
     assert not (MODELS_DIR / "yunyi_v1_0_left.urdf").exists()
     assert not (MODELS_DIR / "yunyi_v1_0_right.urdf").exists()

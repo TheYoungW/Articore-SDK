@@ -564,7 +564,10 @@ def load_cfg(
 
     groups = _validate_groups(data.get("groups"), joints, path=hw_path)
     if selected_model in _NATIVE_ROBOT_MODELS:
-        urdf_path = None
+        # URDF remains a public robot-description resource for visualization
+        # and external tools. Runtime model info, rather than XML parsing, is
+        # authoritative for built-in product control limits.
+        urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))
         _apply_native_joint_limits(selected_model, joints)
     else:
         urdf_path = _resolve_urdf_path(hw_path, data.get("urdf_path"))

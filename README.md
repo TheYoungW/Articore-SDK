@@ -23,8 +23,10 @@ python -m pip install -e .
 0.10.11 官方预编译包面向 Linux x86_64 和 ARM64；Wheel 已包含 DM Device 运行库，
 并在私有 `lib/robotics/` 中携带 Pinocchio、Boost.Serialization 及所需 C++ 运行库。
 普通用户不需要另行下载 DM_SDK，也不需要配置系统 Pinocchio 或 ROS 动态库路径。
-内置 Yunyi 模型的 FK、IK、Jacobian 和刚体动力学不需要安装 Pinocchio；精确模型和
-Pinocchio C++ 实现都在私有 Runtime 中。只有加载自定义 URDF 或使用迁移期旧运动学/轨迹接口时才需要：
+内置 Yunyi 模型的 FK、IK、Jacobian 和刚体动力学不需要安装 Pinocchio；用于控制计算的
+产品模型和 Pinocchio C++ 实现都在私有 Runtime 中。SDK 仍保留 Yunyi URDF，供可视化、
+机器人描述和外部工具使用，但不把它作为内置动力学或控制限位的数据源。只有加载自定义
+URDF 或使用迁移期旧运动学/轨迹接口时才需要：
 
 ```bash
 python -m pip install ".[legacy-models]"
@@ -94,8 +96,8 @@ with load_native_robot_model("yunyi_v1_0_right") as model:
 ```
 
 同一对象还提供 `ik()`、`coriolis_matrix()`、`nonlinear_effects()` 和 `aba()`。
-SDK 的 `dynamics` 命名空间只导出原生模型薄封装，不再包含 Python 动力学算法或读取
-Yunyi URDF。旧 Pinocchio 运动学与笛卡尔轨迹函数只作为自定义模型迁移路径保留，并
+SDK 的 `dynamics` 命名空间只导出原生模型薄封装，不再包含 Python 动力学算法，也不读取
+Yunyi URDF 执行计算。旧 Pinocchio 运动学与笛卡尔轨迹函数只作为自定义模型迁移路径保留，并
 通过 `.[legacy-models]` 作为可选依赖。
 
 ## 双臂 API
