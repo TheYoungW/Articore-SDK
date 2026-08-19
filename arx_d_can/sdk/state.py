@@ -37,6 +37,14 @@ class GripperState:
 
 
 @dataclass(slots=True, frozen=True)
+class DualArmGripperState:
+    """双臂产品夹爪的简化用户状态。"""
+
+    opening: float
+    gripper_level: int
+
+
+@dataclass(slots=True, frozen=True)
 class JointState:
     names: tuple[str, ...]
     positions: tuple[float, ...]
@@ -47,7 +55,7 @@ class JointState:
 @dataclass(slots=True, frozen=True)
 class ArxDCanState:
     arm: JointState
-    gripper: GripperState | None = None
+    gripper: GripperState | DualArmGripperState | None = None
 
     @property
     def joint_names(self) -> tuple[str, ...]:
@@ -60,6 +68,7 @@ class ArxDCanState:
 
 __all__ = [
     "ArxDCanState",
+    "DualArmGripperState",
     "GripperState",
     "JointState",
     "MotorState",

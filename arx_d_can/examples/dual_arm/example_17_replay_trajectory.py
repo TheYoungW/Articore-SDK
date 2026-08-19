@@ -8,7 +8,6 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.driver import damiao_model_limits
 from arx_d_can.examples.single_arm.common import positive_velocity_degrees
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,
@@ -17,46 +16,6 @@ from arx_d_can.service_tools.dual_trajectory_recording import (
     load_trajectory,
     replay,
 )
-
-
-def _safe_positions(arm, values) -> tuple[float, ...]:
-    """将录制反馈裁剪为该侧完整标定关节限位目标。"""
-    result = []
-    for value, joint in zip(values, arm.config.arm_joints):
-        position_range, _, _ = damiao_model_limits(joint.model)
-        lower = (
-            -position_range if joint.lower_limit is None else joint.lower_limit
-        )
-        upper = (
-            position_range if joint.upper_limit is None else joint.upper_limit
-        )
-        result.append(max(lower, min(upper, float(value))))
-    return tuple(result)
-
-
-def _safe_samples(robot, samples) -> tuple[list[DualArmTrajectorySample], int]:
-    output = []
-    clipped = 0
-    for sample in samples:
-        left = _safe_positions(robot.left, sample.left_positions)
-        right = _safe_positions(robot.right, sample.right_positions)
-        if any(
-            not math.isclose(actual, safe, abs_tol=1e-12)
-            for actual, safe in zip(
-                (*sample.left_positions, *sample.right_positions),
-                (*left, *right),
-            )
-        ):
-            clipped += 1
-        output.append(
-            DualArmTrajectorySample(
-                left_positions=left,
-                right_positions=right,
-                left_gripper=sample.left_gripper,
-                right_gripper=sample.right_gripper,
-            )
-        )
-    return output, clipped
 
 
 def _move_to_start(
@@ -72,8 +31,8 @@ def _move_to_start(
 ) -> None:
     state = robot.read_cached_state()
     current = DualArmTrajectorySample(
-        left_positions=_safe_positions(robot.left, state.left.arm.positions),
-        right_positions=_safe_positions(robot.right, state.right.arm.positions),
+        left_positions=state.left.arm.positions,
+        right_positions=state.right.arm.positions,
         left_gripper=target.left_gripper,
         right_gripper=target.right_gripper,
     )
@@ -158,25 +117,13 @@ def main(args: argparse.Namespace) -> None:
     robot = ArxDCanDualArm(control_mode=args.mode)
     timestamps, recorded = load_trajectory(
         args.input,
-        expected_left_joint_names=robot.left.joint_names,
-        expected_right_joint_names=robot.right.joint_names,
+        expected_left_joint_names=robot.joint_names,
+        expected_right_joint_names=robot.joint_names,
     )
-    samples, clipped = _safe_samples(robot, recorded)
+    samples = recorded
     first = samples[0]
-    product_velocity_limit = min(
-        joint.pv_vlim
-        for arm in (robot.left, robot.right)
-        for joint in arm.config.arm_joints
-    )
-    if args.mode == "pv" and args.pv_velocity_limit > product_velocity_limit:
-        raise ValueError(
-            "--pv-velocity-limit exceeds the product PV velocity limit "
-            f"({math.degrees(product_velocity_limit):g} deg/s)"
-        )
     if args.mode == "pv" and args.start_velocity > args.pv_velocity_limit:
         raise ValueError("--start-velocity cannot exceed --pv-velocity-limit")
-    if args.mode == "mit" and args.start_velocity > math.radians(200.0):
-        raise ValueError("MIT --start-velocity cannot exceed 200 deg/s")
 
     robot.connect()
     control_hz = robot._effective_control_hz
@@ -197,8 +144,6 @@ def main(args: argparse.Namespace) -> None:
             velocity_tolerance=args.velocity_tolerance,
             control_hz=control_hz,
         )
-        if clipped:
-            print(f"已将 {clipped} 个越界采样点裁剪到双臂完整命令限位")
         print(
             f"开始原子回放 {len(samples)} 个双臂轨迹点，"
             f"控制模式：{args.mode.upper()}，插值模式：{args.interpolation}；"

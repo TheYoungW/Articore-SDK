@@ -55,7 +55,7 @@ def _blend(start, target, progress: float) -> tuple[float, ...]:
 
 def _feedback_stats(robot: ArxDCanDualArm):
     result = {}
-    for arm in (robot.left, robot.right):
+    for arm in (robot._left, robot._right):
         result.update(
             arm.robot.get_feedback_stats(joint_names=arm._active_joint_names())
         )
@@ -65,7 +65,7 @@ def _feedback_stats(robot: ArxDCanDualArm):
 def _feedback_integrity_stats(robot: ArxDCanDualArm):
     return {
         name: motor.get_feedback_integrity_stats()
-        for arm in (robot.left, robot.right)
+        for arm in (robot._left, robot._right)
         for name, motor in arm.robot._motor_map.items()
     }
 
@@ -204,8 +204,8 @@ def test_dual_raw_mit_uses_runtime_effective_control_rate() -> None:
         assert control_hz == pytest.approx(EXPECTED_DUAL_CONTROL_HZ)
         robot.enable()
         initial = robot.read_cached_state()
-        left_start = _limit_clamp(robot.left, initial.left.arm.positions)
-        right_start = _limit_clamp(robot.right, initial.right.arm.positions)
+        left_start = _limit_clamp(robot._left, initial.left.arm.positions)
+        right_start = _limit_clamp(robot._right, initial.right.arm.positions)
         left_target = _target(len(left_start))
         right_target = _target(len(right_start))
 
@@ -275,8 +275,8 @@ def test_dual_raw_mit_cached_feedback_isolated_by_channel() -> None:
     try:
         robot.enable()
         initial = robot.read_cached_state()
-        left_target = _limit_clamp(robot.left, initial.left.arm.positions)
-        right_target = _limit_clamp(robot.right, initial.right.arm.positions)
+        left_target = _limit_clamp(robot._left, initial.left.arm.positions)
+        right_target = _limit_clamp(robot._right, initial.right.arm.positions)
         integrity_before = _feedback_integrity_stats(robot)
 
         history_capacity = max(
@@ -314,8 +314,8 @@ def test_dual_raw_mit_cached_feedback_isolated_by_channel() -> None:
                 sides = (
                     (
                         "CH0/left",
-                        robot.left,
-                        robot.right,
+                        robot._left,
+                        robot._right,
                         left_positions,
                         previous_state.left.arm.positions,
                         state.left.arm.velocities,
@@ -324,8 +324,8 @@ def test_dual_raw_mit_cached_feedback_isolated_by_channel() -> None:
                     ),
                     (
                         "CH1/right",
-                        robot.right,
-                        robot.left,
+                        robot._right,
+                        robot._left,
                         right_positions,
                         previous_state.right.arm.positions,
                         state.right.arm.velocities,

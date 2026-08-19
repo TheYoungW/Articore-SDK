@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from ctypes import c_float, c_uint32
 from numbers import Real
 from threading import Lock
+from types import TracebackType
 
 from .abi import (
     CDiscoveryCandidate,
@@ -18,6 +19,7 @@ from .abi import (
     CTransportCapabilities,
     CTransportCapabilitiesV2,
     CTransportHealth,
+    DEFAULT_IO_TIMEOUT_MS,
     get_abi,
 )
 from .dm_device_runtime import ensure_dm_device_runtime
@@ -266,7 +268,7 @@ class Controller:
             "poll_feedback_once",
         )
 
-    def request_feedback_all(self, timeout_ms: int = 50) -> None:
+    def request_feedback_all(self, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> None:
         """Request fresh feedback or raise an error with a structured report."""
         self._require_runtime_unowned("controller feedback request")
         if not self._abi.has_structured_feedback_report:
@@ -407,7 +409,7 @@ class Controller:
     def discover_damiao_motors(
         self,
         candidates: Sequence[MotorCandidate],
-        timeout_ms: int = 50,
+        timeout_ms: int = DEFAULT_IO_TIMEOUT_MS,
         retries: int = 1,
     ) -> tuple[MotorDiscoveryResult, ...]:
         """Probe a fixed candidate set without enabling or moving any motor.
@@ -499,7 +501,12 @@ class Controller:
     def __enter__(self) -> "Controller":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         try:
             self.shutdown()
         finally:
@@ -565,7 +572,12 @@ class Motor:
         self._require_open()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         self.close()
 
     def enable(self) -> None:
@@ -584,7 +596,7 @@ class Motor:
         self._require_runtime_unowned("motor zeroing")
         _ok(self._abi.lib.motor_handle_set_zero_position(self._require_open()), "set_zero_position")
 
-    def ensure_mode(self, mode: Mode | int, timeout_ms: int = 1000) -> None:
+    def ensure_mode(self, mode: Mode | int, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> None:
         self._require_runtime_unowned("motor mode configuration")
         _ok(self._abi.lib.motor_handle_ensure_mode(self._require_open(), int(mode), timeout_ms), "ensure_mode")
 
@@ -611,7 +623,7 @@ class Motor:
         self._require_runtime_unowned("motor feedback request")
         _ok(self._abi.lib.motor_handle_request_feedback(self._require_open()), "request_feedback")
 
-    def request_fresh_state(self, timeout_ms: int = 50) -> MotorState:
+    def request_fresh_state(self, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> MotorState:
         """Request feedback and wait for a newer state than the cached sample."""
         self._require_runtime_unowned("motor fresh-feedback request")
         state = CState()
@@ -642,7 +654,7 @@ class Motor:
         self._require_runtime_unowned("motor register write")
         _ok(self._abi.lib.motor_handle_write_register_u32(self._require_open(), rid, value), "write_register_u32")
 
-    def get_register_f32(self, rid: int, timeout_ms: int = 1000) -> float:
+    def get_register_f32(self, rid: int, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> float:
         self._require_runtime_unowned("motor register read")
         out = c_float(0.0)
         _ok(
@@ -653,7 +665,7 @@ class Motor:
         )
         return float(out.value)
 
-    def get_register_u32(self, rid: int, timeout_ms: int = 1000) -> int:
+    def get_register_u32(self, rid: int, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> int:
         self._require_runtime_unowned("motor register read")
         out = c_uint32(0)
         _ok(
@@ -664,7 +676,7 @@ class Motor:
         )
         return int(out.value)
 
-    def damiao_get_param_f32(self, param_id: int, timeout_ms: int = 1000) -> float:
+    def damiao_get_param_f32(self, param_id: int, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> float:
         self._require_runtime_unowned("motor parameter read")
         out = c_float(0.0)
         _ok(
@@ -675,7 +687,7 @@ class Motor:
         )
         return float(out.value)
 
-    def damiao_get_param_u32(self, param_id: int, timeout_ms: int = 1000) -> int:
+    def damiao_get_param_u32(self, param_id: int, timeout_ms: int = DEFAULT_IO_TIMEOUT_MS) -> int:
         self._require_runtime_unowned("motor parameter read")
         out = c_uint32(0)
         _ok(
@@ -873,7 +885,12 @@ class ControllerGroup:
         self._require_open()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         self.close()
 
 

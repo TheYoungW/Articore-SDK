@@ -86,3 +86,11 @@ def positive_velocity_degrees(text: str) -> float:
     if not math.isfinite(value) or value <= 0.0:
         raise ValueError("速度必须是有限正数")
     return math.radians(value)
+
+
+def speed_percent(text: str) -> float:
+    """解析普通位置控制的 0～100 速度档位。"""
+    value = float(text)
+    if not math.isfinite(value) or not 0.0 <= value <= 100.0:
+        raise ValueError("速度档位必须在 0～100 范围内")
+    return value

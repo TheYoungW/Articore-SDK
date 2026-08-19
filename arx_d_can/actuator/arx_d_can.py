@@ -164,7 +164,7 @@ def _feedback_request_error(
 def _mode_matches_register_after_error(motor: Any, mode: Mode) -> bool:
     """Fail-closed readback protection for a missed mode-write ACK."""
     try:
-        return motor.get_register_u32(10, timeout_ms=200) == int(mode)
+        return motor.get_register_u32(10, timeout_ms=1000) == int(mode)
     except CallError:
         return False
 
@@ -399,20 +399,22 @@ def _apply_native_joint_limits(
     joints: list[JointCfg],
 ) -> None:
     """从 Runtime 私有产品模型读取内置机械臂的位置边界。"""
-    from ..native_robotics import load_native_robot_model
+    from .._motor_abi import NativeRobotModel, RobotSide
 
     by_name = {joint.name: joint for joint in joints}
-    with load_native_robot_model(model) as native:
-        missing = set(native.joint_names).difference(by_name)
+    side = RobotSide.LEFT if model.endswith("_left") else RobotSide.RIGHT
+    with NativeRobotModel(side=side) as native:
+        info = native.info
+        missing = set(info.joint_names).difference(by_name)
         if missing:
             raise ValueError(
                 f"{model} native model references unknown joints: "
                 + ", ".join(sorted(missing))
             )
         for name, lower, upper in zip(
-            native.joint_names,
-            native.lower_position_limits,
-            native.upper_position_limits,
+            info.joint_names,
+            info.lower_limits,
+            info.upper_limits,
         ):
             joint = by_name[name]
             joint.lower_limit = float(lower)
@@ -958,7 +960,7 @@ class JointGroup:
         last_error = None
         for _ in range(max(1, poll_max)):
             try:
-                last_state = motor.request_fresh_state(timeout_ms=50)
+                last_state = motor.request_fresh_state(timeout_ms=1000)
                 if last_state is not None and last_state.status_code == 0:
                     return last_state
             except Exception as exc:
@@ -981,7 +983,7 @@ class JointGroup:
         last_error = None
         for _ in range(max(1, poll_max)):
             try:
-                last_state = motor.request_fresh_state(timeout_ms=50)
+                last_state = motor.request_fresh_state(timeout_ms=1000)
                 if last_state is not None and last_state.status_code == 1:
                     return last_state
             except Exception as exc:
@@ -1139,7 +1141,7 @@ class JointGroup:
 
     def _request_feedback(self) -> None:
         try:
-            self._cm["main"].request_feedback_all(timeout_ms=50)
+            self._cm["main"].request_feedback_all(timeout_ms=1000)
         except CallError as exc:
             raise _feedback_request_error(
                 exc,
@@ -1153,7 +1155,7 @@ class JointGroup:
         """读取本组状态；无法取得新鲜且健康的反馈时抛出异常。"""
         if request_feedback:
             try:
-                self._cm["main"].request_feedback_all(timeout_ms=50)
+                self._cm["main"].request_feedback_all(timeout_ms=1000)
             except CallError as exc:
                 raise _feedback_request_error(
                     exc,
@@ -1355,7 +1357,7 @@ class ArxDCan:
             last_error = None
             for _ in range(max(1, poll_max)):
                 try:
-                    last_state = motor.request_fresh_state(timeout_ms=50)
+                    last_state = motor.request_fresh_state(timeout_ms=1000)
                     if last_state is not None and last_state.status_code == 0:
                         break
                 except Exception as exc:
@@ -1480,7 +1482,7 @@ class ArxDCan:
             before = before_states[jc.name]
             for sample_index in range(1, verify_samples + 1):
                 try:
-                    state = motor.request_fresh_state(timeout_ms=50)
+                    state = motor.request_fresh_state(timeout_ms=1000)
                 except Exception as exc:
                     raise RuntimeError(
                         f"zero verification failed for {jc.name} at fresh sample "
@@ -1529,7 +1531,7 @@ class ArxDCan:
         last_error = None
         for _ in range(max(1, poll_max)):
             try:
-                last_state = motor.request_fresh_state(timeout_ms=50)
+                last_state = motor.request_fresh_state(timeout_ms=1000)
                 if last_state is not None and last_state.status_code == 0:
                     return last_state
             except Exception as exc:
@@ -1565,7 +1567,7 @@ class ArxDCan:
                 feedback_errors = []
                 for ctrl in self._ctrl_map.values():
                     try:
-                        ctrl.request_feedback_all(timeout_ms=50)
+                        ctrl.request_feedback_all(timeout_ms=1000)
                     except CallError as exc:
                         feedback_errors.append(exc)
                 if not feedback_errors:

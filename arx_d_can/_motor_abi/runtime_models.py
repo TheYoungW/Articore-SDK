@@ -16,11 +16,47 @@ class SafetyState(IntEnum):
     RUNNING = 3
     SAFE_HOLD = 4
     FAULT = 5
+    DEGRADED = 6
+    SAFE_STOP = 7
+    PARTIALLY_ENABLED = 8
+
+
+class MotorPowerState(IntEnum):
+    UNKNOWN = 0
+    DISABLED = 1
+    ENABLED = 2
+    MIXED = 3
 
 
 class RuntimeControlMode(IntEnum):
     PV = 1
     MIT = 2
+
+
+class RuntimeOperation(IntEnum):
+    NONE = 0
+    CONNECT = 1
+    ENABLE = 2
+    DISABLE = 3
+    CONFIGURE_MODE = 4
+    CLEAR_FAULTS = 5
+    SET_ZERO = 6
+    CLOSE = 7
+    DISCONNECT = 8
+    COMMAND = 9
+
+
+class OperationError(IntEnum):
+    OK = 0
+    INVALID_ARGUMENT = 1
+    INVALID_STATE = 2
+    TRANSPORT = 3
+    FEEDBACK = 4
+    NOT_DISABLED = 5
+    NOT_STATIONARY = 6
+    MOTOR_COMMAND = 7
+    VERIFICATION = 8
+    UNSUPPORTED = 9
 
 
 class GravityCompensationPhase(IntEnum):
@@ -98,6 +134,63 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class ProductArmState:
+    positions: tuple[float, ...]
+    velocities: tuple[float, ...]
+    torques: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class ProductGripperState:
+    available: bool
+    opening: float
+    gripper_level: int
+
+
+@dataclass(frozen=True)
+class ProductState:
+    has_grippers: bool
+    left: ProductArmState
+    right: ProductArmState
+    left_gripper: ProductGripperState | None
+    right_gripper: ProductGripperState | None
+    timestamp_ns: int
+    sequence: int
+
+
+@dataclass(frozen=True)
+class ProductPose:
+    side: int
+    values: tuple[float, float, float, float, float, float]
+    timestamp_ns: int
+    sequence: int
+
+    @property
+    def x(self) -> float:
+        return self.values[0]
+
+    @property
+    def y(self) -> float:
+        return self.values[1]
+
+    @property
+    def z(self) -> float:
+        return self.values[2]
+
+    @property
+    def roll(self) -> float:
+        return self.values[3]
+
+    @property
+    def pitch(self) -> float:
+        return self.values[4]
+
+    @property
+    def yaw(self) -> float:
+        return self.values[5]
+
+
+@dataclass(frozen=True)
 class RuntimeMotor:
     motor: Motor
     side: int
@@ -142,7 +235,7 @@ class JointSafetyLimits:
 
 @dataclass(frozen=True)
 class MitTorqueLimitJointStats:
-    motor: Motor
+    motor: Motor | str
     requested_resultant_torque: float
     applied_scale: float
     applied_resultant_torque: float
@@ -183,7 +276,7 @@ class GravityCompensationStatus:
     active: bool
     transition_progress: float
     control_cycles: int
-    joints: tuple[Motor, ...]
+    joints: tuple[Motor | str, ...]
     gravity_feedforward_torque: tuple[float, ...]
 
 
@@ -363,3 +456,12 @@ class SafetyHealth:
     motor_faults: tuple[str, ...]
     unconfirmed_disable: tuple[str, ...]
     fault_reason: str | None
+    last_operation: RuntimeOperation = RuntimeOperation.NONE
+    last_operation_code: OperationError = OperationError.OK
+    operation_failed_motors: tuple[str, ...] = ()
+    last_operation_error: str | None = None
+    degraded: bool = False
+    safe_stopped: bool = False
+    requires_resynchronization: bool = False
+    command_scale: float = 1.0
+    safety_reason: str | None = None

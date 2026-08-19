@@ -76,10 +76,10 @@ def test_dual_position_example_fixes_control_mode(
     assert captured["right"] == pytest.approx(
         tuple(math.radians(value) for value in (0, -10, -20, -30, -40, -50, -60))
     )
-    assert captured["set_kwargs"] == {"velocity": pytest.approx(math.radians(60.0))}
+    assert captured["set_kwargs"] == {"velocity": 60.0}
 
 
-def test_pv_example_forwards_shared_velocity_in_radians(monkeypatch) -> None:
+def test_pv_example_forwards_shared_speed_percent(monkeypatch) -> None:
     captured = {}
 
     class FakeRobot:
@@ -110,20 +110,28 @@ def test_pv_example_forwards_shared_velocity_in_radians(monkeypatch) -> None:
 
     pv_example.main(args)
 
-    assert captured["velocity"] == pytest.approx(math.pi / 2.0)
+    assert captured["velocity"] == 90.0
 
 
-def test_pv_example_requires_a_positive_velocity() -> None:
+def test_pv_example_requires_a_zero_to_one_hundred_speed() -> None:
     parser = pv_example.build_parser()
 
     with pytest.raises(SystemExit):
         parser.parse_args(["--left", "0,0,0,0,0,0,0", "--right", "0,0,0,0,0,0,0"])
+    paused = parser.parse_args(
+        [
+            "--left", "0,0,0,0,0,0,0",
+            "--right", "0,0,0,0,0,0,0",
+            "--velocity", "0",
+        ]
+    )
+    assert paused.velocity == 0.0
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
                 "--left", "0,0,0,0,0,0,0",
                 "--right", "0,0,0,0,0,0,0",
-                "--velocity", "0",
+                "--velocity", "100.1",
             ]
         )
 
@@ -165,11 +173,11 @@ def test_mit_example_uses_the_same_shared_velocity(monkeypatch) -> None:
     mit_example.main(args)
 
     assert set(captured) == {"left", "right", "velocity"}
-    assert captured["velocity"] == pytest.approx(math.pi / 4.0)
+    assert captured["velocity"] == 45.0
     assert "profile" not in captured
 
 
-def test_mit_example_rejects_velocity_above_200_degrees_per_second() -> None:
+def test_mit_example_rejects_speed_above_one_hundred() -> None:
     parser = mit_example.build_parser()
 
     with pytest.raises(SystemExit):
@@ -180,7 +188,7 @@ def test_mit_example_rejects_velocity_above_200_degrees_per_second() -> None:
                 "--right",
                 "0,0,0,0,0,0,0",
                 "--velocity",
-                "200.01",
+                "100.01",
             ]
         )
 

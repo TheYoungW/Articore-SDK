@@ -32,7 +32,7 @@ HOLD_SECONDS = 2.0
 
 def _feedback_stats(robot: ArxDCanDualArm):
     result = {}
-    for side_name, arm in (("left", robot.left), ("right", robot.right)):
+    for side_name, arm in (("left", robot._left), ("right", robot._right)):
         for name, stats in arm.robot.get_feedback_stats(
             joint_names=arm._active_joint_names()
         ).items():
@@ -61,14 +61,9 @@ def test_native_mit_torque_limit_on_every_repeated_cycle() -> None:
     if os.environ.get("ARX_D_CAN_RUN_HARDWARE_TEST") != "1":
         pytest.skip("set ARX_D_CAN_RUN_HARDWARE_TEST=1 to use real hardware")
 
-    robot = ArxDCanDualArm(
-        control_mode="mit",
-        transport="socketcanfd",
-        left_channel="can-left",
-        right_channel="can-right",
-    )
+    robot = ArxDCanDualArm(control_mode="mit")
     _install_safe_j7_test_limits(robot)
-    disable_report = None
+    disable_health = None
     connected = False
     try:
         robot.connect()
@@ -211,23 +206,19 @@ def test_native_mit_torque_limit_on_every_repeated_cycle() -> None:
         if connected:
             try:
                 robot.disable()
-                disable_report = robot.last_disable_report
-                if disable_report is not None:
-                    print(
-                        "\ndisable transaction: "
-                        f"expected={disable_report.expected_count}, "
-                        f"disabled={disable_report.disabled_count}, "
-                        f"missing={disable_report.missing_count}, "
-                        f"failures={disable_report.failure_count}"
-                    )
+                disable_health = robot.safety_health
+                print(
+                    "\ndisable state: "
+                    f"state={disable_health.state.name}, "
+                    f"confirmed={disable_health.disable_confirmed}, "
+                    f"fault={disable_health.fault_reason}"
+                )
             finally:
                 robot.close()
 
-    assert disable_report is not None
-    assert disable_report.success
-    assert disable_report.barrier_confirmed
-    assert disable_report.expected_count == 16
-    assert disable_report.disabled_count == 16
-    assert disable_report.missing_count == 0
-    assert disable_report.failure_count == 0
+    assert disable_health is not None
+    assert disable_health.state is SafetyState.READY
+    assert disable_health.disable_confirmed
+    assert not disable_health.unconfirmed_disable
+    assert not disable_health.motor_faults
     print("disable confirmed: 16/16")

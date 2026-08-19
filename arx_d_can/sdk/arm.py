@@ -12,8 +12,6 @@ from typing import Sequence
 import numpy as np
 from arx_d_can._motor_abi import (
     ArticoreRuntime,
-    DisableReport,
-    EnableReport,
     GravityCompensationStatus,
     GravityProductBinding,
     GripperCommand,
@@ -21,6 +19,7 @@ from arx_d_can._motor_abi import (
     GripperProductBinding,
     JointControlConfig,
     JointPositionTarget,
+    MotorPowerState,
     RuntimeConfig,
     RuntimeControlMode,
     RuntimeMitCommand,
@@ -57,7 +56,6 @@ from .state import (
 )
 
 
-MAX_ORDINARY_MIT_VELOCITY = math.radians(200.0)
 
 
 def _set_can_timeout_with_readback(motor, timeout_ms: int) -> None:
@@ -68,7 +66,7 @@ def _set_can_timeout_with_readback(motor, timeout_ms: int) -> None:
     except CallError as write_error:
         expected_ticks = min(int(timeout_ms) * 20, 0xFFFFFFFF)
         try:
-            actual_ticks = motor.get_register_u32(9, timeout_ms=200)
+            actual_ticks = motor.get_register_u32(9, timeout_ms=1000)
         except CallError:
             raise write_error
         if actual_ticks != expected_ticks:
@@ -321,17 +319,10 @@ class ArxDCanArm(_SafetyMixin):
             fault_reason=self.fault_reason,
         )
 
-    @property
-    def last_enable_report(self) -> EnableReport | None:
-        """返回最近一次原子使能报告；未创建原生 Runtime 时返回 ``None``。"""
+    def get_fps(self) -> float:
+        """非阻塞返回最近 0.1 秒窗口内的当前 CAN 通道帧率。"""
         runtime = self._single_safety_runtime
-        return None if runtime is None else runtime.last_enable_report()
-
-    @property
-    def last_disable_report(self) -> DisableReport | None:
-        """返回最近一次确定性失能报告；未创建原生 Runtime 时返回 ``None``。"""
-        runtime = self._single_safety_runtime
-        return None if runtime is None else runtime.last_disable_report()
+        return 0.0 if runtime is None else runtime.get_fps()
 
     @property
     def gripper_safety_health(self) -> GripperHealth | None:
@@ -566,6 +557,8 @@ class ArxDCanArm(_SafetyMixin):
             SafetyState.ENABLED,
             SafetyState.RUNNING,
             SafetyState.SAFE_HOLD,
+            SafetyState.DEGRADED,
+            SafetyState.SAFE_STOP,
         } or (health.state is SafetyState.FAULT and not health.disable_confirmed)
         with self._state_lock:
             self._enabled = active
@@ -601,7 +594,7 @@ class ArxDCanArm(_SafetyMixin):
             self._create_single_safety_runtime()
             if not self._dual_runtime_managed and self._single_safety_runtime is None:
                 raise RuntimeError(
-                    "motor-drive-layer 0.10.14 ArticoreRuntime is unavailable"
+                    "motor-drive-layer 0.10.21 ArticoreRuntime is unavailable"
                 )
         except Exception:
             try:
@@ -652,7 +645,7 @@ class ArxDCanArm(_SafetyMixin):
             self._safe_holding = False
             self._enabled = False
 
-    def enable(self) -> None:
+    def enable(self, motor: str | None = None) -> bool:
         """通过原生原子事务使能活动电机并启动命令安全监控。
 
         机械臂必须已连接，物理使能、当前位置保持、反馈确认和失败回滚均由
@@ -670,11 +663,14 @@ class ArxDCanArm(_SafetyMixin):
         if runtime is None:
             raise RuntimeError("native safety runtime is not connected")
         try:
-            runtime.enable(
-                RuntimeControlMode.PV
-                if self._mode in {"pv", "posvel"}
-                else RuntimeControlMode.MIT
-            )
+            if motor is None:
+                result = runtime.enable(
+                    RuntimeControlMode.PV
+                    if self._mode in {"pv", "posvel"}
+                    else RuntimeControlMode.MIT
+                )
+            else:
+                result = runtime.enable(motor=motor)
         except Exception:
             try:
                 self._sync_runtime_flags(runtime.health)
@@ -682,8 +678,9 @@ class ArxDCanArm(_SafetyMixin):
                 pass
             raise
         self._sync_runtime_flags(runtime.health)
+        return result
 
-    def disable(self) -> None:
+    def disable(self, motor: str | None = None) -> bool:
         """停止后台控制，并向所有电机发送紧急失能命令。
 
         成功后会清除保留的机械臂命令。如果无法确认电机已在物理层失能，SDK 会继续
@@ -694,7 +691,7 @@ class ArxDCanArm(_SafetyMixin):
         if runtime is None:
             raise RuntimeError("native safety runtime is not connected")
         try:
-            runtime.disable()
+            result = runtime.disable(motor=motor)
         except Exception as exc:
             try:
                 health = runtime.health
@@ -708,6 +705,20 @@ class ArxDCanArm(_SafetyMixin):
                 self._sync_runtime_flags(health)
             raise
         self._sync_runtime_flags(runtime.health)
+        return result
+
+    def motor_power_state(self, motor: str | None = None) -> MotorPowerState:
+        self._require_connected()
+        runtime = self._single_safety_runtime
+        if runtime is None:
+            raise RuntimeError("native safety runtime is not connected")
+        return runtime.motor_power_state(motor)
+
+    def is_enabled(self, motor: str | None = None) -> bool:
+        return self.motor_power_state(motor) is MotorPowerState.ENABLED
+
+    def is_disabled(self, motor: str | None = None) -> bool:
+        return self.motor_power_state(motor) is MotorPowerState.DISABLED
 
     def start_gravity_compensation(self, *, transition_ms: int = 0) -> None:
         """启动 Runtime 原生重力补偿。
@@ -946,7 +957,7 @@ class ArxDCanArm(_SafetyMixin):
         start_id: int = 1,
         end_id: int = 16,
         model: str = "4340P",
-        timeout_ms: int = 30,
+        timeout_ms: int = 1000,
         feedback_base: str = "0x10",
     ) -> list[int]:
         """运行只读电机扫描器并返回通过校验的 CAN ID。
@@ -975,11 +986,11 @@ class ArxDCanArm(_SafetyMixin):
             )
         return parse_scan_ids(result.stdout, model=model)
 
-    def read_motor_diagnostics(self, *, timeout_ms: int = 100):
+    def read_motor_diagnostics(self, *, timeout_ms: int = 1000):
         """读取所有活动电机的状态、控制模式和温度，不发送控制命令。
 
         ``timeout_ms`` 是每次整臂反馈请求和每台电机寄存器请求各自的超时，不是
-        整次诊断的总超时。普通用户使用默认的 100 ms 即可；该参数主要用于高级
+        整次诊断的总超时。普通用户使用默认的 1000 ms 即可；该参数主要用于高级
         故障诊断。
         """
         from .diagnostics import read_motor_diagnostics
@@ -1201,25 +1212,12 @@ class ArxDCanArm(_SafetyMixin):
         *,
         mode: str,
     ) -> float:
-        hardware_maximum = min(
-            joint.pv_vlim for joint in self.config.arm_joints
-        )
-        maximum = (
-            min(hardware_maximum, MAX_ORDINARY_MIT_VELOCITY)
-            if mode == "mit"
-            else hardware_maximum
-        )
         if velocity is None:
-            return maximum
+            return 100.0
         value = float(velocity)
-        if not math.isfinite(value) or not 0.0 < value <= maximum:
-            limit = (
-                f"{maximum:g} rad/s (200 deg/s)"
-                if mode == "mit" and maximum == MAX_ORDINARY_MIT_VELOCITY
-                else f"{maximum:g} rad/s"
-            )
+        if not math.isfinite(value) or not 0.0 <= value <= 100.0:
             raise ValueError(
-                f"velocity must be finite, positive, and at most {limit}"
+                "velocity must be finite and within 0..100"
             )
         return value
 
@@ -1253,7 +1251,7 @@ class ArxDCanArm(_SafetyMixin):
         *,
         velocity: float | None = None,
     ) -> None:
-        """设置普通 MIT 最终位置；默认使用当前机型允许的最大统一速度。"""
+        """设置普通 MIT 最终位置；velocity 使用 0～100 的统一速度档位。"""
         self._set_joint_position(positions, velocity=velocity, mode="mit")
 
     def set_joint_pv(
@@ -1262,7 +1260,7 @@ class ArxDCanArm(_SafetyMixin):
         *,
         velocity: float | None = None,
     ) -> None:
-        """设置普通 PV 最终位置；默认使用当前机型允许的最大统一速度。"""
+        """设置普通 PV 最终位置；velocity 使用 0～100 的统一速度档位。"""
         self._set_joint_position(positions, velocity=velocity, mode="pv")
 
     def set_zero(
@@ -1272,7 +1270,7 @@ class ArxDCanArm(_SafetyMixin):
         verify_tolerance: float = 0.02,
         verify_velocity: float = 0.05,
         verify_samples: int = 3,
-    ) -> tuple[str, ...]:
+    ) -> bool:
         """将所选电机的当前位置写为零点，并通过反馈验证。
 
         默认处理当前启用的全部电机；产品夹爪已启用时也会一起调零。更换末端并
@@ -1285,12 +1283,13 @@ class ArxDCanArm(_SafetyMixin):
                 "this arm is managed by ArxDCanDualArm; use robot.set_zero()"
             )
         if not self._connected:
-            return self._set_zero_maintenance(
+            self._set_zero_maintenance(
                 joint_names=joint_names,
                 verify_tolerance=verify_tolerance,
                 verify_velocity=verify_velocity,
                 verify_samples=verify_samples,
             )
+            return True
         self._require_operational()
         if self._enabled:
             raise RuntimeError("disable the arm before writing motor zero positions")
@@ -1298,12 +1297,13 @@ class ArxDCanArm(_SafetyMixin):
         if recreate_runtime:
             self._release_single_runtime()
         try:
-            return self.robot.set_zero(
+            self.robot.set_zero(
                 joint_names=list(joint_names) if joint_names is not None else None,
                 verify_tolerance=verify_tolerance,
                 verify_velocity=verify_velocity,
                 verify_samples=verify_samples,
             )
+            return True
         finally:
             if recreate_runtime:
                 self._create_single_safety_runtime()

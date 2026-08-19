@@ -1,681 +1,189 @@
-"""两条独立 CAN 通道组成的双臂控制接口。"""
+"""由 C++ 产品 Runtime 完整拥有的 Yunyi 双臂业务接口。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-import math
+from dataclasses import dataclass
+from numbers import Real
 from typing import Sequence
 
 from arx_d_can._motor_abi import (
     ArticoreRuntime,
-    DisableReport,
-    EnableReport,
     GravityCompensationStatus,
-    GravityProductBinding,
-    GripperCommand,
-    GripperHealth,
-    RuntimeConfig,
     RuntimeControlMode,
-    RuntimeMotor,
-    RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
+    MotorPowerState,
+    ProductPose,
 )
 
-from ..driver import ControllerGroup
-from .arm import ArxDCanArm, _runtime_raw_commands
-from .gripper import GripperForceLevel
-from .state import ArxDCanState
+from .state import ArxDCanState, DualArmGripperState, JointState
+
+
+_LEFT_NAMES = tuple(f"l-joint{index}" for index in range(1, 8))
+_RIGHT_NAMES = tuple(f"r-joint{index}" for index in range(1, 8))
+_PUBLIC_NAMES = tuple(f"joint{index}" for index in range(1, 8))
 
 
 @dataclass(slots=True, frozen=True)
 class ArxDCanDualArmState:
-    """一帧左右臂状态；两条 CAN 通道的状态保持独立。"""
+    """同一原生产品快照中的左右臂、夹爪和时序信息。"""
 
     left: ArxDCanState
     right: ArxDCanState
-    left_gripper: GripperHealth | None = None
-    right_gripper: GripperHealth | None = None
+    has_grippers: bool = True
+    timestamp_ns: int = 0
+    sequence: int = 0
+
+
+def _mode(value: str) -> RuntimeControlMode:
+    normalized = str(value).strip().lower()
+    if normalized == "mit":
+        return RuntimeControlMode.MIT
+    if normalized in {"pv", "posvel"}:
+        return RuntimeControlMode.PV
+    raise ValueError("control_mode must be 'mit' or 'pv'")
+
+
+def _side(value: str) -> int:
+    normalized = str(value).strip().lower()
+    if normalized == "left":
+        return 0
+    if normalized == "right":
+        return 1
+    raise ValueError("side must be 'left' or 'right'")
+
+
+def _frame(left: Sequence[float], right: Sequence[float]) -> tuple[float, ...]:
+    """只固定左右产品顺序；数量和数值合法性由 Runtime 校验。"""
+    return tuple(float(value) for value in (*left, *right))
+
+
+def _optional_frame(
+    left: Sequence[float] | None,
+    right: Sequence[float] | None,
+) -> tuple[float, ...] | None:
+    if left is None and right is None:
+        return None
+    return _frame(left or (0.0,) * 7, right or (0.0,) * 7)
+
+
+def _gain_frame(value: float | Sequence[float] | None) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, Real):
+        return (float(value),) * 14
+    values = tuple(float(item) for item in value)
+    return values * 2 if len(values) == 7 else values
 
 
 class ArxDCanDualArm:
-    """组合两台独立的 :class:`ArxDCanArm`。
-
-    当前默认机型是 Yunyi V1.0 左右臂，以后其他双臂产品可以分别传入自己的
-    ``left_model`` 和 ``right_model``，无需新增产品专用 Python 类。连接参数默认
-    来自产品配置；Yunyi 默认使用两块独立 SocketCAN-FD 适配器的 ``can-left`` 和
-    ``can-right``。控制模式默认使用 MIT，构造参数仅用于显式覆盖。
-    """
+    """只转发整机业务数据的 Yunyi V1.0 双臂客户端。"""
 
     def __init__(
-        self,
-        *,
-        left_model: str = "yunyi_v1_0_left",
-        right_model: str = "yunyi_v1_0_right",
-        transport: str | None = None,
-        left_channel: str | None = None,
-        right_channel: str | None = None,
-        baud: int | None = None,
-        control_mode: str = "mit",
-        left_gripper: bool | None = None,
-        right_gripper: bool | None = None,
+        self, *, control_mode: str = "mit", with_grippers: bool = True
     ) -> None:
-        normalized_mode = str(control_mode).strip().lower()
-        if normalized_mode not in ("pv", "mit"):
-            raise ValueError("control_mode must be 'pv' or 'mit'")
-        normalized_transport = (
-            None
-            if transport is None
-            else str(transport).strip().lower().replace("_", "-")
+        self._runtime = ArticoreRuntime.create_product(
+            "yunyi_v1_0", _mode(control_mode), with_grippers=with_grippers
         )
-        if normalized_transport == "dm-device":
-            left_channel = "0" if left_channel is None else left_channel
-            right_channel = "1" if right_channel is None else right_channel
-        self.left = ArxDCanArm(
-            model=left_model,
-            channel=left_channel,
-            transport=transport,
-            baud=baud,
-            control_mode=normalized_mode,
-            enable_gripper=left_gripper,
-        )
-        self.right = ArxDCanArm(
-            model=right_model,
-            channel=right_channel,
-            transport=transport,
-            baud=baud,
-            control_mode=normalized_mode,
-            enable_gripper=right_gripper,
-        )
-        self._controller_group: ControllerGroup | None = None
-        self._safety_runtime: ArticoreRuntime | None = None
+
+    @property
+    def joint_names(self) -> tuple[str, ...]:
+        return _PUBLIC_NAMES
+
+    @property
+    def control_mode(self) -> str:
+        return "mit" if self._runtime.control_mode is RuntimeControlMode.MIT else "pv"
+
+    @property
+    def has_grippers(self) -> bool:
+        return self._runtime.has_grippers
 
     @property
     def connected(self) -> bool:
-        """返回左右两条通道是否都已连接。"""
-        return self.left.connected and self.right.connected
-
-    @property
-    def _effective_control_hz(self) -> float:
-        """返回 SDK 内部双臂调度频率，不属于公开控制接口。"""
-        runtime = self._safety_runtime
-        if runtime is not None:
-            return float(runtime.control_hz)
-        return min(self.left.config.control_hz, self.right.config.control_hz)
+        return (
+            not self._runtime.closed
+            and self._runtime.health.state is not SafetyState.DISCONNECTED
+        )
 
     @property
     def enabled(self) -> bool:
-        """返回左右臂是否都已使能。"""
-        if self._safety_runtime is not None:
-            self._sync_python_safety_flags(self._safety_runtime.health)
-        return self.left.enabled and self.right.enabled
-
-    @property
-    def safety_health(self) -> SafetyHealth:
-        """返回 C++ 双臂安全状态机的一致快照。"""
-        runtime = self._safety_runtime
-        if runtime is not None:
-            health = runtime.health
-            self._sync_python_safety_flags(health)
-            return health
-        connected = self.connected
-        state = (
-            SafetyState.RUNNING
-            if self.enabled
-            else SafetyState.READY
-            if connected
-            else SafetyState.DISCONNECTED
-        )
-        transport = RuntimeTransportHealth(
-            connected=connected,
-            healthy=connected,
-            consecutive_send_failures=0,
-            consecutive_feedback_failures=0,
-            last_feedback_age_ns=None,
-            tx_frames=0,
-            rx_frames=0,
-            send_errors=0,
-            receive_errors=0,
-            last_tx_age_ns=None,
-            last_rx_age_ns=None,
-            last_error=None,
-        )
-        return SafetyHealth(
-            state=state,
-            safe_holding=False,
-            disable_confirmed=not self.enabled,
-            last_successful_command_age_ns=None,
-            last_fresh_feedback_age_ns=None,
-            consecutive_send_failures=0,
-            consecutive_feedback_failures=0,
-            left_transport=transport,
-            right_transport=transport,
-            grippers=(),
-            motor_faults=(),
-            unconfirmed_disable=(),
-            fault_reason=None,
-        )
-
-    @property
-    def gravity_compensation_status(self) -> GravityCompensationStatus:
-        """返回双臂 Runtime 的原生重力补偿状态。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm gravity compensation runtime is not connected")
-        return runtime.gravity_compensation_status
-
-    @property
-    def last_enable_report(self) -> EnableReport | None:
-        """返回最近一次双臂原子使能报告。"""
-        runtime = self._safety_runtime
-        return None if runtime is None else runtime.last_enable_report()
-
-    @property
-    def last_disable_report(self) -> DisableReport | None:
-        """返回最近一次双臂确定性失能报告。"""
-        runtime = self._safety_runtime
-        return None if runtime is None else runtime.last_disable_report()
-
-    def _runtime_motors(self) -> tuple[RuntimeMotor, ...]:
-        return (
-            *self.left._runtime_motors(side=0, label="left"),
-            *self.right._runtime_motors(side=1, label="right"),
-        )
-
-    def _runtime_joint_configs(self):
-        return (
-            *self.left._runtime_joint_configs(),
-            *self.right._runtime_joint_configs(),
-        )
-
-    def _runtime_gripper_bindings(self):
-        return (
-            *self.left._runtime_gripper_bindings(),
-            *self.right._runtime_gripper_bindings(),
-        )
-
-    def _runtime_gravity_bindings(self) -> tuple[GravityProductBinding, ...]:
-        return (
-            *self.left._runtime_gravity_bindings(runtime_side=0),
-            *self.right._runtime_gravity_bindings(runtime_side=1),
-        )
-
-    def _create_safety_runtime(
-        self,
-        group: ControllerGroup,
-        left_controller: object,
-        right_controller: object,
-    ) -> ArticoreRuntime | None:
-        # 测试桩可能没有原生句柄；真实 SDK ABI 对象必须具备。
-        if not all(
-            getattr(value, "_ptr", None)
-            for value in (group, left_controller, right_controller)
-        ):
-            return None
-        left = self.left.config
-        right = self.right.config
-        runtime = ArticoreRuntime(
-            config=RuntimeConfig(
-                control_hz=max(1, round(min(left.control_hz, right.control_hz))),
-                command_timeout_ms=max(
-                    1, round(min(left.command_timeout_s, right.command_timeout_s) * 1000)
-                ),
-                enable_grace_ms=max(
-                    1, round(min(left.enable_grace_s, right.enable_grace_s) * 1000)
-                ),
-                safe_hold_hz=max(1, round(min(left.safe_hold_hz, right.safe_hold_hz))),
-                feedback_check_hz=max(
-                    1, round(min(left.feedback_check_hz, right.feedback_check_hz))
-                ),
-                feedback_failure_threshold=min(
-                    left.feedback_fault_threshold, right.feedback_fault_threshold
-                ),
-                feedback_max_age_ms=max(
-                    1,
-                    round(
-                        min(
-                            left.max_cached_feedback_age_s,
-                            right.max_cached_feedback_age_s,
-                        )
-                        * 1000
-                    ),
-                ),
-                safe_hold_failure_threshold=min(
-                    left.safe_hold_failure_threshold,
-                    right.safe_hold_failure_threshold,
-                ),
-                safe_pv_velocity_limit=min(
-                    left.safe_hold_pv_velocity_limit,
-                    right.safe_hold_pv_velocity_limit,
-                ),
-                gripper_control_hz=max(
-                    1, round(min(left.control_hz, right.control_hz))
-                ),
-            ),
-            controller_group=group,
-            left_controller=left_controller,
-            right_controller=right_controller,
-            motors=self._runtime_motors(),
-        )
-        try:
-            runtime.configure_joints(self._runtime_joint_configs())
-            runtime.configure_gripper_products(self._runtime_gripper_bindings())
-            runtime.configure_gravity_products(self._runtime_gravity_bindings())
-            runtime.connect()
-        except Exception:
-            # connect() 失败时局部 Runtime 仍持有 Group/Controller/Motor 租用。
-            # 必须先释放 Runtime，调用方随后才能安全关闭 ControllerGroup。
-            try:
-                runtime.close()
-            except Exception:
-                pass
-            raise
-        return runtime
-
-    def _release_runtime(self) -> None:
-        """释放共享 Runtime 的租用，但保留 ControllerGroup。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            return
-        error: Exception | None = None
-        try:
-            runtime.close()
-        except Exception as exc:
-            error = exc
-        if getattr(runtime, "closed", True):
-            self._safety_runtime = None
-        else:
-            raise error or RuntimeError("ArticoreRuntime did not close")
-        if error is not None:
-            raise error
-
-    def _sync_python_safety_flags(self, health: SafetyHealth) -> None:
-        active = health.state in {
+        if self._runtime.closed:
+            return False
+        return self._runtime.health.state in {
             SafetyState.ENABLED,
             SafetyState.RUNNING,
             SafetyState.SAFE_HOLD,
-        } or (health.state is SafetyState.FAULT and not health.disable_confirmed)
-        for arm in (self.left, self.right):
-            with arm._state_lock:
-                arm._enabled = active
-                arm._safe_holding = health.state is SafetyState.SAFE_HOLD
-                arm._faulted = health.state in {
-                    SafetyState.SAFE_HOLD,
-                    SafetyState.FAULT,
-                }
-                arm._fault_reason = health.fault_reason
+            SafetyState.DEGRADED,
+            SafetyState.SAFE_STOP,
+        }
 
-    def connect(self, *, read_only: bool = False) -> None:
-        """连接左右臂，并为两条通道创建常驻并行反馈线程。
+    @property
+    def _effective_control_hz(self) -> float:
+        return float(self._runtime.control_hz)
 
-        ``read_only=True`` 时不写入电机控制模式或通信参数，适合状态读取和诊断。
-        只读 Runtime 持有双臂 Motor lease；如需控制，必须先 :meth:`close`，再以普通
-        模式重新连接。
-        """
-        if self.connected and self._controller_group is not None:
-            return
-        self.left._set_dual_runtime_managed(True)
-        self.right._set_dual_runtime_managed(True)
-        try:
-            if read_only:
-                self.left.connect(read_only=True)
-                self.right.connect(read_only=True)
-            else:
-                self.left.connect()
-                self.right.connect()
-            left_controller = self.left._controller_for_parallel_batch()
-            right_controller = self.right._controller_for_parallel_batch()
-            group = ControllerGroup([left_controller, right_controller])
-            self._controller_group = group
-            self._safety_runtime = self._create_safety_runtime(
-                group, left_controller, right_controller
-            )
-            if self._safety_runtime is None:
-                raise RuntimeError(
-                    "motor-drive-layer 0.10.14 dual-arm ArticoreRuntime is unavailable"
-                )
-        except Exception:
-            if self._safety_runtime is not None:
-                self._release_runtime()
-            if self._controller_group is not None:
-                self._controller_group.close()
-                self._controller_group = None
-            if self.right.connected:
-                self.right.close()
-            self.left.close()
-            self.left._set_dual_runtime_managed(False)
-            self.right._set_dual_runtime_managed(False)
-            raise
+    @property
+    def safety_health(self) -> SafetyHealth:
+        return self._runtime.health
 
-    def enable(self) -> None:
-        """按构造时确定的模式，通过一个原生原子事务使能双臂。
+    def get_fps(self) -> float:
+        """非阻塞返回最近 0.1 秒窗口内的双通道 CAN 总帧率。"""
+        return self._runtime.get_fps()
 
-        普通连接在创建 Runtime 前配置左右臂控制模式和电机参数；Runtime 负责并行刷新
-        CH0/CH1 反馈、生成当前位置保持目标、物理使能、确认和失败回滚。普通用户
-        无需传入参数。
-        """
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        if self.left._read_only_connection or self.right._read_only_connection:
-            raise RuntimeError(
-                "a read-only dual-arm connection cannot be enabled; call close(), "
-                "then connect() normally before enable()"
-            )
-        if not self.left._configured or not self.right._configured:
-            raise RuntimeError("dual-arm motor modes are not configured")
-        try:
-            runtime.enable(
-                RuntimeControlMode.PV
-                if self.left._mode in {"pv", "posvel"}
-                else RuntimeControlMode.MIT
-            )
-            self._sync_python_safety_flags(runtime.health)
-        except Exception:
-            # 健康快照只是补充状态，不能覆盖携带 EnableReport 的原始异常。
-            try:
-                self._sync_python_safety_flags(runtime.health)
-            except Exception:
-                pass
-            raise
+    @property
+    def gravity_compensation_status(self) -> GravityCompensationStatus:
+        return self._runtime.gravity_compensation_status
+
+    def connect(self) -> None:
+        self._runtime.connect()
+
+    def disconnect(self) -> None:
+        self._runtime.disconnect()
+
+    def enable(self, motor: str | None = None) -> bool:
+        """Enable the complete product, or one motor by stable product role."""
+        return self._runtime.enable(motor=motor)
+
+    def disable(self, motor: str | None = None) -> bool:
+        """Disable the complete product, or one motor by stable product role."""
+        return self._runtime.disable(motor=motor)
+
+    def motor_power_state(self, motor: str | None = None) -> MotorPowerState:
+        return self._runtime.motor_power_state(motor)
+
+    def is_enabled(self, motor: str | None = None) -> bool:
+        return self._runtime.is_enabled(motor)
+
+    def is_disabled(self, motor: str | None = None) -> bool:
+        return self._runtime.is_disabled(motor)
 
     def configure_mode(self, mode: str) -> None:
-        """在双臂失能时将左右机械臂切换到同一种 PV 或 MIT 模式。"""
-        normalized = str(mode).strip().lower().replace("_", "")
-        if normalized in {"pv", "posvel"}:
-            normalized = "pv"
-        elif normalized != "mit":
-            raise ValueError("mode must be 'pv' or 'mit'")
-        runtime = self._safety_runtime
-        if runtime is None or not self.connected:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        self._sync_python_safety_flags(runtime.health)
-        if self.left._read_only_connection or self.right._read_only_connection:
-            raise RuntimeError(
-                "a read-only dual-arm connection cannot change control mode; "
-                "call close(), then connect() normally"
-            )
-        if self.enabled:
-            raise RuntimeError(
-                "cannot switch control mode while the dual arm is enabled; "
-                "call disable() first"
-            )
-
-        group = self._controller_group
-        if group is None:
-            raise RuntimeError("dual-arm ControllerGroup is not connected")
-        previous = (self.left._mode, self.right._mode)
-        self._release_runtime()
-        try:
-            self.left.configure_mode(normalized)
-            self.right.configure_mode(normalized)
-        except Exception as exc:
-            for arm, previous_mode in zip((self.left, self.right), previous):
-                try:
-                    arm.configure_mode(previous_mode)
-                except Exception:
-                    pass
-            raise RuntimeError("dual-arm control mode switch failed") from exc
-        self.left._configured = True
-        self.right._configured = True
-        self._safety_runtime = self._create_safety_runtime(
-            group,
-            self.left._controller_for_parallel_batch(),
-            self.right._controller_for_parallel_batch(),
-        )
-        if self._safety_runtime is None:
-            raise RuntimeError("failed to recreate dual-arm ArticoreRuntime")
-
-    def disable(self) -> None:
-        """失能左右臂；一侧失败时仍继续处理另一侧。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        try:
-            runtime.disable()
-        except Exception as exc:
-            # 不允许后续 health 读取失败覆盖结构化 RuntimeTransactionError。
-            try:
-                health = runtime.health
-            except Exception:
-                for arm in (self.left, self.right):
-                    with arm._state_lock:
-                        arm._enabled = True
-                        arm._faulted = True
-                        arm._fault_reason = f"disable failed: {exc}"
-                        arm._safe_holding = False
-            else:
-                self._sync_python_safety_flags(health)
-            raise
-        else:
-            self._sync_python_safety_flags(runtime.health)
-
-    def start_gravity_compensation(self, *, transition_ms: int = 0) -> None:
-        """原子启动左右七轴 Runtime 原生重力补偿。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm gravity compensation runtime is not connected")
-        if self.left._mode != "mit" or self.right._mode != "mit":
-            raise RuntimeError("native gravity compensation requires dual-arm MIT mode")
-        bindings = self._runtime_gravity_bindings()
-        if len(bindings) != 2:
-            raise RuntimeError(
-                "native dual-arm gravity compensation requires built-in left and "
-                "right yunyi_v1_0 products"
-            )
-        if not self.enabled:
-            raise RuntimeError(
-                "enable both arms in MIT mode before gravity compensation"
-            )
-        runtime.start_gravity_compensation(transition_ms=transition_ms)
-        self._sync_python_safety_flags(runtime.health)
-
-    def stop_gravity_compensation(self) -> None:
-        """平滑退出双臂原生重力补偿并恢复当前位置 MIT 保持。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm gravity compensation runtime is not connected")
-        runtime.stop_gravity_compensation()
-        self._sync_python_safety_flags(runtime.health)
-
-    def close(self) -> None:
-        """按 Runtime → ControllerGroup → Transport 的顺序关闭双臂。
-
-        native 句柄和资源租用由 SDK 私有 Runtime ABI 封装管理。
-        Runtime 未确认全部电机失能时立即停止，保留所有下游资源以供诊断和重试。
-        """
-        self._release_runtime()
-        errors: list[Exception] = []
-        group = self._controller_group
-        if group is not None:
-            try:
-                group.close()
-            except Exception as exc:
-                errors.append(exc)
-            else:
-                self._controller_group = None
-        if self._controller_group is not None:
-            raise RuntimeError("failed to close dual-arm ControllerGroup") from errors[0]
-        self.left._set_dual_runtime_managed(False)
-        self.right._set_dual_runtime_managed(False)
-        for arm in (self.left, self.right):
-            if not arm.connected:
-                continue
-            try:
-                arm.close()
-            except Exception as exc:
-                errors.append(exc)
-        if errors:
-            raise errors[0]
-
-    def read_state(self) -> ArxDCanDualArmState:
-        """读取 Runtime 后台持续刷新的左右臂缓存状态。"""
-        states = []
-        errors = []
-        for side, arm in enumerate((self.left, self.right)):
-            try:
-                states.append(arm.read_state())
-            except Exception as exc:
-                errors.append(exc)
-                if self._safety_runtime is not None:
-                    self._safety_runtime.report_feedback_failure(side, str(exc))
-        if errors:
-            raise errors[0]
-        health = self._safety_runtime.health if self._safety_runtime else None
-        left_gripper = self._gripper_health(health, 0)
-        right_gripper = self._gripper_health(health, 1)
-        return ArxDCanDualArmState(
-            left=self._state_with_runtime_gripper(states[0], left_gripper),
-            right=self._state_with_runtime_gripper(states[1], right_gripper),
-            left_gripper=left_gripper,
-            right_gripper=right_gripper,
-        )
-
-    def read_cached_state(self) -> ArxDCanDualArmState:
-        """分别返回左右臂最近一次成功反馈，不发送新的查询帧。"""
-        health = self._safety_runtime.health if self._safety_runtime else None
-        left_gripper = self._gripper_health(health, 0)
-        right_gripper = self._gripper_health(health, 1)
-        return ArxDCanDualArmState(
-            left=self._state_with_runtime_gripper(
-                self.left.read_cached_state(),
-                left_gripper,
-            ),
-            right=self._state_with_runtime_gripper(
-                self.right.read_cached_state(),
-                right_gripper,
-            ),
-            left_gripper=left_gripper,
-            right_gripper=right_gripper,
-        )
-
-    @staticmethod
-    def _gripper_health(
-        health: SafetyHealth | None,
-        side: int,
-    ) -> GripperHealth | None:
-        if health is None:
-            return None
-        return next((item for item in health.grippers if item.side == side), None)
-
-    @staticmethod
-    def _state_with_runtime_gripper(
-        state: ArxDCanState,
-        health: GripperHealth | None,
-    ) -> ArxDCanState:
-        """用 Runtime 产品 profile 计算的开合度补全公开夹爪状态。"""
-        if state.gripper is None or health is None:
-            return state
-        return replace(state, gripper=replace(state.gripper, opening=health.opening))
-
-    def _submit_joint_positions(
-        self,
-        *,
-        left: Sequence[float],
-        right: Sequence[float],
-        left_velocities: Sequence[float] | None = None,
-        right_velocities: Sequence[float] | None = None,
-        left_velocity_limits: Sequence[float] | None = None,
-        right_velocity_limits: Sequence[float] | None = None,
-        left_torques: Sequence[float] | None = None,
-        right_torques: Sequence[float] | None = None,
-        left_mit_kp: float | Sequence[float] | None = None,
-        right_mit_kp: float | Sequence[float] | None = None,
-        left_mit_kd: float | Sequence[float] | None = None,
-        right_mit_kd: float | Sequence[float] | None = None,
-        enforce_position_limits: bool = True,
-    ) -> None:
-        """在 SDK 内部原子更新左右臂容量为一的最新关节目标。
-
-        PV 模式可分别指定左右臂逐关节速度上限；省略时使用 SDK 默认值。MIT 模式
-        可分别指定左右臂目标速度、前馈力矩和逐关节 Kp/Kd。
-        """
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        left_batch = self.left._prepare_parallel_joint_positions(
-            left,
-            velocities=left_velocities,
-            velocity_limits=left_velocity_limits,
-            torques=left_torques,
-            mit_kp=left_mit_kp,
-            mit_kd=left_mit_kd,
-            enforce_position_limits=enforce_position_limits,
-        )
-        right_batch = self.right._prepare_parallel_joint_positions(
-            right,
-            velocities=right_velocities,
-            velocity_limits=right_velocity_limits,
-            torques=right_torques,
-            mit_kp=right_mit_kp,
-            mit_kd=right_mit_kd,
-            enforce_position_limits=enforce_position_limits,
-        )
-        if left_batch.mode != right_batch.mode:
-            raise RuntimeError("left and right arms must use the same control mode")
-
-        commands = left_batch.commands + right_batch.commands
-        batch = type(left_batch)(mode=left_batch.mode, commands=commands)
-        try:
-            (runtime.submit_pv if left_batch.mode == "pv" else runtime.submit_mit)(
-                _runtime_raw_commands(batch)
-            )
-        except Exception:
-            # raw submit 是控制循环热路径。native Runtime 会原子校验状态并拒绝
-            # 非 RUNNING 提交；只在失败时读取完整 health，避免成功路径与
-            # 500 Hz transport worker 争用命令锁。
-            try:
-                self._sync_python_safety_flags(runtime.health)
-            except Exception:
-                pass
-            raise
-
-    def _set_joint_position(
-        self,
-        *,
-        left: Sequence[float],
-        right: Sequence[float],
-        velocity: float | None,
-        mode: str,
-    ) -> None:
-        expected = {"pv", "posvel"} if mode == "pv" else {"mit"}
-        if self.left._mode not in expected or self.right._mode not in expected:
-            raise RuntimeError(f"set_joint_{mode}() requires dual-arm {mode.upper()} mode")
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        self._sync_python_safety_flags(runtime.health)
-        left_targets = self.left._ordinary_joint_position_targets(left)
-        right_targets = self.right._ordinary_joint_position_targets(right)
-        if velocity is None:
-            velocity = min(
-                self.left._ordinary_joint_velocity(None, mode=mode),
-                self.right._ordinary_joint_velocity(None, mode=mode),
-            )
-        left_velocity = self.left._ordinary_joint_velocity(velocity, mode=mode)
-        right_velocity = self.right._ordinary_joint_velocity(velocity, mode=mode)
-        if left_velocity != right_velocity:
-            raise RuntimeError("left and right ordinary joint velocities must match")
-        try:
-            getattr(runtime, f"set_joint_{mode}")(
-                left_targets + right_targets,
-                left_velocity,
-            )
-        finally:
-            self._sync_python_safety_flags(runtime.health)
+        self._runtime.configure_mode(_mode(mode))
 
     def set_joint_mit(
         self,
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float | None = None,
+        velocity: float = 100.0,
     ) -> None:
-        """原子设置双臂 MIT 最终位置；默认使用双臂共同允许的最大速度。"""
-        self._set_joint_position(
-            left=left,
-            right=right,
-            velocity=velocity,
-            mode="mit",
+        if self._runtime.control_mode is not RuntimeControlMode.MIT:
+            raise RuntimeError("set_joint_mit() requires MIT mode")
+        self._runtime.set_joint_positions(
+            _frame(left, right),
+            float(velocity),
+        )
+
+    def set_joint_pv(
+        self,
+        *,
+        left: Sequence[float],
+        right: Sequence[float],
+        velocity: float = 100.0,
+    ) -> None:
+        if self._runtime.control_mode is not RuntimeControlMode.PV:
+            raise RuntimeError("set_joint_pv() requires PV mode")
+        self._runtime.set_joint_positions(
+            _frame(left, right),
+            float(velocity),
         )
 
     def submit_raw_mit(
@@ -690,212 +198,108 @@ class ArxDCanDualArm:
         left_feedforward_torques: Sequence[float] | None = None,
         right_feedforward_torques: Sequence[float] | None = None,
     ) -> None:
-        """原子提交一帧完整双臂 raw MIT 命令。
-
-        这是供高级控制器使用的流式接口，要求双臂以 MIT 模式连接并已经使能。每次
-        调用必须同时提供左右臂目标；Runtime 只保留最新完整帧，并按底层实际控制
-        周期发送。调用方必须在命令看门狗超时前持续更新，否则 Runtime 会进入安全
-        保持。
-
-        位置单位为 rad，速度单位为 rad/s，前馈力矩单位为 N·m。``kp`` 和 ``kd``
-        对左右臂使用同一组标量或七关节向量；省略时使用产品配置值。省略速度或前馈
-        力矩时对应值为零。SDK 只校验并转换这一完整目标，然后非阻塞写入 Runtime
-        容量为一的 latest-target mailbox。Runtime 在每个真实发送周期使用最新原生
-        ``q/dq`` 重新计算 ``Kp·位置误差 + Kd·速度误差 + tau_ff``，并把完整输出
-        限制在逐关节配置的完整力矩上限内。
-        """
-        self._submit_joint_positions(
-            left=left_positions,
-            right=right_positions,
-            left_velocities=left_velocities,
-            right_velocities=right_velocities,
-            left_torques=left_feedforward_torques,
-            right_torques=right_feedforward_torques,
-            left_mit_kp=kp,
-            right_mit_kp=kp,
-            left_mit_kd=kd,
-            right_mit_kd=kd,
+        self._runtime.submit_mit_frame(
+            _frame(left_positions, right_positions),
+            _optional_frame(left_velocities, right_velocities),
+            _optional_frame(
+                left_feedforward_torques, right_feedforward_torques
+            ),
+            _gain_frame(kp),
+            _gain_frame(kd),
         )
 
-    def set_joint_pv(
+    def submit_raw_pv(
         self,
         *,
-        left: Sequence[float],
-        right: Sequence[float],
-        velocity: float | None = None,
+        left_positions: Sequence[float],
+        right_positions: Sequence[float],
+        left_velocity_limits: Sequence[float],
+        right_velocity_limits: Sequence[float],
     ) -> None:
-        """原子设置双臂 PV 最终位置；默认使用双臂共同允许的最大速度。"""
-        self._set_joint_position(
+        self._runtime.submit_pv_frame(
+            _frame(left_positions, right_positions),
+            _frame(left_velocity_limits, right_velocity_limits),
+        )
+
+    def read_state(self) -> ArxDCanDualArmState:
+        value = self._runtime.state
+
+        def arm(names: tuple[str, ...], source, gripper_source):
+            gripper = None
+            if gripper_source is not None and gripper_source.available:
+                gripper = DualArmGripperState(
+                    opening=gripper_source.opening,
+                    gripper_level=gripper_source.gripper_level,
+                )
+            return ArxDCanState(
+                arm=JointState(
+                    names=names,
+                    positions=source.positions,
+                    velocities=source.velocities,
+                    torques=source.torques,
+                ),
+                gripper=gripper,
+            )
+
+        left = arm(_LEFT_NAMES, value.left, value.left_gripper)
+        right = arm(_RIGHT_NAMES, value.right, value.right_gripper)
+        return ArxDCanDualArmState(
             left=left,
             right=right,
-            velocity=velocity,
-            mode="pv",
+            has_grippers=value.has_grippers,
+            timestamp_ns=value.timestamp_ns,
+            sequence=value.sequence,
         )
 
-    def estop(self, reason: str = "emergency stop") -> None:
-        """锁存双臂故障并尝试失能所有关节和夹爪。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        runtime.estop(reason)
-        self._sync_python_safety_flags(runtime.health)
+    def read_cached_state(self) -> ArxDCanDualArmState:
+        return self.read_state()
 
-    def recover(self) -> None:
-        """验证双通道、反馈、故障码和物理失能后只恢复到 READY。"""
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        state = runtime.health.state
-        if state is SafetyState.SAFE_HOLD:
-            runtime.disable()
-        elif state is SafetyState.FAULT:
-            runtime.disable()
-            runtime.recover()
-        elif state is not SafetyState.READY:
-            raise RuntimeError("dual arm can only recover from SAFE_HOLD or FAULT")
-        self._sync_python_safety_flags(runtime.health)
+    def get_pose(self, side: str) -> list[float]:
+        """返回指定手臂法兰位姿 [x, y, z, roll, pitch, yaw]。"""
+        return self._runtime.get_pose(_side(side))
 
-    def set_zero(
-        self,
-        *,
-        verify_tolerance: float = 0.02,
-        verify_velocity: float = 0.05,
-        verify_samples: int = 3,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """暂停共享 Runtime 后设置左右臂全部已安装电机的零点。"""
-        runtime = self._safety_runtime
-        group = self._controller_group
-        if runtime is None or group is None:
-            raise RuntimeError("dual-arm ArticoreRuntime is not connected")
-        self._sync_python_safety_flags(runtime.health)
-        if self.enabled:
-            raise RuntimeError("disable the dual arm before writing motor zero positions")
+    def get_pose_sample(self, side: str) -> ProductPose:
+        """返回位姿及其底层反馈时间戳和序列号。"""
+        return self._runtime.get_pose_sample(_side(side))
 
-        self._release_runtime()
-        try:
-            left = self.left.robot.set_zero(
-                joint_names=None,
-                verify_tolerance=verify_tolerance,
-                verify_velocity=verify_velocity,
-                verify_samples=verify_samples,
-            )
-            right = self.right.robot.set_zero(
-                joint_names=None,
-                verify_tolerance=verify_tolerance,
-                verify_velocity=verify_velocity,
-                verify_samples=verify_samples,
-            )
-        finally:
-            self._safety_runtime = self._create_safety_runtime(
-                group,
-                self.left._controller_for_parallel_batch(),
-                self.right._controller_for_parallel_batch(),
-            )
-        return left, right
-
-    def clear_motor_faults(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """清除左右臂全部已安装电机故障，并保持所有电机失能。
-
-        未连接时使用维护路径：只打开 Controller 和 Motor，不配置 MIT/PV、不创建
-        Runtime，清错完成后立即关闭。这样即使故障电机暂时不能写入控制模式，也能
-        先完成恢复。已经正常连接时则先释放 Runtime 租用，清错后重建 Runtime。
-        """
-        runtime = self._safety_runtime
-        group = self._controller_group
-        if runtime is None and group is None and not self.connected:
-            return self._clear_motor_faults_maintenance()
-        if runtime is None or group is None or not self.connected:
-            raise RuntimeError("dual-arm connection is incomplete")
-        self._release_runtime()
-        try:
-            left = self.left.robot.clear_errors(
-                joint_names=self.left._active_joint_names()
-            )
-            right = self.right.robot.clear_errors(
-                joint_names=self.right._active_joint_names()
-            )
-        finally:
-            self._safety_runtime = self._create_safety_runtime(
-                group,
-                self.left._controller_for_parallel_batch(),
-                self.right._controller_for_parallel_batch(),
-            )
-        for arm in (self.left, self.right):
-            with arm._state_lock:
-                arm._configured = True
-                arm._enabled = False
-                arm._faulted = False
-                arm._fault_reason = None
-                arm._safe_holding = False
-        return left, right
-
-    def _clear_motor_faults_maintenance(
-        self,
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """通过不配置控制模式的临时连接清除双臂电机故障。"""
-        arms = (("left", self.left), ("right", self.right))
-        opened: list[tuple[str, ArxDCanArm]] = []
-        results: dict[str, tuple[str, ...]] = {}
-        errors: list[str] = []
-        for label, arm in arms:
-            try:
-                arm.robot.connect()
-                opened.append((label, arm))
-            except Exception as exc:
-                errors.append(f"{label} maintenance connect failed: {exc}")
-        for label, arm in opened:
-            try:
-                results[label] = arm.robot.clear_errors(
-                    joint_names=arm._active_joint_names()
-                )
-            except Exception as exc:
-                errors.append(f"{label} motor fault clear failed: {exc}")
-        for label, arm in reversed(opened):
-            try:
-                arm.robot.disconnect(disable=False)
-            except Exception as exc:
-                errors.append(f"{label} maintenance close failed: {exc}")
-        if errors:
-            raise RuntimeError("dual-arm maintenance failed: " + "; ".join(errors))
-        return results["left"], results["right"]
-
-    def set_gripper_openings(
+    def set_grippers(
         self,
         *,
         left: float,
         right: float,
-        speed: float = 1000.0,
-        force_level: GripperForceLevel = GripperForceLevel.LEVEL_5,
+        gripper_level: int = 3,
     ) -> None:
-        """原子提交全部已安装夹爪的开合度、归一化速度和夹持力等级。"""
-        values = (float(left), float(right))
-        if any(not math.isfinite(value) for value in values):
-            raise ValueError("gripper openings must be finite")
-        values = tuple(max(0.0, min(1000.0, value)) for value in values)
-        normalized_speed = float(speed)
-        if not math.isfinite(normalized_speed) or not 0.0 < normalized_speed <= 1000.0:
-            raise ValueError("gripper speed must be finite and in (0, 1000]")
-        level = GripperForceLevel(force_level)
-        active = tuple(
-            (arm, value)
-            for arm, value in zip((self.left, self.right), values)
-            if arm.has_gripper
+        self._runtime.set_product_grippers(
+            left=left, right=right, gripper_level=gripper_level
         )
-        if not active:
-            raise RuntimeError("no active product gripper is configured")
-        runtime = self._safety_runtime
-        if runtime is None:
-            raise RuntimeError("dual-arm safety runtime is not connected")
-        commands = tuple(
-            GripperCommand(
-                motor=arm.robot._motor_map[arm.config.gripper.name],
-                opening=value,
-                speed=normalized_speed,
-                force_level=int(level),
-            )
-            for arm, value in active
-        )
-        runtime.set_grippers(commands)
+
+    def start_gravity_compensation(self, *, transition_ms: int = 0) -> None:
+        self._runtime.start_gravity_compensation(transition_ms=transition_ms)
+
+    def stop_gravity_compensation(self) -> None:
+        self._runtime.stop_gravity_compensation()
+
+    def estop(self, reason: str = "emergency stop") -> None:
+        self._runtime.estop(reason)
+
+    def recover(self) -> None:
+        self._runtime.recover()
+
+    def set_zero(self) -> bool:
+        """Zero every installed product motor and return verified success."""
+        return self._runtime.set_zero()
+
+    def clear_motor_faults(self) -> None:
+        self._runtime.clear_faults()
+
+    def close(self) -> None:
+        self._runtime.close()
+
+    def __enter__(self) -> ArxDCanDualArm:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
 
 __all__ = ["ArxDCanDualArm", "ArxDCanDualArmState"]

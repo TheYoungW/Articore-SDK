@@ -7,11 +7,21 @@ from arx_d_can import ArxDCanArm
 
 
 def test_runtime_supports_connect_feedback_barrier() -> None:
-    assert native_binding.get_version() == "0.10.14"
-    assert native_binding.articore_runtime_abi_version() == "2.8"
+    assert native_binding.get_version() == "0.10.21"
+    assert native_binding.articore_runtime_abi_version() == "2.15"
     capabilities = native_binding.articore_runtime_capabilities()
     assert capabilities["native_robot_model"]
     assert capabilities["native_gravity_compensation"]
+    assert capabilities["runtime_maintenance"]
+    assert capabilities["product_runtime_factory"]
+    assert capabilities["unified_operation_health"]
+    assert capabilities["product_command_frames"]
+    assert capabilities["product_state"]
+    assert capabilities["optional_product_grippers"]
+    assert capabilities["graded_feedback_safety"]
+    assert capabilities["normalized_ordinary_speed"]
+    assert capabilities["runtime_motor_power"]
+    assert capabilities["product_pose"]
     assert (
         native_binding.articore_runtime_capabilities()[
             "transport_aware_control_rate"
@@ -39,8 +49,6 @@ def test_public_runtime_reports_are_native_binding_types() -> None:
     assert arx_d_can.ConnectMotorResult is native_binding.ConnectMotorResult
     assert arx_d_can.SafetyHealth is native_binding.SafetyHealth
     assert arx_d_can.SafetyState is native_binding.SafetyState
-    assert arx_d_can.EnableReport is native_binding.EnableReport
-    assert arx_d_can.DisableReport is native_binding.DisableReport
     assert (
         arx_d_can.RuntimeTransactionError
         is native_binding.RuntimeTransactionError

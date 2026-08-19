@@ -1,7 +1,6 @@
 """ARX-D-CAN Python SDK。
 
-内置产品的运动学和动力学由 Motor Drive Layer 私有模型执行。导入
-``arx_d_can`` 时不加载系统 Pinocchio；自定义旧模型和旧笛卡尔轨迹接口采用延迟加载。
+内置产品的运动学和动力学由 Motor Drive Layer 私有模型执行，Python 只调用稳定 ABI。
 """
 from __future__ import annotations
 
@@ -25,14 +24,11 @@ from .sdk import (
     ArxDCanDualArm,
     ArxDCanDualArmState,
     ArxDCanState,
+    DualArmGripperState,
     ConnectChannelResult,
     ConnectErrorCode,
     ConnectMotorResult,
     ConnectReport,
-    DisableMotorResult,
-    DisableReport,
-    EnableMotorResult,
-    EnableReport,
     GravityCompensationPhase,
     GravityCompensationStatus,
     GravityProductBinding,
@@ -43,6 +39,8 @@ from .sdk import (
     JointMotorConfig,
     JointState,
     MotorDiagnostic,
+    MotorPowerState,
+    ProductPose,
     MotorState,
     RuntimeTransactionError,
     RuntimeTransportHealth,
@@ -74,32 +72,7 @@ del _public_error
 
 
 def __getattr__(name: str) -> Any:
-    if name in {
-        "DualArmGravityCompensationMode",
-        "DualArmGravityCompensationSample",
-    }:
-        from .controllers import (
-            DualArmGravityCompensationMode,
-            DualArmGravityCompensationSample,
-        )
-
-        return {
-            "DualArmGravityCompensationMode": DualArmGravityCompensationMode,
-            "DualArmGravityCompensationSample": DualArmGravityCompensationSample,
-        }[name]
-    if name in {"NativeArmModel", "NativeIkResult", "load_native_robot_model"}:
-        from .native_robotics import (
-            NativeArmModel,
-            NativeIkResult,
-            load_native_robot_model,
-        )
-
-        return {
-            "NativeArmModel": NativeArmModel,
-            "NativeIkResult": NativeIkResult,
-            "load_native_robot_model": load_native_robot_model,
-        }[name]
-    if name in {"actuator", "controllers", "dynamics", "kinematics", "trajectory"}:
+    if name == "actuator":
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -111,20 +84,15 @@ __all__ = [
     "ArxDCanDualArm",
     "ArxDCanDualArmState",
     "ArxDCanState",
+    "DualArmGripperState",
     "CommunicationError",
     "ConnectChannelResult",
     "ConnectErrorCode",
     "ConnectMotorResult",
     "ConnectReport",
-    "DisableMotorResult",
-    "DisableReport",
-    "EnableMotorResult",
-    "EnableReport",
     "GravityCompensationPhase",
     "GravityCompensationStatus",
     "GravityProductBinding",
-    "DualArmGravityCompensationMode",
-    "DualArmGravityCompensationSample",
     "FeedbackError",
     "FeedbackTimeoutError",
     "GripperState",
@@ -135,13 +103,13 @@ __all__ = [
     "JointState",
     "IncompleteFeedbackError",
     "MotorState",
+    "MotorPowerState",
+    "ProductPose",
     "RuntimeTransactionError",
     "RuntimeTransportHealth",
     "IkOptions",
     "IkResult",
     "JacobianReference",
-    "NativeArmModel",
-    "NativeIkResult",
     "NativeRobotModel",
     "RobotModelInfo",
     "RobotPose",
@@ -154,11 +122,6 @@ __all__ = [
     "UnexpectedMotorStateError",
     "actuator",
     "available_models",
-    "controllers",
     "default_config",
-    "dynamics",
-    "kinematics",
     "load_cfg",
-    "load_native_robot_model",
-    "trajectory",
 ]

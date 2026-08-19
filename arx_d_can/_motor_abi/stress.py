@@ -81,7 +81,7 @@ def run_dm_device_feedback_stress(
     data_bitrate: int = 5_000_000,
     iterations: int = 1_000,
     reconnect_cycles: int = 2,
-    timeout_ms: int = 50,
+    timeout_ms: int = 1000,
 ) -> dict[str, object]:
     """Run feedback-only load and same-process reconnect checks.
 
@@ -217,7 +217,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-bitrate", type=int, default=5_000_000)
     parser.add_argument("--iterations", type=int, default=1_000)
     parser.add_argument("--reconnect-cycles", type=int, default=2)
-    parser.add_argument("--timeout-ms", type=int, default=50)
+    parser.add_argument("--timeout-ms", type=int, default=1000)
     parser.add_argument("--output", type=Path)
     return parser
 

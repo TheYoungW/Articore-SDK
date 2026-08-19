@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import IntEnum
 from math import isfinite
 from pathlib import Path
+from types import TracebackType
 from typing import Sequence
 
 from .abi import articore_runtime_library_path
@@ -105,7 +106,11 @@ def _decode(value: bytes) -> str:
 class NativeRobotModel:
     """Private Runtime model through a stable Pinocchio-independent ABI."""
 
-    def __init__(self, product_id: str = "yunyi_v1_0", side: RobotSide | int = RobotSide.LEFT):
+    def __init__(
+        self,
+        product_id: str = "yunyi_v1_0",
+        side: RobotSide | int = RobotSide.LEFT,
+    ) -> None:
         runtime_path = Path(articore_runtime_library_path())
         # Pinocchio's required C++ template instances are embedded in the
         # Runtime library, so Python only loads the stable product ABI.
@@ -233,7 +238,13 @@ class NativeRobotModel:
             self._lib.articore_robot_model_free(self._ptr); self._ptr = None
 
     def __enter__(self) -> NativeRobotModel: return self
-    def __exit__(self, *_: object) -> None: self.close()
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
     def __del__(self) -> None:
         try: self.close()
         except Exception: pass

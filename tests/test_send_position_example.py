@@ -62,4 +62,4 @@ def test_main_uses_ordinary_position_interface(monkeypatch) -> None:
     assert captured["target"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 10, 20, 30, 40, 50))
     )
-    assert captured["velocity"] == pytest.approx(math.radians(60.0))
+    assert captured["velocity"] == 30.0

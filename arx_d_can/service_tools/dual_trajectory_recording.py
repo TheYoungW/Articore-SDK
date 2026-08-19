@@ -9,7 +9,6 @@ import time
 from typing import Literal, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..controllers.gravity_compensation import DualArmGravityCompensationMode
     from ..sdk.dual_arm import ArxDCanDualArm
 
 
@@ -46,9 +45,8 @@ def record(
     *,
     seconds: float,
     hz: float,
-    gravity_mode: DualArmGravityCompensationMode | None = None,
 ) -> tuple[list[float], list[DualArmTrajectorySample]]:
-    """按固定频率录制双臂反馈，可由双臂重力补偿同步推进。"""
+    """按固定频率录制双臂 Runtime 缓存反馈。"""
     duration = _duration(seconds)
     frequency = _frequency(hz)
     timestamps: list[float] = []
@@ -65,15 +63,12 @@ def record(
             time.sleep(remaining)
         if time.perf_counter() >= deadline:
             break
-        if gravity_mode is None:
-            state = robot.read_state()
-            left_positions = state.left.arm.positions
-            right_positions = state.right.arm.positions
-        else:
-            gravity_sample = gravity_mode.step()
-            state = robot.read_cached_state()
-            left_positions = gravity_sample.left.positions
-            right_positions = gravity_sample.right.positions
+        health = robot.safety_health
+        if health.safe_holding or health.fault_reason:
+            raise RuntimeError(health.fault_reason or "dual arm entered safe hold")
+        state = robot.read_cached_state()
+        left_positions = state.left.arm.positions
+        right_positions = state.right.arm.positions
         samples.append(
             DualArmTrajectorySample(
                 left_positions=tuple(left_positions),
@@ -208,10 +203,11 @@ def replay(
         raise ValueError("interpolation must be none, linear, or quintic")
     if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
         raise ValueError("timestamps must be strictly increasing")
-    if any(sample.left_gripper is not None for sample in samples) and not robot.left.has_gripper:
-        raise RuntimeError("trajectory requires an active left gripper")
-    if any(sample.right_gripper is not None for sample in samples) and not robot.right.has_gripper:
-        raise RuntimeError("trajectory requires an active right gripper")
+    if any(
+        sample.left_gripper is not None or sample.right_gripper is not None
+        for sample in samples
+    ) and not robot.has_grippers:
+        raise RuntimeError("trajectory requires the dual-arm gripper pair")
     replay_hz = float(robot._effective_control_hz)
     if not math.isfinite(replay_hz) or replay_hz <= 0.0:
         raise RuntimeError("Runtime returned an invalid control frequency")
@@ -248,9 +244,10 @@ def replay(
             time.sleep(remaining)
         _submit_raw_positions(robot, sample, velocity_limit=velocity_limit)
         if sample.left_gripper is not None or sample.right_gripper is not None:
-            robot.set_gripper_openings(
+            robot.set_grippers(
                 left=0.0 if sample.left_gripper is None else sample.left_gripper,
                 right=0.0 if sample.right_gripper is None else sample.right_gripper,
+                gripper_level=3,
             )
         if elapsed >= duration:
             return
@@ -265,31 +262,27 @@ def _submit_raw_positions(
     velocity_limit: float | None,
 ) -> None:
     """按机器人构造模式提交一帧 raw PV 或 raw MIT 双臂目标。"""
-    left_mode = str(robot.left._mode).lower()
-    right_mode = str(robot.right._mode).lower()
-    if left_mode != right_mode:
-        raise RuntimeError("left and right replay control modes must match")
-    kwargs = {
-        "left": sample.left_positions,
-        "right": sample.right_positions,
-    }
-    if left_mode in {"pv", "posvel"}:
+    mode = robot.control_mode
+    if mode == "pv":
         if (
             velocity_limit is None
             or not math.isfinite(velocity_limit)
             or velocity_limit <= 0.0
         ):
             raise ValueError("PV velocity_limit must be finite and positive")
-        kwargs["left_velocity_limits"] = (velocity_limit,) * len(
-            sample.left_positions
+        robot.submit_raw_pv(
+            left_positions=sample.left_positions,
+            right_positions=sample.right_positions,
+            left_velocity_limits=(velocity_limit,) * len(sample.left_positions),
+            right_velocity_limits=(velocity_limit,) * len(sample.right_positions),
         )
-        kwargs["right_velocity_limits"] = (velocity_limit,) * len(
-            sample.right_positions
+    elif mode == "mit":
+        robot.submit_raw_mit(
+            left_positions=sample.left_positions,
+            right_positions=sample.right_positions,
         )
-    elif left_mode != "mit":
+    else:
         raise RuntimeError("trajectory replay requires PV or MIT mode")
-    # MIT 不传高级字段时，SDK 使用 YAML Kp/Kd，并令 dq=0、tau_ff=0。
-    robot._submit_joint_positions(**kwargs)
 
 
 def interpolate_sample(

@@ -502,7 +502,7 @@ def _load_frames(trace_path: Path, control_hz: int):
 
 def _motor_stats(robot: ArxDCanDualArm) -> dict[str, Any]:
     output: dict[str, Any] = {}
-    for arm in (robot.left, robot.right):
+    for arm in (robot._left, robot._right):
         for name, motor in arm.robot._motor_map.items():
             state = motor.get_state()
             output[name] = {
@@ -544,9 +544,9 @@ def run(args: argparse.Namespace) -> int:
     # The product profile defaults to 500 Hz.  A/B replay must change both
     # inputs to the Runtime constructor before connect without editing the
     # installed product YAML between runs.
-    robot.left.config = replace(robot.left.config, control_hz=float(args.control_hz))
-    robot.right.config = replace(robot.right.config, control_hz=float(args.control_hz))
-    for arm in (robot.left, robot.right):
+    robot._left.config = replace(robot._left.config, control_hz=float(args.control_hz))
+    robot._right.config = replace(robot._right.config, control_hz=float(args.control_hz))
+    for arm in (robot._left, robot._right):
         arm.config = replace(
             arm.config,
             max_cached_feedback_age_s=args.feedback_max_age_ms / 1000.0,
@@ -607,12 +607,12 @@ def run(args: argparse.Namespace) -> int:
         right_origin = tuple(float(value) for value in targets[0][1])
         kp = None
         if args.j12_kp_scale != 1.0:
-            kp = [joint.mit_kp for joint in robot.right.config.arm_joints]
+            kp = [joint.mit_kp for joint in robot._right.config.arm_joints]
             kp[0] *= args.j12_kp_scale
             kp[1] *= args.j12_kp_scale
         kd = None
         if args.j12_kd_scale != 1.0:
-            kd = [joint.mit_kd for joint in robot.right.config.arm_joints]
+            kd = [joint.mit_kd for joint in robot._right.config.arm_joints]
             kd[0] *= args.j12_kd_scale
             kd[1] *= args.j12_kd_scale
         for index, frame in enumerate(run_frames):
@@ -669,7 +669,7 @@ def run(args: argparse.Namespace) -> int:
         try:
             if robot.connected:
                 robot.disable()
-                result["disable_report"] = _jsonable(robot.last_disable_report)
+                result["health_after_disable"] = _jsonable(robot.safety_health)
         except Exception as exc:
             result["disable_error"] = f"{type(exc).__name__}: {exc}"
         try:
@@ -742,7 +742,10 @@ def main() -> int:
     parser.add_argument("--control-hz", type=int, choices=(400, 500), default=500)
     parser.add_argument("--history-seconds", type=float, default=5.0)
     parser.add_argument("--start-timeout-s", type=float, default=15.0)
-    parser.add_argument("--start-velocity", type=float, default=0.15)
+    parser.add_argument(
+        "--start-velocity", type=float, default=5.0,
+        help="普通位置接口起步速度档位，范围 0～100",
+    )
     parser.add_argument("--j12-only", action="store_true")
     parser.add_argument("--preposition-only", action="store_true")
     parser.add_argument("--motion-scale", type=float, default=1.0)

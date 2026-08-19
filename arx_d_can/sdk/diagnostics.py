@@ -60,7 +60,7 @@ def mode_name(mode: int | None) -> str:
     return MODE_NAMES.get(mode, "UNSUPPORTED")
 
 
-def read_motor_diagnostics(arm, *, timeout_ms: int = 100) -> list[MotorDiagnostic]:
+def read_motor_diagnostics(arm, *, timeout_ms: int = 1000) -> list[MotorDiagnostic]:
     """从 Runtime 持续更新的缓存读取活动电机诊断信息。"""
     del timeout_ms  # Runtime 独占主动反馈和寄存器通信。
     if not arm.connected:

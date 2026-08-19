@@ -8,14 +8,8 @@ from arx_d_can import ArxDCanDualArm
 
 
 def main(args: argparse.Namespace) -> None:
-    robot = ArxDCanDualArm(left_gripper=False, right_gripper=False)
-    left_ids = robot.left.scan_ids(
-        start_id=args.start_id,
-        end_id=args.end_id,
-        model=args.model,
-        feedback_base=args.feedback_base,
-    )
-    right_ids = robot.right.scan_ids(
+    robot = ArxDCanDualArm()
+    left_ids, right_ids = robot.scan_ids(
         start_id=args.start_id,
         end_id=args.end_id,
         model=args.model,

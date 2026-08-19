@@ -1,33 +1,21 @@
 from __future__ import annotations
 
-import numpy as np
+import math
 
-from arx_d_can import dynamics
-
-
-def test_dynamics_namespace_exposes_only_native_model_facade() -> None:
-    assert set(dynamics.__all__) == {
-        "JacobianReference",
-        "NativeArmModel",
-        "NativeIkResult",
-        "RobotSide",
-        "load_native_robot_model",
-    }
-    assert not hasattr(dynamics, "compute_mass_matrix")
-    assert not hasattr(dynamics, "load_dynamics_model")
+from arx_d_can import NativeRobotModel, RobotSide
 
 
 def test_native_model_executes_rigid_body_dynamics_in_runtime() -> None:
-    with dynamics.load_native_robot_model("yunyi_v1_0_right") as model:
-        q = np.zeros(model.dof)
-        dq = np.zeros(model.dof)
-        torque = np.ones(model.dof)
+    with NativeRobotModel(side=RobotSide.RIGHT) as model:
+        q = [0.0] * model.info.dof
+        dq = [0.0] * model.info.dof
+        torque = [1.0] * model.info.dof
 
-        position, rotation, homogeneous = model.fk(q)
+        pose = model.fk(q)
         outputs = (
-            position,
-            rotation,
-            homogeneous,
+            pose.position,
+            pose.rotation,
+            pose.homogeneous,
             model.jacobian(q),
             model.gravity(q),
             model.mass_matrix(q),
@@ -37,7 +25,12 @@ def test_native_model_executes_rigid_body_dynamics_in_runtime() -> None:
             model.aba(q, dq, torque),
         )
 
-        assert position.shape == (3,)
-        assert rotation.shape == (3, 3)
-        assert homogeneous.shape == (4, 4)
-        assert all(np.all(np.isfinite(value)) for value in outputs)
+        assert len(pose.position) == 3
+        assert len(pose.rotation) == 3
+        assert len(pose.homogeneous) == 4
+        assert all(
+            math.isfinite(value)
+            for output in outputs
+            for row in output
+            for value in (row if isinstance(row, tuple) else (row,))
+        )

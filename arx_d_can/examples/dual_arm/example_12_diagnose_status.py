@@ -18,8 +18,7 @@ def main(args: argparse.Namespace) -> None:
         left = []
         right = []
         for sample in range(1, args.samples + 1):
-            left = robot.left.read_motor_diagnostics()
-            right = robot.right.read_motor_diagnostics()
+            left, right = robot.read_motor_diagnostics()
             print(f"\n--- 诊断数据 #{sample} ---")
             for label, diagnostics in (("左", left), ("右", right)):
                 for item in diagnostics:

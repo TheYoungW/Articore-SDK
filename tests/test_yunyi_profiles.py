@@ -2,10 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from arx_d_can import ArxDCanArm, available_models, load_cfg
+from arx_d_can import (
+    ArxDCanArm,
+    NativeRobotModel,
+    RobotSide,
+    available_models,
+    load_cfg,
+)
 from arx_d_can.actuator import arx_d_can as actuator_module
 from arx_d_can.driver import damiao_model_limits
-from arx_d_can.native_robotics import load_native_robot_model
 
 
 MODELS_DIR = Path(__file__).resolve().parents[1] / "arx_d_can" / "models"
@@ -219,16 +224,18 @@ def test_yunyi_profiles_take_authoritative_limits_from_native_model() -> None:
     for model in ("yunyi_v1_0_left", "yunyi_v1_0_right"):
         loaded = load_cfg(model=model)
         profile_joints = loaded["joints"][:7]
-        with load_native_robot_model(model) as native:
+        side = RobotSide.LEFT if model.endswith("_left") else RobotSide.RIGHT
+        with NativeRobotModel(side=side) as native:
+            info = native.info
             assert Path(loaded["urdf_path"]) == MODELS_DIR / "yunyi_v1_0.urdf"
-            assert tuple(joint.name for joint in profile_joints) == native.joint_names
+            assert tuple(joint.name for joint in profile_joints) == info.joint_names
             assert [joint.lower_limit for joint in profile_joints] == pytest.approx(
-                native.lower_position_limits
+                info.lower_limits
             )
             assert [joint.upper_limit for joint in profile_joints] == pytest.approx(
-                native.upper_position_limits
+                info.upper_limits
             )
-            assert loaded["end_effector_frame"] == native.end_effector_frame
+            assert loaded["end_effector_frame"] == info.end_effector_frame
         assert [joint.effort_limit for joint in profile_joints] == expected_efforts
         assert [joint.vlim for joint in profile_joints] == expected_velocities
 

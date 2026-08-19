@@ -6,7 +6,13 @@ import argparse
 
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.dual_arm.common import gripper_opening
-from arx_d_can.examples.gripper_arguments import add_gripper_profile_arguments
+
+
+def _gripper_level(text: str) -> int:
+    value = int(text)
+    if not 1 <= value <= 5:
+        raise argparse.ArgumentTypeError("gripper level must be in 1..5")
+    return value
 
 
 def main(args: argparse.Namespace) -> None:
@@ -15,16 +21,15 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
     try:
         robot.enable()
-        robot.set_gripper_openings(
+        robot.set_grippers(
             left=args.left_gripper,
             right=args.right_gripper,
-            speed=args.speed,
-            force_level=args.force_level,
+            gripper_level=args.gripper_level,
         )
         print(
             f"夹爪目标已设置：left={args.left_gripper:g}, "
-            f"right={args.right_gripper:g}, speed={args.speed:g}, "
-            f"force_level={int(args.force_level)}"
+            f"right={args.right_gripper:g}, "
+            f"gripper_level={args.gripper_level}"
         )
         input("按回车退出并失能...")
     finally:
@@ -46,7 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=gripper_opening,
         help="右夹爪开合度，0=闭合，1000=打开",
     )
-    add_gripper_profile_arguments(parser)
+    parser.add_argument(
+        "--gripper-level",
+        type=_gripper_level,
+        default=3,
+        help="夹持力等级 1..5；默认 3",
+    )
     return parser
 
 

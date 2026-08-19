@@ -8,7 +8,7 @@ import math
 from arx_d_can import ArxDCanArm
 from arx_d_can.examples.single_arm.common import (
     add_connection_arguments,
-    positive_velocity_degrees,
+    speed_percent,
 )
 
 
@@ -49,9 +49,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--velocity",
-        type=positive_velocity_degrees,
-        default=math.radians(60.0),
-        help="统一最大参考速度，单位为度/秒；默认 60",
+        type=speed_percent,
+        default=30.0,
+        help="统一速度档位，范围 0～100；默认 30",
     )
     add_connection_arguments(parser)
     main(parser.parse_args())

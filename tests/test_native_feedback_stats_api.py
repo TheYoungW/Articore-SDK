@@ -12,6 +12,7 @@ from arx_d_can._motor_abi.abi import (
     CTransportCapabilities,
     CTransportCapabilitiesV2,
     CTransportHealth,
+    DEFAULT_IO_TIMEOUT_MS,
 )
 from arx_d_can._motor_abi.core import Controller, Motor
 from arx_d_can._motor_abi.errors import (
@@ -160,6 +161,18 @@ def test_controller_requests_fresh_feedback_with_one_deadline() -> None:
     controller.request_feedback_all(75)
 
     assert controller._abi.lib.batch_feedback_calls == [(123, 75)]
+
+
+def test_controller_uses_sdk_wide_default_io_timeout() -> None:
+    controller = Controller.__new__(Controller)
+    controller._abi = FakeAbi()
+    controller._ptr = 123
+    controller._feedback_motor_count = 8
+
+    controller.request_feedback_all()
+
+    assert DEFAULT_IO_TIMEOUT_MS == 1000
+    assert controller._abi.lib.batch_feedback_calls == [(123, 1000)]
 
 
 def test_controller_raises_structured_incomplete_feedback(monkeypatch) -> None:

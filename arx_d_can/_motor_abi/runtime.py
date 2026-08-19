@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import ctypes
 from collections.abc import Sequence
-from threading import RLock
+from threading import Event, RLock, Thread
+from types import TracebackType
 
 from ._runtime_abi import (
     CConnectReport,
@@ -20,11 +21,14 @@ from ._runtime_abi import (
     CMotorIdentity,
     CMitCommand,
     CPosVelCommand,
+    CProductPose,
+    CProductState,
     CRuntimeConfig,
     CRuntimeMotorDescriptor,
     CRuntimeTransportCapabilities,
     CRuntimeTransportHealth,
     CSafetyHealth,
+    CSafetyHealthV2,
     get_runtime_abi,
 )
 from .core import Controller, ControllerGroup, Motor
@@ -53,8 +57,15 @@ from .runtime_models import (
     JointSafetyLimits,
     MitTorqueLimitJointStats,
     MitTorqueLimitStats,
+    MotorPowerState,
     RuntimeConfig,
     RuntimeControlMode,
+    RuntimeOperation,
+    OperationError,
+    ProductArmState,
+    ProductGripperState,
+    ProductPose,
+    ProductState,
     RuntimeMitCommand,
     RuntimeMotor,
     RuntimePvCommand,
@@ -146,6 +157,9 @@ class ArticoreRuntime:
             controller_group._validate_motor(item.motor)
 
         self._lock = RLock()
+        self._fps = 0.0
+        self._fps_stop = Event()
+        self._fps_thread: Thread | None = None
         self._ptr: int | None = None
         self._runtime_abi = get_runtime_abi()
         self._group = controller_group
@@ -153,6 +167,8 @@ class ArticoreRuntime:
         self._motors = values
         self._motor_set = {id(item.motor): item.motor for item in values}
         self._leases: list[object] = []
+        self._product_owned = False
+        self._control_mode: RuntimeControlMode | None = None
 
         native_config = CRuntimeConfig(
             int(config.control_hz), int(config.command_timeout_ms),
@@ -180,6 +196,7 @@ class ArticoreRuntime:
                 resource._acquire_runtime_lease()
                 self._leases.append(resource)
             self._motor_api = self._runtime_abi.motor_api()
+            self._maintenance_api = self._runtime_abi.maintenance_api()
             motor_lib = self._runtime_abi.motor.lib
             create_arguments = (
                 ctypes.byref(native_config), ctypes.byref(self._motor_api),
@@ -208,9 +225,22 @@ class ArticoreRuntime:
                     output.can_fd = int(capabilities.can_fd)
                     output.can_fd_brs = int(capabilities.can_fd_brs)
                     output.transport = encoded_transport
-                pointer = self._runtime_abi.lib.articore_runtime_create_ex2(
-                    *create_arguments, native_transports, len(native_transports)
-                )
+                if self._runtime_abi.has_owner_safe_maintenance:
+                    pointer = self._runtime_abi.lib.articore_runtime_create_ex3(
+                        ctypes.byref(native_config), ctypes.byref(self._motor_api),
+                        ctypes.byref(self._maintenance_api),
+                        controller_group._require_open(),
+                        left_controller._require_open() if left_controller else None,
+                        right_controller._require_open() if right_controller else None,
+                        native_motors, len(values),
+                        ctypes.cast(motor_lib.motor_controller_enable_all, ctypes.c_void_p),
+                        ctypes.cast(motor_lib.motor_handle_enable, ctypes.c_void_p),
+                        native_transports, len(native_transports),
+                    )
+                else:
+                    pointer = self._runtime_abi.lib.articore_runtime_create_ex2(
+                        *create_arguments, native_transports, len(native_transports)
+                    )
             else:
                 pointer = self._runtime_abi.lib.articore_runtime_create_ex(
                     *create_arguments
@@ -241,6 +271,40 @@ class ArticoreRuntime:
                 self._ptr = None
             self._release_leases()
             raise
+
+    @classmethod
+    def create_product(
+        cls,
+        product_id: str,
+        control_mode: RuntimeControlMode,
+        with_grippers: bool = True,
+    ) -> ArticoreRuntime:
+        """创建完全由 C++ 拥有资源和产品配置的整机 Runtime。"""
+        mode = RuntimeControlMode(control_mode)
+        runtime_abi = get_runtime_abi()
+        pointer = runtime_abi.lib.articore_runtime_create_product(
+            _fixed_text(product_id, "product_id"), int(mode),
+            int(bool(with_grippers)),
+        )
+        if not pointer:
+            detail = runtime_abi.lib.articore_runtime_last_error()
+            text = detail.decode(errors="replace") if detail else "unknown error"
+            raise RuntimeCallError(f"create_product failed: {text}")
+        self = cls.__new__(cls)
+        self._lock = RLock()
+        self._fps = 0.0
+        self._fps_stop = Event()
+        self._fps_thread = None
+        self._ptr = pointer
+        self._runtime_abi = runtime_abi
+        self._group = None
+        self._controllers = ()
+        self._motors = ()
+        self._motor_set = {}
+        self._leases = []
+        self._product_owned = True
+        self._control_mode = mode
+        return self
 
     @property
     def closed(self) -> bool:
@@ -280,6 +344,68 @@ class ArticoreRuntime:
         )
         return int(value.value)
 
+    def get_fps(self) -> float:
+        """立即返回最近一个 0.1 秒窗口计算出的接收帧率。"""
+        return float(self._fps)
+
+    def _received_frame_count(self) -> int:
+        health = self.health
+        return int(health.left_transport.rx_frames) + int(
+            health.right_transport.rx_frames
+        )
+
+    def _start_fps_monitor(self) -> None:
+        thread = self._fps_thread
+        if thread is not None and thread.is_alive():
+            return
+        self._fps = 0.0
+        self._fps_stop = Event()
+        stop = self._fps_stop
+        try:
+            previous: int | None = self._received_frame_count()
+        except Exception:
+            previous = None
+
+        def monitor() -> None:
+            nonlocal previous
+            while not stop.wait(0.1):
+                try:
+                    current = self._received_frame_count()
+                except Exception:
+                    previous = None
+                    continue
+                if stop.is_set():
+                    break
+                if previous is not None:
+                    self._fps = float(max(0, current - previous) * 10)
+                previous = current
+
+        self._fps_thread = Thread(
+            target=monitor,
+            name="articore-runtime-fps",
+            daemon=True,
+        )
+        self._fps_thread.start()
+
+    def _stop_fps_monitor(self) -> None:
+        thread = self._fps_thread
+        if thread is None:
+            self._fps = 0.0
+            return
+        self._fps_stop.set()
+        thread.join(timeout=0.5)
+        self._fps_thread = None
+        self._fps = 0.0
+
+    @property
+    def control_mode(self) -> RuntimeControlMode:
+        value = ctypes.c_int32()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_control_mode,
+            "get_control_mode", ctypes.byref(value),
+        )
+        return RuntimeControlMode(value.value)
+
     @property
     def mit_torque_limit_stats(self) -> MitTorqueLimitStats:
         native = CMitTorqueLimitStats()
@@ -291,11 +417,18 @@ class ArticoreRuntime:
         motors_by_pointer = {
             self._motor_pointer(item.motor): item.motor for item in self._motors
         }
+        product_names = tuple(
+            f"{side}/{prefix}-joint{index}"
+            for side, prefix in (("left", "l"), ("right", "r"))
+            for index in range(1, 8)
+        )
         count = min(int(native.joint_count), len(native.joints))
         joints = []
         for index in range(count):
             pointer = int(native.joints[index] or 0)
             motor = motors_by_pointer.get(pointer)
+            if motor is None and self._product_owned and index < len(product_names):
+                motor = product_names[index]
             if motor is None:
                 raise RuntimeCallError(
                     "MIT torque limit stats returned an unknown motor handle"
@@ -404,14 +537,21 @@ class ArticoreRuntime:
             self._runtime_abi.lib.articore_runtime_get_gravity_compensation_status,
             "get_gravity_compensation_status", ctypes.byref(native),
         )
-        motors_by_pointer = {
-            self._motor_pointer(item.motor): item.motor for item in self._motors
-        }
         count = min(int(native.joint_count), len(native.joints))
-        joints = tuple(
-            motors_by_pointer[int(native.joints[index] or 0)]
-            for index in range(count)
-        )
+        if self._product_owned:
+            joints = tuple(
+                f"{side}/{prefix}-joint{index}"
+                for side, prefix in (("left", "l"), ("right", "r"))
+                for index in range(1, 8)
+            )[:count]
+        else:
+            motors_by_pointer = {
+                self._motor_pointer(item.motor): item.motor for item in self._motors
+            }
+            joints = tuple(
+                motors_by_pointer[int(native.joints[index] or 0)]
+                for index in range(count)
+            )
         return GravityCompensationStatus(
             phase=GravityCompensationPhase(native.phase),
             active=bool(native.active),
@@ -460,7 +600,8 @@ class ArticoreRuntime:
                 raise RuntimeTransactionError(
                     f"connect failed: {failure}", report
                 )
-            return report
+        self._start_fps_monitor()
+        return report
 
     def last_connect_report(self) -> ConnectReport:
         native = CConnectReport()
@@ -509,20 +650,70 @@ class ArticoreRuntime:
             error=_optional_text(native.error),
         )
 
-    def enable(self, mode: RuntimeControlMode) -> EnableReport:
+    def enable(
+        self,
+        mode: RuntimeControlMode | None = None,
+        *,
+        motor: str | None = None,
+    ) -> bool:
+        if motor is not None:
+            return self.set_motor_enabled(motor, True)
+        try:
+            selected = self._control_mode if mode is None else RuntimeControlMode(mode)
+        except ValueError as error:
+            raise RuntimeTransactionError(
+                "enable failed: control mode must be PV or MIT",
+                self._last_enable_report(),
+            ) from error
+        if selected is None:
+            raise ValueError("control mode is required for a generic Runtime")
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_enable(
-                self._require_open(), int(mode)
+                self._require_open(), int(selected)
             ))
-            failure = self._last_error() if rc != 0 else None
-            report = self.last_enable_report()
             if rc != 0:
                 raise RuntimeTransactionError(
-                    f"enable failed: {failure}", report
+                    f"enable failed: {self._last_error()}",
+                    self._last_enable_report(),
                 )
-            return report
+        return True
 
-    def last_enable_report(self) -> EnableReport:
+    def set_motor_enabled(self, motor: str | None, enabled: bool) -> bool:
+        """Set one motor, or all motors when ``motor`` is ``None``.
+
+        Stable product selectors are ``left/joint1`` through
+        ``left/joint7``, ``right/joint1`` through ``right/joint7``, and the
+        optional ``left/gripper`` / ``right/gripper`` roles.
+        """
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be bool")
+        encoded = None if motor is None else _fixed_text(motor, "motor")
+        confirmed = ctypes.c_int32()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_motor_power,
+            "set_motor_power", encoded, int(enabled), ctypes.byref(confirmed),
+        )
+        expected = (
+            MotorPowerState.ENABLED if enabled else MotorPowerState.DISABLED
+        )
+        return MotorPowerState(confirmed.value) is expected
+
+    def motor_power_state(self, motor: str | None = None) -> MotorPowerState:
+        encoded = None if motor is None else _fixed_text(motor, "motor")
+        state = ctypes.c_int32()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_motor_power,
+            "get_motor_power", encoded, ctypes.byref(state),
+        )
+        return MotorPowerState(state.value)
+
+    def is_enabled(self, motor: str | None = None) -> bool:
+        return self.motor_power_state(motor) is MotorPowerState.ENABLED
+
+    def is_disabled(self, motor: str | None = None) -> bool:
+        return self.motor_power_state(motor) is MotorPowerState.DISABLED
+
+    def _last_enable_report(self) -> EnableReport:
         native = CEnableReport()
         native.struct_size = ctypes.sizeof(CEnableReport)
         self._call(
@@ -548,17 +739,17 @@ class ArticoreRuntime:
         )
 
     def set_joint_mit(
-        self, targets: Sequence[JointPositionTarget], velocity: float
+        self, targets: Sequence[JointPositionTarget], speed: float
     ) -> None:
-        self._set_joint_targets("mit", targets, velocity)
+        self._set_joint_targets("mit", targets, speed)
 
     def set_joint_pv(
-        self, targets: Sequence[JointPositionTarget], velocity: float
+        self, targets: Sequence[JointPositionTarget], speed: float
     ) -> None:
-        self._set_joint_targets("pv", targets, velocity)
+        self._set_joint_targets("pv", targets, speed)
 
     def _set_joint_targets(
-        self, mode: str, targets: Sequence[JointPositionTarget], velocity: float
+        self, mode: str, targets: Sequence[JointPositionTarget], speed: float
     ) -> None:
         values = tuple(targets)
         native = (CJointTarget * len(values))()
@@ -568,7 +759,7 @@ class ArticoreRuntime:
             output.target_position = float(target.position)
         self._call(
             getattr(self._runtime_abi.lib, f"articore_runtime_set_joint_{mode}"),
-            f"set_joint_{mode}", native if values else None, len(values), float(velocity),
+            f"set_joint_{mode}", native if values else None, len(values), float(speed),
         )
 
     def submit_mit(
@@ -614,18 +805,19 @@ class ArticoreRuntime:
         self._call(self._runtime_abi.lib.articore_runtime_report_feedback_failure,
                    "report_feedback_failure", side, reason.encode())
 
-    def disable(self) -> DisableReport:
+    def disable(self, *, motor: str | None = None) -> bool:
+        if motor is not None:
+            return self.set_motor_enabled(motor, False)
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_disable(self._require_open()))
-            failure = self._last_error() if rc != 0 else None
-            report = self.last_disable_report()
             if rc != 0:
                 raise RuntimeTransactionError(
-                    f"disable failed: {failure}", report
+                    f"disable failed: {self._last_error()}",
+                    self._last_disable_report(),
                 )
-            return report
+        return True
 
-    def last_disable_report(self) -> DisableReport:
+    def _last_disable_report(self) -> DisableReport:
         native = CDisableReport()
         native.struct_size = ctypes.sizeof(CDisableReport)
         self._call(self._runtime_abi.lib.articore_runtime_get_last_disable_report,
@@ -657,21 +849,173 @@ class ArticoreRuntime:
     def recover(self) -> None:
         self._call(self._runtime_abi.lib.articore_runtime_recover, "recover")
 
+    def configure_mode(self, mode: RuntimeControlMode) -> None:
+        selected = RuntimeControlMode(mode)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_configure_mode,
+            "configure_mode", int(selected),
+        )
+        self._control_mode = selected
+
+    def disconnect(self) -> None:
+        self._stop_fps_monitor()
+        try:
+            self._call(
+                self._runtime_abi.lib.articore_runtime_disconnect,
+                "disconnect",
+            )
+        except Exception:
+            self._start_fps_monitor()
+            raise
+
+    def set_joint_positions(
+        self, positions: Sequence[float], speed: float = 100.0
+    ) -> None:
+        values = tuple(float(value) for value in positions)
+        native = (ctypes.c_float * len(values))(*values)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_joint_positions,
+            "set_joint_positions", native, len(values),
+            float(speed),
+        )
+
+    def submit_mit_frame(
+        self,
+        positions: Sequence[float],
+        velocities: Sequence[float] | None = None,
+        feedforward_torques: Sequence[float] | None = None,
+        kp: Sequence[float] | None = None,
+        kd: Sequence[float] | None = None,
+    ) -> None:
+        q = tuple(float(value) for value in positions)
+        def optional(source: Sequence[float] | None):
+            if source is None:
+                return None
+            values = tuple(float(value) for value in source)
+            return (ctypes.c_float * len(values))(*values)
+        native_q = (ctypes.c_float * len(q))(*q)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_submit_mit_frame,
+            "submit_mit_frame", native_q, optional(velocities),
+            optional(feedforward_torques), optional(kp), optional(kd), len(q),
+        )
+
+    def submit_pv_frame(
+        self, positions: Sequence[float], velocity_limits: Sequence[float]
+    ) -> None:
+        q = tuple(float(value) for value in positions)
+        v = tuple(float(value) for value in velocity_limits)
+        native_q = (ctypes.c_float * len(q))(*q)
+        native_v = (ctypes.c_float * len(v))(*v)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_submit_pv_frame,
+            "submit_pv_frame", native_q, native_v, len(q),
+        )
+
+    def set_product_grippers(
+        self, *, left: float, right: float, gripper_level: int = 3
+    ) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_grippers,
+            "set_product_grippers", float(left), float(right), int(gripper_level),
+        )
+
+    @property
+    def has_grippers(self) -> bool:
+        value = ctypes.c_int32()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_has_grippers,
+            "has_grippers", ctypes.byref(value),
+        )
+        return bool(value.value)
+
+    @property
+    def state(self) -> ProductState:
+        native = CProductState()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_state,
+            "get_state", ctypes.byref(native),
+        )
+        def arm(value) -> ProductArmState:
+            return ProductArmState(
+                tuple(float(item) for item in value.positions),
+                tuple(float(item) for item in value.velocities),
+                tuple(float(item) for item in value.torques),
+            )
+        def gripper(available, opening, level) -> ProductGripperState | None:
+            if not available:
+                return None
+            return ProductGripperState(
+                True, float(opening), int(level),
+            )
+        return ProductState(
+            bool(native.has_grippers),
+            arm(native.left), arm(native.right),
+            gripper(
+                native.left_gripper_available,
+                native.left_gripper_opening,
+                native.left_gripper_level,
+            ),
+            gripper(
+                native.right_gripper_available,
+                native.right_gripper_opening,
+                native.right_gripper_level,
+            ),
+            int(native.timestamp_ns), int(native.sequence),
+        )
+
+    def get_pose_sample(self, side: int) -> ProductPose:
+        if side not in (0, 1):
+            raise ValueError("side must be 0 (left) or 1 (right)")
+        native = CProductPose()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_pose,
+            "get_pose", int(side), ctypes.byref(native),
+        )
+        values = tuple(float(value) for value in native.values)
+        return ProductPose(
+            side=int(native.side),
+            values=values,  # type: ignore[arg-type]
+            timestamp_ns=int(native.timestamp_ns),
+            sequence=int(native.sequence),
+        )
+
+    def get_pose(self, side: int) -> list[float]:
+        """Return cached flange pose as [x, y, z, roll, pitch, yaw]."""
+        return list(self.get_pose_sample(side).values)
+
+    def clear_faults(self) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_clear_faults,
+            "clear_faults",
+        )
+
+    def set_zero(self) -> bool:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_zero,
+            "set_zero",
+        )
+        return True
+
     @property
     def health(self) -> SafetyHealth:
-        native = CSafetyHealth()
-        self._call(self._runtime_abi.lib.articore_runtime_get_health,
+        native = CSafetyHealthV2()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(self._runtime_abi.lib.articore_runtime_get_health_v2,
                    "get_health", ctypes.byref(native))
-        gripper_count = min(int(native.gripper_count), 2)
+        value = native.health
+        gripper_count = min(int(value.gripper_count), 2)
         return SafetyHealth(
-            state=SafetyState(native.state), safe_holding=bool(native.safe_holding),
-            disable_confirmed=bool(native.disable_confirmed),
-            last_successful_command_age_ns=_optional_age(native.last_successful_command_age_ns),
-            last_fresh_feedback_age_ns=_optional_age(native.last_fresh_feedback_age_ns),
-            consecutive_send_failures=int(native.consecutive_send_failures),
-            consecutive_feedback_failures=int(native.consecutive_feedback_failures),
-            left_transport=_transport_health(native.left_transport),
-            right_transport=_transport_health(native.right_transport),
+            state=SafetyState(value.state), safe_holding=bool(value.safe_holding),
+            disable_confirmed=bool(value.disable_confirmed),
+            last_successful_command_age_ns=_optional_age(value.last_successful_command_age_ns),
+            last_fresh_feedback_age_ns=_optional_age(value.last_fresh_feedback_age_ns),
+            consecutive_send_failures=int(value.consecutive_send_failures),
+            consecutive_feedback_failures=int(value.consecutive_feedback_failures),
+            left_transport=_transport_health(value.left_transport),
+            right_transport=_transport_health(value.right_transport),
             grippers=tuple(GripperHealth(
                 available=bool(item.available), side=int(item.side),
                 control_state=GripperControlState(item.control_state),
@@ -681,42 +1025,65 @@ class ArticoreRuntime:
                 hold_target=float(item.hold_target) if item.has_hold_target else None,
                 feedback_age_ns=_optional_age(item.feedback_age_ns),
                 name=_text(item.name), fault_reason=_optional_text(item.fault_reason),
-            ) for item in native.grippers[:gripper_count]),
-            motor_faults=tuple(_text(native.motor_faults[i])
-                               for i in range(min(int(native.motor_fault_count), 32))),
-            unconfirmed_disable=tuple(_text(native.unconfirmed_disable[i])
-                                      for i in range(min(int(native.unconfirmed_disable_count), 32))),
-            fault_reason=_optional_text(native.fault_reason),
+            ) for item in value.grippers[:gripper_count]),
+            motor_faults=tuple(_text(value.motor_faults[i])
+                               for i in range(min(int(value.motor_fault_count), 32))),
+            unconfirmed_disable=tuple(_text(value.unconfirmed_disable[i])
+                                      for i in range(min(int(value.unconfirmed_disable_count), 32))),
+            fault_reason=_optional_text(value.fault_reason),
+            last_operation=RuntimeOperation(native.last_operation),
+            last_operation_code=OperationError(native.last_operation_code),
+            operation_failed_motors=tuple(
+                _text(native.operation_failed_motors[i])
+                for i in range(min(int(native.operation_failed_motor_count), 32))
+            ),
+            last_operation_error=_optional_text(native.last_operation_error),
+            degraded=bool(native.degraded),
+            safe_stopped=bool(native.safe_stopped),
+            requires_resynchronization=bool(native.requires_resynchronization),
+            command_scale=float(native.command_scale),
+            safety_reason=_optional_text(native.safety_reason),
         )
 
     def close(self) -> None:
-        with self._lock:
-            if not self._ptr:
-                return
-            rc = int(self._runtime_abi.lib.articore_runtime_close(self._ptr))
-            failure = self._last_error() if rc != 0 else None
-            if rc != 0:
-                try:
-                    report = self.last_disable_report()
-                except Exception:
-                    report = DisableReport(False, False, 0, 0, 0, 1, 0, (), (), self._last_error())
-                # A failed native close means physical disable was not
-                # confirmed. Keep the native Runtime and every acquired lease
-                # alive so callers can inspect the report and retry close;
-                # releasing the group/controllers here would violate the
-                # deterministic-close ownership barrier.
-                raise RuntimeTransactionError(
-                    f"close failed: {failure}", report
-                )
-            self._runtime_abi.lib.articore_runtime_free(self._ptr)
-            self._ptr = None
-            self._release_leases()
+        self._stop_fps_monitor()
+        try:
+            with self._lock:
+                if not self._ptr:
+                    return
+                rc = int(self._runtime_abi.lib.articore_runtime_close(self._ptr))
+                failure = self._last_error() if rc != 0 else None
+                if rc != 0:
+                    try:
+                        report = self._last_disable_report()
+                    except Exception:
+                        report = DisableReport(False, False, 0, 0, 0, 1, 0, (), (), self._last_error())
+                    # A failed native close means physical disable was not
+                    # confirmed. Keep the native Runtime and every acquired lease
+                    # alive so callers can inspect the report and retry close;
+                    # releasing the group/controllers here would violate the
+                    # deterministic-close ownership barrier.
+                    raise RuntimeTransactionError(
+                        f"close failed: {failure}", report
+                    )
+                self._runtime_abi.lib.articore_runtime_free(self._ptr)
+                self._ptr = None
+                self._release_leases()
+        except Exception:
+            if self._ptr:
+                self._start_fps_monitor()
+            raise
 
     def __enter__(self) -> ArticoreRuntime:
         self._require_open()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         self.close()
 
     def __del__(self) -> None:

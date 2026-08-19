@@ -53,8 +53,7 @@ python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
 python -m arx_d_can.examples.dual_arm.example_08_set_gripper_openings \
   --left-gripper 1000 \
   --right-gripper 500 \
-  --speed 1000 \
-  --force-level 5
+  --gripper-level 3
 
 python -m arx_d_can.examples.dual_arm.example_15_gravity_compensation
 
@@ -70,13 +69,12 @@ python -m arx_d_can.examples.dual_arm.example_17_replay_trajectory \
 ```
 
 PV 和 MIT 位置示例都调用 C++ Runtime 的普通位置接口，不在 Python 中插值。
-MIT 目标速度和前馈力矩均为零，Kp/Kd 读取机型 YAML。两种模式的 `--velocity`
-都是必须填写的统一实际速度，命令行单位为度/秒；SDK 转为 rad/s 后一次提交完整
-双臂目标。Runtime 在内部控制周期中限步，新值覆盖旧的最终目标且不会排队。普通 MIT
-的产品级速度范围为 `(0, 200]` 度/秒；URDF/YAML `vlim` 仍作为更底层的绝对上限。
+MIT 目标速度和前馈力矩均为零，Kp/Kd 读取产品配置。两种模式的 `--velocity`
+都是 `0～100` 的统一速度档位；Runtime 在 C++ 内换算物理速度并按控制周期限步，新值
+覆盖旧的最终目标且不会排队。`0` 暂停，`100` 对应当前产品和模式的最大普通速度。
 夹爪开合度必须显式填写，范围为 0～1000；0 表示闭合，1000 表示打开。
-`--speed` 范围为 `(0, 1000]`，默认 1000；`--force-level` 范围为 1～10，
-默认 5，10 最强。
+`--gripper-level` 范围为 1～5，默认 3，5 最强。速度和电机控制参数由 Runtime
+产品配置固定管理。
 
 示例 06/07 的限步、固定频率发送、通信检查和最终位置保持均由 C++ Runtime 处理；
 调用本身非阻塞。SDK 不再公开第二套关节轨迹执行接口。

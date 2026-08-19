@@ -6,7 +6,7 @@ import argparse
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import joint_degrees, mit_velocity_degrees
+from arx_d_can.examples.dual_arm.common import joint_degrees, speed_percent
 
 
 def main(args: argparse.Namespace) -> None:
@@ -37,9 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--right", required=True, help="右臂 7 个关节角度，单位为度")
     parser.add_argument(
         "--velocity",
-        type=mit_velocity_degrees,
+        type=speed_percent,
         required=True,
-        help="双臂统一最大参考速度，单位为度/秒，范围 (0, 200]",
+        help="双臂统一速度档位，范围 0～100",
     )
     return parser
 

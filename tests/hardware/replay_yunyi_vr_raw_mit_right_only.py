@@ -55,7 +55,10 @@ def main() -> int:
     )
     parser.add_argument("--trace", type=Path, default=DEFAULT_TRACE)
     parser.add_argument("--control-hz", type=int, choices=(400, 500), default=500)
-    parser.add_argument("--start-velocity", type=float, default=0.15)
+    parser.add_argument(
+        "--start-velocity", type=float, default=5.0,
+        help="普通位置接口起步速度档位，范围 0～100",
+    )
     parser.add_argument("--start-timeout-s", type=float, default=25.0)
     parser.add_argument(
         "--output",
@@ -119,7 +122,7 @@ def main() -> int:
         try:
             if robot.connected:
                 robot.disable()
-                result["disable_report"] = _jsonable(robot.last_disable_report)
+                result["health_after_disable"] = _jsonable(robot.safety_health)
         except Exception as exc:
             result["disable_error"] = f"{type(exc).__name__}: {exc}"
         try:

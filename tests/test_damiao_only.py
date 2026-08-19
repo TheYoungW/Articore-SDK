@@ -58,7 +58,7 @@ def test_mit_mode_accepts_matching_register_after_fast_ack_timeout(
             raise CallError("register write ack timed out")
 
         def get_register_u32(self, rid, *, timeout_ms):
-            assert (rid, timeout_ms) == (10, 200)
+            assert (rid, timeout_ms) == (10, 1000)
             self.reads += 1
             return 1
 
@@ -86,7 +86,7 @@ def test_mit_mode_rejects_mismatched_register_after_write_error(
 
         @staticmethod
         def get_register_u32(_rid, *, timeout_ms):
-            assert timeout_ms == 200
+            assert timeout_ms == 1000
             return 2
 
     joint = JointCfg(
@@ -109,7 +109,7 @@ def test_mit_mode_rejects_failed_register_readback(monkeypatch) -> None:
 
         @staticmethod
         def get_register_u32(_rid, *, timeout_ms):
-            assert timeout_ms == 200
+            assert timeout_ms == 1000
             raise CallError("register read timed out")
 
     joint = JointCfg(

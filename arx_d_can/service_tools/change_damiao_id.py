@@ -243,7 +243,7 @@ if __name__ == "__main__":
     parser.add_argument("--new-feedback-id", default=None, help="New MST_ID; default feedback_base + new_id")
     parser.add_argument("--feedback-base", default="0x10")
     parser.add_argument("--model", default="4310", help="Damiao motor model for the target motor")
-    parser.add_argument("--timeout-ms", type=int, default=100)
+    parser.add_argument("--timeout-ms", type=int, default=1000)
     parser.add_argument("--scan-start-id", type=int, default=1)
     parser.add_argument("--scan-end-id", type=int, default=30)
     parser.add_argument("--skip-scan", action="store_true", help="Skip pre-write scan safety checks")

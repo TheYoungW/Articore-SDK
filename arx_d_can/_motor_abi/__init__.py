@@ -1,11 +1,31 @@
-from importlib import import_module
-
 from .abi import (
     abi_capabilities,
     abi_version,
     articore_runtime_abi_version,
     articore_runtime_capabilities,
     articore_runtime_library_path,
+)
+from .damiao_registers import (
+    DAMIAO_HIGH_IMPACT_RIDS,
+    DAMIAO_PROTECTION_RIDS,
+    DAMIAO_RW_REGISTERS,
+    MODE_FORCE_POS,
+    MODE_MIT,
+    MODE_POS_VEL,
+    MODE_VEL,
+    RID_CTRL_MODE,
+    RID_ESC_ID,
+    RID_KI_APR,
+    RID_KI_ASR,
+    RID_KP_APR,
+    RID_KP_ASR,
+    RID_MST_ID,
+    RID_PMAX,
+    RID_TMAX,
+    RID_TIMEOUT,
+    RID_VMAX,
+    RegisterSpec,
+    get_damiao_register_spec,
 )
 from .core import (
     Controller,
@@ -31,10 +51,6 @@ from .runtime_models import (
     ConnectErrorCode,
     ConnectMotorResult,
     ConnectReport,
-    DisableMotorResult,
-    DisableReport,
-    EnableMotorResult,
-    EnableReport,
     GripperCommand,
     GripperControlState,
     GripperFaultAction,
@@ -48,8 +64,15 @@ from .runtime_models import (
     JointSafetyLimits,
     MitTorqueLimitJointStats,
     MitTorqueLimitStats,
+    MotorPowerState,
     RuntimeConfig,
     RuntimeControlMode,
+    RuntimeOperation,
+    OperationError,
+    ProductArmState,
+    ProductGripperState,
+    ProductPose,
+    ProductState,
     RuntimeMitCommand,
     RuntimeMotor,
     RuntimePvCommand,
@@ -90,43 +113,6 @@ from .models import (
 from ._version import VERSION
 
 
-_REGISTER_EXPORTS = {
-    "RegisterSpec",
-    "DAMIAO_RW_REGISTERS",
-    "DAMIAO_HIGH_IMPACT_RIDS",
-    "DAMIAO_PROTECTION_RIDS",
-    "get_damiao_register_spec",
-    "RID_CTRL_MODE",
-    "RID_MST_ID",
-    "RID_ESC_ID",
-    "RID_TIMEOUT",
-    "RID_PMAX",
-    "RID_VMAX",
-    "RID_TMAX",
-    "RID_KP_ASR",
-    "RID_KI_ASR",
-    "RID_KP_APR",
-    "RID_KI_APR",
-    "MODE_MIT",
-    "MODE_POS_VEL",
-    "MODE_VEL",
-    "MODE_FORCE_POS",
-}
-
-
-def __getattr__(name: str):
-    if name in _REGISTER_EXPORTS:
-        module = import_module(".damiao_registers", __name__)
-        value = getattr(module, name)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | _REGISTER_EXPORTS)
-
-
 def get_version() -> str:
     return VERSION
 
@@ -158,6 +144,12 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeMotor",
     "RuntimeControlMode",
+    "RuntimeOperation",
+    "OperationError",
+    "ProductArmState",
+    "ProductGripperState",
+    "ProductPose",
+    "ProductState",
     "CommandLifetime",
     "ConnectErrorCode",
     "ConnectChannelResult",
@@ -170,6 +162,7 @@ __all__ = [
     "JointSafetyLimits",
     "MitTorqueLimitJointStats",
     "MitTorqueLimitStats",
+    "MotorPowerState",
     "GripperProductBinding",
     "GravityProductBinding",
     "GravityCompensationPhase",
@@ -177,10 +170,6 @@ __all__ = [
     "GripperCommand",
     "RuntimeMitCommand",
     "RuntimePvCommand",
-    "EnableMotorResult",
-    "EnableReport",
-    "DisableMotorResult",
-    "DisableReport",
     "RuntimeTransportHealth",
     "GripperControlState",
     "GripperFaultAction",

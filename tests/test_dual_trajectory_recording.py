@@ -72,39 +72,23 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
 
     class Robot:
         _effective_control_hz = 400.0
-        left = type(
-            "Side",
-            (),
-            {
-                "has_gripper": True,
-                "_mode": "pv",
-                "config": type("Config", (), {"command_timeout_s": 0.25})(),
-            },
-        )()
-        right = type(
-            "Side",
-            (),
-            {
-                "has_gripper": True,
-                "_mode": "pv",
-                "config": type("Config", (), {"command_timeout_s": 0.25})(),
-            },
-        )()
-        left.has_gripper = True
-        right.has_gripper = True
+        has_grippers = True
+        control_mode = "pv"
 
-        def _submit_joint_positions(
+        def submit_raw_pv(
             self,
             *,
-            left,
-            right,
+            left_positions,
+            right_positions,
             left_velocity_limits,
             right_velocity_limits,
         ) -> None:
-            commands.append(("arms", tuple(left), tuple(right)))
+            commands.append(
+                ("arms", tuple(left_positions), tuple(right_positions))
+            )
 
-        def set_gripper_openings(self, *, left, right) -> None:
-            commands.append(("grippers", left, right))
+        def set_grippers(self, *, left, right, gripper_level) -> None:
+            commands.append(("grippers", left, right, gripper_level))
 
     monkeypatch.setattr(
         "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
@@ -118,7 +102,7 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
 
     assert commands == [
         ("arms", (0.1,), (0.2,)),
-        ("grippers", 1000.0, 0.0),
+        ("grippers", 1000.0, 0.0, 3),
     ]
 
 
@@ -134,19 +118,15 @@ def test_dual_replay_refreshes_raw_target_across_long_sample_gap(
 
     class Robot:
         _effective_control_hz = 400.0
-        left = type(
-            "Side",
-            (),
-            {
-                "has_gripper": False,
-                "_mode": "pv",
-                "config": type("Config", (), {"command_timeout_s": 0.25})(),
-            },
-        )()
-        right = left
+        has_grippers = False
+        control_mode = "pv"
 
-        def _submit_joint_positions(self, *, left, right, **_kwargs) -> None:
-            positions.append((now, tuple(left), tuple(right)))
+        def submit_raw_pv(
+            self, *, left_positions, right_positions, **_kwargs
+        ) -> None:
+            positions.append(
+                (now, tuple(left_positions), tuple(right_positions))
+            )
 
     monkeypatch.setattr(
         "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
@@ -200,10 +180,10 @@ def test_dual_mit_replay_uses_yaml_gains_and_zero_dynamic_targets(
 
     class Robot:
         _effective_control_hz = 400.0
-        left = type("Side", (), {"has_gripper": False, "_mode": "mit"})()
-        right = type("Side", (), {"has_gripper": False, "_mode": "mit"})()
+        has_grippers = False
+        control_mode = "mit"
 
-        def _submit_joint_positions(self, **kwargs) -> None:
+        def submit_raw_mit(self, **kwargs) -> None:
             commands.append(kwargs)
 
     monkeypatch.setattr(
@@ -218,10 +198,12 @@ def test_dual_mit_replay_uses_yaml_gains_and_zero_dynamic_targets(
         velocity_limit=None,
     )
 
-    assert commands == [{"left": (0.1,), "right": (-0.2,)}]
+    assert commands == [
+        {"left_positions": (0.1,), "right_positions": (-0.2,)}
+    ]
 
 
-def test_dual_record_uses_atomic_gravity_sample_and_cached_grippers(
+def test_dual_record_uses_cached_runtime_state_and_grippers(
     monkeypatch,
 ) -> None:
     now = 0.0
@@ -239,37 +221,34 @@ def test_dual_record_uses_atomic_gravity_sample_and_cached_grippers(
         fake_sleep,
     )
 
-    class Gravity:
-        def step(self):
-            return type(
-                "Sample",
-                (),
-                {
-                    "left": type("Side", (), {"positions": (0.1,)})(),
-                    "right": type("Side", (), {"positions": (-0.2,)})(),
-                },
-            )()
-
     class Robot:
+        safety_health = type(
+            "Health",
+            (),
+            {"safe_holding": False, "fault_reason": None},
+        )()
+
         def read_cached_state(self):
             side = lambda opening: type(
                 "Side",
                 (),
                 {
+                    "arm": type("Arm", (), {"positions": (0.1,)})(),
                     "gripper": type("Gripper", (), {"opening": opening})(),
                 },
             )()
-            return type(
+            state = type(
                 "State",
                 (),
                 {"left": side(1000.0), "right": side(500.0)},
             )()
+            state.right.arm.positions = (-0.2,)
+            return state
 
     timestamps, samples = record(
         Robot(),
         seconds=1.0,
         hz=2.0,
-        gravity_mode=Gravity(),
     )
 
     assert timestamps == pytest.approx([0.0, 0.5])

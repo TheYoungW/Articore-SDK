@@ -58,7 +58,7 @@ def test_can_timeout_accepts_matching_register_after_fast_ack_timeout() -> None:
 
         @staticmethod
         def get_register_u32(rid: int, *, timeout_ms: int) -> int:
-            assert (rid, timeout_ms) == (9, 200)
+            assert (rid, timeout_ms) == (9, 1000)
             return 10_000
 
     arm_module._set_can_timeout_with_readback(Motor(), 500)
@@ -74,7 +74,7 @@ def test_can_timeout_preserves_error_when_register_does_not_match() -> None:
 
         @staticmethod
         def get_register_u32(_rid: int, *, timeout_ms: int) -> int:
-            assert timeout_ms == 200
+            assert timeout_ms == 1000
             return 0
 
     with pytest.raises(CallError) as caught:
@@ -93,7 +93,7 @@ def test_can_timeout_preserves_error_when_register_readback_fails() -> None:
 
         @staticmethod
         def get_register_u32(_rid: int, *, timeout_ms: int) -> int:
-            assert timeout_ms == 200
+            assert timeout_ms == 1000
             raise CallError("register read timed out")
 
     with pytest.raises(CallError) as caught:
@@ -197,7 +197,7 @@ def test_single_arm_commands_use_native_runtime() -> None:
 
     assert len(joint_calls) == 1
     assert joint_calls[0][0][0].position == pytest.approx(0.25)
-    assert joint_calls[0][1] == pytest.approx(JOINT.pv_vlim)
+    assert joint_calls[0][1] == pytest.approx(100.0)
     assert gripper_calls[0].opening == pytest.approx(750.0)
     assert gripper_calls[0].speed == pytest.approx(1000.0)
     assert gripper_calls[0].force_level == 5
@@ -225,34 +225,30 @@ def test_single_arm_mit_uses_direction_and_one_shared_velocity() -> None:
     arm._enabled = True
     arm._single_safety_runtime = Runtime()  # type: ignore[assignment]
 
-    arm.set_joint_mit([0.25], velocity=1.5)
+    arm.set_joint_mit([0.25], velocity=50)
 
     assert len(calls) == 1
     assert calls[0][0][0].motor is motor
     assert calls[0][0][0].position == pytest.approx(-0.25)
-    assert calls[0][1] == pytest.approx(1.5)
+    assert calls[0][1] == pytest.approx(50.0)
 
 
-def test_single_arm_mit_velocity_is_capped_at_200_degrees_per_second() -> None:
+def test_single_arm_ordinary_velocity_uses_zero_to_one_hundred_scale() -> None:
     joint = replace(JOINT, pv_vlim=5.0)
     arm = ArxDCanArm(
         config=ArxDCanConfig(arm_control_mode="mit", arm_joints=(joint,)),
         enable_gripper=False,
     )
 
-    maximum = math.radians(200.0)
-    assert arm._ordinary_joint_velocity(maximum, mode="mit") == pytest.approx(
-        maximum
-    )
-    with pytest.raises(ValueError, match="200 deg/s"):
-        arm._ordinary_joint_velocity(math.radians(200.01), mode="mit")
-
-    assert arm._ordinary_joint_velocity(
-        math.radians(250.0), mode="pv"
-    ) == pytest.approx(math.radians(250.0))
+    assert arm._ordinary_joint_velocity(0, mode="mit") == 0
+    assert arm._ordinary_joint_velocity(50, mode="mit") == 50
+    assert arm._ordinary_joint_velocity(100, mode="pv") == 100
+    assert arm._ordinary_joint_velocity(None, mode="pv") == 100
 
 
-@pytest.mark.parametrize("velocity", (0.0, -1.0, float("nan"), 2.1))
+@pytest.mark.parametrize(
+    "velocity", (-0.1, float("nan"), float("inf"), 100.1)
+)
 def test_single_arm_rejects_invalid_shared_velocity(velocity: float) -> None:
     arm, joint_calls, _ = _ready_arm()
 
@@ -730,7 +726,7 @@ def test_single_set_zero_uses_unconfigured_maintenance_connection() -> None:
 
     arm.robot = Robot()  # type: ignore[assignment]
 
-    assert arm.set_zero() == ("l-joint1",)
+    assert arm.set_zero() is True
     assert events == [
         "connect",
         (

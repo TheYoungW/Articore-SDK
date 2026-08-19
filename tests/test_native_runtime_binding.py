@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from threading import Lock
+import time
 
 import pytest
 
@@ -81,6 +82,27 @@ def test_runtime_config_uses_50_ms_feedback_freshness_window() -> None:
     assert config.feedback_check_hz == 100
     assert config.feedback_max_age_ms == 50
     assert config.feedback_failure_threshold == 3
+    assert config.disable_feedback_timeout_ms == 50
+
+
+def test_runtime_fps_monitor_caches_tenth_second_frame_delta() -> None:
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._fps = 0.0
+    runtime._fps_stop = None
+    runtime._fps_thread = None
+    counts = iter((100, 112, 124))
+    runtime._received_frame_count = lambda: next(counts)  # type: ignore[method-assign]
+
+    runtime._start_fps_monitor()
+    try:
+        deadline = time.monotonic() + 0.5
+        while runtime.get_fps() == 0.0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert runtime.get_fps() == 120.0
+    finally:
+        runtime._stop_fps_monitor()
+
+    assert runtime.get_fps() == 0.0
 
 
 def test_runtime_binding_owns_handles_and_converts_health() -> None:
@@ -116,7 +138,13 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         # not live Controller/Motor handles. Runtime ABI 2.4 connect performs
         # real feedback I/O, which is covered with the native fake driver and
         # hardware tests rather than dereferencing these sentinels.
-        assert runtime.health.state is SafetyState.DISCONNECTED
+        health = runtime.health
+        assert health.state is SafetyState.DISCONNECTED
+        assert health.degraded is False
+        assert health.safe_stopped is False
+        assert health.requires_resynchronization is False
+        assert health.command_scale == 1.0
+        assert health.safety_reason is None
         assert runtime.control_hz == 400
         torque_stats = runtime.mit_torque_limit_stats
         assert torque_stats.torque_limit_activation_count == 0
@@ -127,8 +155,8 @@ def test_runtime_binding_owns_handles_and_converts_health() -> None:
         assert gravity_status.active is False
         assert gravity_status.joints == ()
         assert runtime.active_capabilities == ActiveCapability.ARM_SIDE_0
-        assert runtime.last_enable_report().expected_count == 0
-        assert runtime.last_disable_report().expected_count == 0
+        assert runtime._last_enable_report().expected_count == 0
+        assert runtime._last_disable_report().expected_count == 0
         with pytest.raises(RuntimeTransactionError, match="control mode must be PV or MIT"):
             runtime.enable(99)  # type: ignore[arg-type]
     finally:

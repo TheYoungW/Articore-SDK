@@ -10,6 +10,9 @@ from .errors import AbiLoadError, CallError
 from .native_payload import distribution_payload_candidates, source_checkout_root
 
 
+DEFAULT_IO_TIMEOUT_MS = 1000
+
+
 class CState(Structure):
     _fields_ = [
         ("has_value", c_int32),
@@ -338,6 +341,16 @@ def articore_runtime_capabilities() -> dict[str, bool]:
         "per_cycle_mit_torque_limit": bool(bits & (1 << 28)),
         "native_robot_model": bool(bits & (1 << 29)),
         "native_gravity_compensation": bool(bits & (1 << 30)),
+        "runtime_maintenance": bool(bits & (1 << 31)),
+        "product_runtime_factory": bool(bits & (1 << 32)),
+        "unified_operation_health": bool(bits & (1 << 33)),
+        "product_command_frames": bool(bits & (1 << 34)),
+        "product_state": bool(bits & (1 << 35)),
+        "optional_product_grippers": bool(bits & (1 << 36)),
+        "graded_feedback_safety": bool(bits & (1 << 37)),
+        "normalized_ordinary_speed": bool(bits & (1 << 38)),
+        "runtime_motor_power": bool(bits & (1 << 39)),
+        "product_pose": bool(bits & (1 << 40)),
     }
 
 
@@ -583,7 +596,7 @@ def abi_version() -> str:
     return msg.decode() if msg else ""
 
 
-def abi_capabilities() -> dict:
+def abi_capabilities() -> dict[str, bool]:
     msg = get_abi().lib.motor_abi_capabilities_json()
     return json.loads(msg.decode() if msg else "{}")
 
