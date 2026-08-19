@@ -138,15 +138,6 @@ class ArticoreRuntime:
             if rc != 0:
                 raise RuntimeCallError(f"{operation} failed: {self._last_error()}")
 
-    @property
-    def control_hz(self) -> int:
-        value = ctypes.c_uint32()
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_control_hz,
-            "get_control_hz", ctypes.byref(value),
-        )
-        return int(value.value)
-
     def get_fps(self) -> float:
         """立即返回最近一个 0.1 秒窗口计算出的接收帧率。"""
         return float(self._fps)
@@ -385,11 +376,11 @@ class ArticoreRuntime:
             error=_optional_text(native.error),
         )
 
-    def estop(self, reason: str) -> None:
-        self._call(self._runtime_abi.lib.articore_runtime_estop,
-                   "estop", reason.encode())
+    def estop(self) -> None:
+        self._call(self._runtime_abi.lib.articore_runtime_estop, "estop")
 
     def recover(self) -> None:
+        """Recover the whole product to calibrated zero, then disable it."""
         self._call(self._runtime_abi.lib.articore_runtime_recover, "recover")
 
     def configure_mode(self, mode: RuntimeControlMode) -> None:
@@ -530,12 +521,14 @@ class ArticoreRuntime:
         return list(self.get_pose_sample(side).values)
 
     def clear_faults(self) -> None:
+        """Clear recoverable motor faults without commanding motion."""
         self._call(
             self._runtime_abi.lib.articore_runtime_clear_faults,
             "clear_faults",
         )
 
     def set_zero(self) -> bool:
+        """Calibrate the current installed-motor positions as zero."""
         self._call(
             self._runtime_abi.lib.articore_runtime_set_zero,
             "set_zero",

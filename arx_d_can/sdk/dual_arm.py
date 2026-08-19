@@ -116,10 +116,6 @@ class ArxDCanDualArm:
         }
 
     @property
-    def _effective_control_hz(self) -> float:
-        return float(self._runtime.control_hz)
-
-    @property
     def safety_health(self) -> SafetyHealth:
         return self._runtime.health
 
@@ -269,10 +265,12 @@ class ArxDCanDualArm:
     def stop_gravity_compensation(self) -> None:
         self._runtime.stop_gravity_compensation()
 
-    def estop(self, reason: str = "emergency stop") -> None:
-        self._runtime.estop(reason)
+    def estop(self) -> None:
+        """Immediately disable the complete product and latch emergency stop."""
+        self._runtime.estop()
 
     def recover(self) -> None:
+        """Clear faults, validate both arms, return to zero, then disable."""
         self._runtime.recover()
 
     def set_zero(self) -> bool:
@@ -280,6 +278,7 @@ class ArxDCanDualArm:
         return self._runtime.set_zero()
 
     def clear_motor_faults(self) -> None:
+        """Clear recoverable faults without moving or changing calibration."""
         self._runtime.clear_faults()
 
     def close(self) -> None:

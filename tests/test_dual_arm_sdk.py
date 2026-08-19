@@ -87,7 +87,6 @@ class FakeRuntime:
         self.has_grippers = with_grippers
         self.health = _health()
         self.state = _product_state(with_grippers)
-        self.control_hz = 500
         self.closed = False
         self.calls: list[tuple] = []
         self.gravity_compensation_status = SimpleNamespace(active=False)
@@ -137,8 +136,8 @@ class FakeRuntime:
     def stop_gravity_compensation(self) -> None:
         self.calls.append(("gravity-stop",))
 
-    def estop(self, reason: str) -> None:
-        self.calls.append(("estop", reason))
+    def estop(self) -> None:
+        self.calls.append(("estop",))
 
     def recover(self) -> None:
         self.calls.append(("recover",))
@@ -324,11 +323,13 @@ def test_maintenance_and_gravity_only_delegate(product_factory) -> None:
     robot.clear_motor_faults()
     robot.start_gravity_compensation(transition_ms=250)
     robot.stop_gravity_compensation()
-    robot.estop("operator")
+    robot.estop()
+    with pytest.raises(TypeError):
+        robot.estop("operator")  # type: ignore[call-arg]
     robot.recover()
     assert robot._runtime.calls == [
         ("zero",), ("clear",), ("gravity-start", 250),
-        ("gravity-stop",), ("estop", "operator"), ("recover",),
+        ("gravity-stop",), ("estop",), ("recover",),
     ]
 
 

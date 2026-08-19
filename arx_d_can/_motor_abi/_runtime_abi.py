@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
+import os
+import sys
 from ctypes import (
     POINTER,
     Structure,
@@ -13,167 +16,63 @@ from ctypes import (
     c_uint64,
     c_void_p,
 )
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
 
-from .abi import articore_runtime_library_path, get_abi
 from .errors import AbiLoadError
 
 
-class CRuntimeConfig(Structure):
-    _fields_ = [
-        ("control_hz", c_uint32),
-        ("command_timeout_ms", c_uint32),
-        ("enable_grace_ms", c_uint32),
-        ("safe_hold_hz", c_uint32),
-        ("feedback_check_hz", c_uint32),
-        ("feedback_failure_threshold", c_uint32),
-        ("feedback_max_age_ms", c_uint32),
-        ("safe_hold_failure_threshold", c_uint32),
-        ("disable_feedback_timeout_ms", c_uint32),
-        ("safe_pv_velocity_limit", c_float),
-        ("gripper_control_hz", c_uint32),
-        ("gripper_fault_action", c_int32),
-    ]
+def _runtime_library_name() -> str:
+    if sys.platform.startswith("win"):
+        return "articore_runtime.dll"
+    if sys.platform == "darwin":
+        return "libarticore_runtime.dylib"
+    return "libarticore_runtime.so"
 
 
-class CRuntimeMotorDescriptor(Structure):
-    _fields_ = [
-        ("motor", c_void_p),
-        ("side", c_uint8),
-        ("is_gripper", c_uint8),
-        ("name", c_char * 64),
-        ("safe_kp", c_float),
-        ("safe_kd", c_float),
-        ("overload_torque", c_float),
-        ("retreat_distance", c_float),
-        ("contact_torque", c_float),
-        ("motion_window_ms", c_uint32),
-        ("stall_movement", c_float),
-        ("min_position_error", c_float),
-        ("contact_hold_ms", c_uint32),
-        ("overload_hold_ms", c_uint32),
-        ("hold_offset", c_float),
-        ("retreat_retry_ms", c_uint32),
-        ("open_position", c_float),
-        ("closed_position", c_float),
-        ("normal_kp", c_float),
-        ("normal_kd", c_float),
-        ("close_speed", c_float),
-        ("max_step_interval_ms", c_uint32),
-        ("closing_direction", c_float),
-        ("lower_position", c_float),
-        ("upper_position", c_float),
-    ]
+def _runtime_library_candidates() -> list[Path]:
+    name = _runtime_library_name()
+    candidates: list[Path] = []
+    override = os.getenv("ARTICORE_RUNTIME_LIB")
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    try:
+        package = distribution("motor-drive-layer")
+    except PackageNotFoundError:
+        package = None
+    if package is not None:
+        suffix = ("motor_drive_layer_native", "lib", name)
+        for entry in package.files or ():
+            if tuple(entry.parts[-len(suffix) :]) == suffix:
+                candidates.append(Path(package.locate_file(entry)).resolve())
+
+    source = os.getenv("MOTOR_DRIVE_LAYER_SOURCE")
+    if source:
+        root = Path(source).expanduser().resolve()
+        candidates.extend(
+            (
+                root / "build" / "articore_runtime" / name,
+                root / "build" / "articore_runtime" / "Release" / name,
+            )
+        )
+    return candidates
 
 
-class CRuntimeMotorApi(Structure):
-    _fields_ = [
-        ("group_send_pos_vel", c_void_p),
-        ("group_send_mit", c_void_p),
-        ("controller_disable_all", c_void_p),
-        ("controller_request_feedback_all_ex", c_void_p),
-        ("motor_get_state", c_void_p),
-        ("motor_get_feedback_stats", c_void_p),
-        ("last_error_message", c_void_p),
-        ("controller_get_transport_health", c_void_p),
-        ("motor_disable", c_void_p),
-    ]
-
-
-class CRuntimeMaintenanceApi(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("motor_clear_error", c_void_p),
-        ("motor_set_zero_position", c_void_p),
-        ("motor_ensure_mode", c_void_p),
-        ("motor_set_can_timeout_ms", c_void_p),
-        ("communication_timeout_ms", c_uint32),
-    ]
-
-
-class CRuntimeTransportCapabilities(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("side", c_uint32),
-        ("can_fd", c_int32),
-        ("can_fd_brs", c_int32),
-        ("transport", c_char * 32),
-    ]
-
-
-class CJointControlConfig(Structure):
-    _fields_ = [
-        ("motor", c_void_p),
-        ("lower_position", c_float),
-        ("upper_position", c_float),
-        ("velocity_limit", c_float),
-        ("torque_limit", c_float),
-        ("mit_kp", c_float),
-        ("mit_kd", c_float),
-        ("mit_feedforward_torque", c_float),
-    ]
-
-
-class CJointSafetyLimits(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("motor", c_void_p),
-        ("hard_lower_position", c_float),
-        ("hard_upper_position", c_float),
-        ("soft_lower_position", c_float),
-        ("soft_upper_position", c_float),
-        ("soft_limit_braking_zone", c_float),
-        ("braking_acceleration", c_float),
-    ]
-
-
-class CJointTarget(Structure):
-    _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("target_position", c_float)]
-
-
-class CPosVelCommand(Structure):
-    _fields_ = [("motor", c_void_p), ("target_position", c_float), ("velocity_limit", c_float)]
-
-
-class CMitCommand(Structure):
-    _fields_ = [
-        ("motor", c_void_p),
-        ("target_position", c_float),
-        ("target_velocity", c_float),
-        ("stiffness", c_float),
-        ("damping", c_float),
-        ("feedforward_torque", c_float),
-    ]
-
-
-class CGripperProductBinding(Structure):
-    _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("profile_id", c_char * 64)]
-
-
-class CGravityProductBinding(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("runtime_side", c_uint32),
-        ("robot_side", c_uint32),
-        ("product_id", c_char * 64),
-    ]
-
-
-class CGravityCompensationConfig(Structure):
-    _fields_ = [("struct_size", c_uint32), ("transition_ms", c_uint32)]
-
-
-class CMotorIdentity(Structure):
-    _fields_ = [("struct_size", c_uint32), ("motor", c_void_p), ("can_id", c_uint32)]
-
-
-class CGripperCommand(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("motor", c_void_p),
-        ("opening", c_float),
-        ("speed", c_float),
-        ("force_level", c_int32),
-    ]
+def runtime_library_path() -> str:
+    tried: list[str] = []
+    for candidate in _runtime_library_candidates():
+        tried.append(str(candidate))
+        if candidate.is_file():
+            return str(candidate)
+    found = ctypes.util.find_library("articore_runtime")
+    if found:
+        return found
+    detail = "\n".join(f"- {item}" for item in tried) or "- no candidates"
+    raise AbiLoadError(
+        "cannot locate libarticore_runtime; install the required "
+        f"motor-drive-layer wheel or set ARTICORE_RUNTIME_LIB. Tried:\n{detail}"
+    )
 
 
 class CEnableMotorResult(Structure):
@@ -280,16 +179,13 @@ class CSafetyHealth(Structure):
 
 class CSafetyHealthV2(Structure):
     _fields_ = [
-        ("struct_size", c_uint32),
-        ("health", CSafetyHealth),
+        ("struct_size", c_uint32), ("health", CSafetyHealth),
         ("last_operation", c_int32), ("last_operation_code", c_int32),
         ("operation_failed_motor_count", c_uint32),
         ("operation_failed_motors", (c_char * 64) * 32),
         ("last_operation_error", c_char * 512),
-        ("degraded", c_int32),
-        ("safe_stopped", c_int32),
-        ("requires_resynchronization", c_int32),
-        ("command_scale", c_float),
+        ("degraded", c_int32), ("safe_stopped", c_int32),
+        ("requires_resynchronization", c_int32), ("command_scale", c_float),
         ("safety_reason", c_char * 512),
     ]
 
@@ -304,153 +200,75 @@ class CProductArmState(Structure):
 
 class CProductState(Structure):
     _fields_ = [
-        ("struct_size", c_uint32),
-        ("has_grippers", c_int32),
-        ("left", CProductArmState),
-        ("right", CProductArmState),
-        ("left_gripper_available", c_int32),
-        ("right_gripper_available", c_int32),
-        ("left_gripper_opening", c_float),
-        ("right_gripper_opening", c_float),
-        ("left_gripper_level", c_int32),
-        ("right_gripper_level", c_int32),
-        ("timestamp_ns", c_uint64),
-        ("sequence", c_uint64),
+        ("struct_size", c_uint32), ("has_grippers", c_int32),
+        ("left", CProductArmState), ("right", CProductArmState),
+        ("left_gripper_available", c_int32), ("right_gripper_available", c_int32),
+        ("left_gripper_opening", c_float), ("right_gripper_opening", c_float),
+        ("left_gripper_level", c_int32), ("right_gripper_level", c_int32),
+        ("timestamp_ns", c_uint64), ("sequence", c_uint64),
     ]
 
 
 class CProductPose(Structure):
     _fields_ = [
-        ("struct_size", c_uint32),
-        ("side", c_uint32),
-        ("values", c_float * 6),
-        ("timestamp_ns", c_uint64),
+        ("struct_size", c_uint32), ("side", c_uint32),
+        ("values", c_float * 6), ("timestamp_ns", c_uint64),
         ("sequence", c_uint64),
     ]
 
 
-_MAX_MIT_TORQUE_LIMIT_JOINTS = 32
+class CGravityCompensationConfig(Structure):
+    _fields_ = [("struct_size", c_uint32), ("transition_ms", c_uint32)]
+
+
+_MAX_GRAVITY_JOINTS = 32
 
 
 class CGravityCompensationStatus(Structure):
     _fields_ = [
-        ("struct_size", c_uint32),
-        ("phase", c_int32),
-        ("active", c_int32),
-        ("transition_progress", c_float),
-        ("control_cycles", c_uint64),
-        ("joint_count", c_uint32),
-        ("joints", c_void_p * _MAX_MIT_TORQUE_LIMIT_JOINTS),
-        ("gravity_feedforward_torque", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
+        ("struct_size", c_uint32), ("phase", c_int32), ("active", c_int32),
+        ("transition_progress", c_float), ("control_cycles", c_uint64),
+        ("joint_count", c_uint32), ("joints", c_void_p * _MAX_GRAVITY_JOINTS),
+        ("gravity_feedforward_torque", c_float * _MAX_GRAVITY_JOINTS),
     ]
-
-
-class CMitTorqueLimitStats(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("torque_limit_activation_count", c_uint64),
-        ("torque_limited_joint_mask", c_uint64),
-        ("joint_count", c_uint32),
-        ("joints", c_void_p * _MAX_MIT_TORQUE_LIMIT_JOINTS),
-        ("requested_resultant_torque", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
-        ("applied_scale", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
-        ("applied_resultant_torque", c_float * _MAX_MIT_TORQUE_LIMIT_JOINTS),
-    ]
-
-
-def _address(function: object) -> int:
-    value = ctypes.cast(function, c_void_p).value
-    if value is None:
-        raise RuntimeError("native motor ABI function has no address")
-    return value
 
 
 class RuntimeAbi:
     def __init__(self) -> None:
-        self.motor = get_abi()
-        self.lib = ctypes.CDLL(articore_runtime_library_path())
+        self.lib = ctypes.CDLL(runtime_library_path())
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < 0x0002000F:
+        if version < 0x00020010:
             raise AbiLoadError(
-                "official ArticoreRuntime binding requires Runtime ABI >= 2.15; "
+                "Articore-SDK requires Runtime ABI >= 2.16; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self._bind()
 
-    def motor_api(self) -> CRuntimeMotorApi:
-        lib = self.motor.lib
-        return CRuntimeMotorApi(
-            _address(lib.motor_controller_group_send_pos_vel),
-            _address(lib.motor_controller_group_send_mit),
-            _address(lib.motor_controller_disable_all),
-            _address(lib.motor_controller_request_feedback_all_ex),
-            _address(lib.motor_handle_get_state),
-            _address(lib.motor_handle_get_feedback_stats),
-            _address(lib.motor_last_error_message),
-            _address(lib.motor_controller_get_transport_health),
-            _address(lib.motor_handle_disable),
-        )
-
-    def maintenance_api(self) -> CRuntimeMaintenanceApi:
-        lib = self.motor.lib
-        return CRuntimeMaintenanceApi(
-            ctypes.sizeof(CRuntimeMaintenanceApi),
-            _address(lib.motor_handle_clear_error),
-            _address(lib.motor_handle_set_zero_position),
-            _address(lib.motor_handle_ensure_mode),
-            _address(lib.motor_handle_set_can_timeout_ms),
-            500,
-        )
-
     def _bind(self) -> None:
         lib = self.lib
         lib.articore_runtime_last_error.restype = c_char_p
-        lib.articore_runtime_create_ex.argtypes = [
-            POINTER(CRuntimeConfig), POINTER(CRuntimeMotorApi), c_void_p, c_void_p,
-            c_void_p, POINTER(CRuntimeMotorDescriptor), c_uint32, c_void_p, c_void_p,
-        ]
-        lib.articore_runtime_create_ex.restype = c_void_p
-        lib.articore_runtime_create_product.argtypes = [
-            c_char_p, c_int32, c_int32
-        ]
+        lib.articore_runtime_create_product.argtypes = [c_char_p, c_int32, c_int32]
         lib.articore_runtime_create_product.restype = c_void_p
-        self.has_owner_safe_maintenance = hasattr(
-            lib, "articore_runtime_create_ex3"
-        )
-        if self.has_owner_safe_maintenance:
-            lib.articore_runtime_create_ex3.argtypes = [
-                POINTER(CRuntimeConfig), POINTER(CRuntimeMotorApi),
-                POINTER(CRuntimeMaintenanceApi), c_void_p, c_void_p, c_void_p,
-                POINTER(CRuntimeMotorDescriptor), c_uint32, c_void_p, c_void_p,
-                POINTER(CRuntimeTransportCapabilities), c_uint32,
-            ]
-            lib.articore_runtime_create_ex3.restype = c_void_p
-        self.has_transport_aware_create = hasattr(
-            lib, "articore_runtime_create_ex2"
-        )
-        if self.has_transport_aware_create:
-            lib.articore_runtime_create_ex2.argtypes = [
-                POINTER(CRuntimeConfig), POINTER(CRuntimeMotorApi), c_void_p,
-                c_void_p, c_void_p, POINTER(CRuntimeMotorDescriptor), c_uint32,
-                c_void_p, c_void_p, POINTER(CRuntimeTransportCapabilities),
-                c_uint32,
-            ]
-            lib.articore_runtime_create_ex2.restype = c_void_p
         lib.articore_runtime_free.argtypes = [c_void_p]
-        for name in ("connect", "disconnect", "disable", "recover", "close"):
+
+        for name in ("connect", "disconnect", "disable", "recover", "close", "clear_faults", "set_zero"):
             function = getattr(lib, f"articore_runtime_{name}")
             function.argtypes = [c_void_p]
             function.restype = c_int32
-        for name in ("clear_faults", "set_zero"):
-            function = getattr(lib, f"articore_runtime_{name}")
-            function.argtypes = [c_void_p]
-            function.restype = c_int32
+
+        lib.articore_runtime_enable.argtypes = [c_void_p, c_int32]
+        lib.articore_runtime_enable.restype = c_int32
+        lib.articore_runtime_estop.argtypes = [c_void_p]
+        lib.articore_runtime_estop.restype = c_int32
         lib.articore_runtime_configure_mode.argtypes = [c_void_p, c_int32]
         lib.articore_runtime_configure_mode.restype = c_int32
+        lib.articore_runtime_get_control_mode.argtypes = [c_void_p, POINTER(c_int32)]
+        lib.articore_runtime_get_control_mode.restype = c_int32
+
         float_pointer = POINTER(c_float)
         lib.articore_runtime_set_joint_positions.argtypes = [
-            c_void_p, float_pointer, c_uint32, c_float
+            c_void_p, float_pointer, c_uint32, c_float,
         ]
         lib.articore_runtime_set_joint_positions.restype = c_int32
         lib.articore_runtime_submit_mit_frame.argtypes = [
@@ -462,86 +280,34 @@ class RuntimeAbi:
             c_void_p, float_pointer, float_pointer, c_uint32,
         ]
         lib.articore_runtime_submit_pv_frame.restype = c_int32
-        lib.articore_runtime_set_grippers.argtypes = [
-            c_void_p, c_float, c_float, c_int32,
-        ]
+        lib.articore_runtime_set_grippers.argtypes = [c_void_p, c_float, c_float, c_int32]
         lib.articore_runtime_set_grippers.restype = c_int32
         lib.articore_runtime_has_grippers.argtypes = [c_void_p, POINTER(c_int32)]
         lib.articore_runtime_has_grippers.restype = c_int32
-        lib.articore_runtime_get_state.argtypes = [
-            c_void_p, POINTER(CProductState)
-        ]
+
+        lib.articore_runtime_get_state.argtypes = [c_void_p, POINTER(CProductState)]
         lib.articore_runtime_get_state.restype = c_int32
-        lib.articore_runtime_get_pose.argtypes = [
-            c_void_p, c_uint32, POINTER(CProductPose)
-        ]
+        lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
-        lib.articore_runtime_enable.argtypes = [c_void_p, c_int32]
-        lib.articore_runtime_enable.restype = c_int32
-        lib.articore_runtime_set_motor_power.argtypes = [
-            c_void_p, c_char_p, c_int32, POINTER(c_int32)
-        ]
-        lib.articore_runtime_set_motor_power.restype = c_int32
-        lib.articore_runtime_get_motor_power.argtypes = [
-            c_void_p, c_char_p, POINTER(c_int32)
-        ]
-        lib.articore_runtime_get_motor_power.restype = c_int32
-        lib.articore_runtime_estop.argtypes = [c_void_p, c_char_p]
-        lib.articore_runtime_estop.restype = c_int32
-        lib.articore_runtime_get_control_hz.argtypes = [c_void_p, POINTER(c_uint32)]
-        lib.articore_runtime_get_control_hz.restype = c_int32
-        lib.articore_runtime_get_control_mode.argtypes = [
-            c_void_p, POINTER(c_int32)
-        ]
-        lib.articore_runtime_get_control_mode.restype = c_int32
-        lib.articore_runtime_get_health.argtypes = [c_void_p, POINTER(CSafetyHealth)]
-        lib.articore_runtime_get_health.restype = c_int32
         lib.articore_runtime_get_health_v2.argtypes = [c_void_p, POINTER(CSafetyHealthV2)]
         lib.articore_runtime_get_health_v2.restype = c_int32
-        lib.articore_runtime_get_mit_torque_limit_stats.argtypes = [
-            c_void_p, POINTER(CMitTorqueLimitStats)
-        ]
-        lib.articore_runtime_get_mit_torque_limit_stats.restype = c_int32
+        lib.articore_runtime_get_last_connect_report.argtypes = [c_void_p, POINTER(CConnectReport)]
+        lib.articore_runtime_get_last_connect_report.restype = c_int32
         lib.articore_runtime_get_last_enable_report.argtypes = [c_void_p, POINTER(CEnableReport)]
         lib.articore_runtime_get_last_enable_report.restype = c_int32
         lib.articore_runtime_get_last_disable_report.argtypes = [c_void_p, POINTER(CDisableReport)]
         lib.articore_runtime_get_last_disable_report.restype = c_int32
-        lib.articore_runtime_configure_motor_identities.argtypes = [c_void_p, POINTER(CMotorIdentity), c_uint32]
-        lib.articore_runtime_configure_motor_identities.restype = c_int32
-        lib.articore_runtime_get_last_connect_report.argtypes = [c_void_p, POINTER(CConnectReport)]
-        lib.articore_runtime_get_last_connect_report.restype = c_int32
-        lib.articore_runtime_configure_joints.argtypes = [c_void_p, POINTER(CJointControlConfig), c_uint32]
-        lib.articore_runtime_configure_joints.restype = c_int32
-        lib.articore_runtime_configure_joint_safety_limits.argtypes = [c_void_p, POINTER(CJointSafetyLimits), c_uint32]
-        lib.articore_runtime_configure_joint_safety_limits.restype = c_int32
-        lib.articore_runtime_configure_gripper_products.argtypes = [c_void_p, POINTER(CGripperProductBinding), c_uint32]
-        lib.articore_runtime_configure_gripper_products.restype = c_int32
-        lib.articore_runtime_configure_gravity_products.argtypes = [c_void_p, POINTER(CGravityProductBinding), c_uint32]
-        lib.articore_runtime_configure_gravity_products.restype = c_int32
-        lib.articore_runtime_start_gravity_compensation.argtypes = [c_void_p, POINTER(CGravityCompensationConfig)]
+
+        lib.articore_runtime_start_gravity_compensation.argtypes = [
+            c_void_p, POINTER(CGravityCompensationConfig),
+        ]
         lib.articore_runtime_start_gravity_compensation.restype = c_int32
         lib.articore_runtime_stop_gravity_compensation.argtypes = [c_void_p]
         lib.articore_runtime_stop_gravity_compensation.restype = c_int32
-        lib.articore_runtime_get_gravity_compensation_status.argtypes = [c_void_p, POINTER(CGravityCompensationStatus)]
+        lib.articore_runtime_get_gravity_compensation_status.argtypes = [
+            c_void_p, POINTER(CGravityCompensationStatus),
+        ]
         lib.articore_runtime_get_gravity_compensation_status.restype = c_int32
-        lib.articore_runtime_set_gripper_commands.argtypes = [c_void_p, POINTER(CGripperCommand), c_uint32]
-        lib.articore_runtime_set_gripper_commands.restype = c_int32
-        for name in ("set_joint_pv", "set_joint_mit"):
-            function = getattr(lib, f"articore_runtime_{name}")
-            function.argtypes = [c_void_p, POINTER(CJointTarget), c_uint32, c_float]
-            function.restype = c_int32
-        lib.articore_runtime_submit_pos_vel_ex.argtypes = [c_void_p, POINTER(CPosVelCommand), c_uint32, c_int32]
-        lib.articore_runtime_submit_pos_vel_ex.restype = c_int32
-        lib.articore_runtime_submit_mit_ex.argtypes = [c_void_p, POINTER(CMitCommand), c_uint32, c_int32]
-        lib.articore_runtime_submit_mit_ex.restype = c_int32
-        lib.articore_runtime_report_feedback_failure.argtypes = [c_void_p, c_uint8, c_char_p]
-        lib.articore_runtime_report_feedback_failure.restype = c_int32
-        lib.articore_runtime_declare_motor_presence.argtypes = [c_void_p, c_char_p, c_int32]
-        lib.articore_runtime_declare_motor_presence.restype = c_int32
-        lib.articore_runtime_motor_presence.argtypes = [c_void_p, c_char_p, POINTER(c_int32)]
-        lib.articore_runtime_motor_presence.restype = c_int32
-        lib.articore_runtime_active_capabilities.argtypes = [c_void_p]
-        lib.articore_runtime_active_capabilities.restype = c_uint64
 
 
 _runtime_abi: RuntimeAbi | None = None

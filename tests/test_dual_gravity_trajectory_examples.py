@@ -59,7 +59,7 @@ def test_replay_does_not_duplicate_product_limit_logic_in_python() -> None:
     assert "robot.pv_velocity_limit" not in source
 
 
-def test_move_to_start_uses_runtime_effective_rate_for_raw_pv(monkeypatch) -> None:
+def test_move_to_start_uses_application_rate_for_raw_pv(monkeypatch) -> None:
     now = 0.0
 
     def sleep(seconds: float) -> None:
@@ -94,11 +94,10 @@ def test_move_to_start_uses_runtime_effective_rate_for_raw_pv(monkeypatch) -> No
         timeout=1.0,
         position_tolerance=0.01,
         velocity_tolerance=0.01,
-        control_hz=400.0,
     )
 
     assert now >= 0.5
-    assert len(robot.raw_commands) >= 200
+    assert len(robot.raw_commands) >= 50
     assert all(
         command["left_velocity_limits"] == (1.0,)
         and command["right_velocity_limits"] == (1.0,)

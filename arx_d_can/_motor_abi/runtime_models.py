@@ -32,6 +32,7 @@ class RuntimeOperation(IntEnum):
     CLOSE = 7
     DISCONNECT = 8
     COMMAND = 9
+    RECOVER = 10
 
 
 class OperationError(IntEnum):

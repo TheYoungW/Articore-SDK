@@ -11,6 +11,7 @@ from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.dual_arm.common import positive_velocity_degrees
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,
+    REPLAY_HZ,
     _submit_raw_positions,
     interpolate_sample,
     load_trajectory,
@@ -27,7 +28,6 @@ def _move_to_start(
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
-    control_hz: float,
 ) -> None:
     state = robot.read_cached_state()
     current = DualArmTrajectorySample(
@@ -52,7 +52,7 @@ def _move_to_start(
     started = time.perf_counter()
     tick = 0
     while True:
-        elapsed = min(tick / control_hz, duration)
+        elapsed = min(tick / REPLAY_HZ, duration)
         progress = 1.0 if duration == 0.0 else elapsed / duration
         sample = interpolate_sample(
             current,
@@ -67,7 +67,7 @@ def _move_to_start(
         if elapsed >= duration:
             break
         captured_at = time.perf_counter()
-        tick = max(tick + 1, math.floor((captured_at - started) * control_hz) + 1)
+        tick = max(tick + 1, math.floor((captured_at - started) * REPLAY_HZ) + 1)
 
     deadline = time.monotonic() + timeout
     stable_since = None
@@ -104,7 +104,7 @@ def _move_to_start(
                 return
         else:
             stable_since = None
-        next_tick += 1.0 / control_hz
+        next_tick += 1.0 / REPLAY_HZ
         remaining = next_tick - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
@@ -126,7 +126,6 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("--start-velocity cannot exceed --pv-velocity-limit")
 
     robot.connect()
-    control_hz = robot._effective_control_hz
     print("机器人连接成功")
     try:
         robot.enable()
@@ -142,7 +141,6 @@ def main(args: argparse.Namespace) -> None:
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
-            control_hz=control_hz,
         )
         print(
             f"开始原子回放 {len(samples)} 个双臂轨迹点，"

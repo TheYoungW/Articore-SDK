@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖固定为 `motor-drive-layer==0.10.21`。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖固定为 `motor-drive-layer==0.10.22`。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -54,7 +54,11 @@ finally:
 - 状态：`read_state()`、`read_cached_state()`。
 - 健康：`safety_health`、`get_fps()`。
 - 位姿：`get_pose("left" | "right")`。
-- 维护：`clear_motor_faults()`、`set_zero()`。
+- 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。
+- 急停：调用无参数 `estop()` 后底层立即停止控制并失能整机；固定原因从
+  `safety_health.fault_reason` 读取，且只能通过 `recover()` 解除锁存。
+- 恢复：`recover()` 由 C++ Runtime 完成整机清错、双臂健康验证、低速回到已标定零位，
+  最后保持整机失能；任一步骤失败都会再次尝试失能并把具体阶段写入 `safety_health`。
 - 重力补偿：`start_gravity_compensation()`、`stop_gravity_compensation()`。
 
 所有关节数量、有限值、URDF 限位、速度和安全检查由 C++ Runtime 统一验证。Python 不重复维护一份产品配置。
@@ -99,3 +103,5 @@ python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
 ```
 
 SDK 不再包含 `ArxDCanArm`、单臂示例、YAML 电机配置、旧 actuator/driver 包或 Python 动力学实现。
+私有目录 `_motor_abi` 也只保留产品 Runtime 的动态库加载、C 结构映射、Python 数据模型和调用转发；
+不再向 SDK 暴露 Motor、Controller、寄存器、总线扫描或原生 CLI。

@@ -199,7 +199,6 @@ def main() -> None:
         robot.connect()
         report["control_mode"] = args.mode.upper()
         report["connected_health"] = robot.safety_health.state.name
-        report["control_hz"] = robot._effective_control_hz
         if not robot.enable():
             raise RuntimeError("whole-product enable was not confirmed")
 

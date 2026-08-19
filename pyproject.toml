@@ -4,14 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arx-d-can"
-version = "0.3.0"
+version = "0.3.1"
 description = "Yunyi V1.0 dual-arm Python SDK backed by Motor Drive Layer Runtime."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "motor-drive-layer==0.10.21",
-  "numpy>=1.23",
-  "pyyaml>=6.0",
+  "motor-drive-layer==0.10.22",
 ]
 
 [project.optional-dependencies]
@@ -26,9 +24,8 @@ packages = [
   "arx_d_can.examples",
   "arx_d_can.examples.dual_arm",
   "arx_d_can._motor_abi",
-  "arx_d_can._motor_abi.cli",
   "arx_d_can.sdk",
   "arx_d_can.service_tools",
 ]
 [tool.setuptools.package-data]
-arx_d_can = ["examples/README.md", "models/*.urdf", "_motor_abi/py.typed"]
+arx_d_can = ["examples/README.md", "models/*.urdf"]

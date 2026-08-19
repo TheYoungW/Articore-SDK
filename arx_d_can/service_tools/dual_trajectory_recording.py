@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 FORMAT_VERSION = 1
 InterpolationMode = Literal["none", "linear", "quintic"]
+REPLAY_HZ = 100.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -196,7 +197,7 @@ def replay(
     interpolation: InterpolationMode = "quintic",
     velocity_limit: float | None = 1.0,
 ) -> None:
-    """按 Runtime 实际频率重采样，并通过 raw PV/MIT 原子提交双臂。"""
+    """按应用层频率重采样，并通过 raw PV/MIT 原子提交双臂。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
     if interpolation not in {"none", "linear", "quintic"}:
@@ -208,9 +209,7 @@ def replay(
         for sample in samples
     ) and not robot.has_grippers:
         raise RuntimeError("trajectory requires the dual-arm gripper pair")
-    replay_hz = float(robot._effective_control_hz)
-    if not math.isfinite(replay_hz) or replay_hz <= 0.0:
-        raise RuntimeError("Runtime returned an invalid control frequency")
+    replay_hz = REPLAY_HZ
 
     started = time.perf_counter()
     first_timestamp = timestamps[0]
