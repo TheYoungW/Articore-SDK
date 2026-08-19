@@ -101,17 +101,24 @@ class FakeRuntime:
         self.health = _health(SafetyState.READY)
 
     def disconnect(self) -> None:
+        if self.closed:
+            return
         self.calls.append(("disconnect",))
         self.health = _health()
+        self.closed = True
 
-    def enable(self) -> bool:
-        self.calls.append(("enable",))
-        self.health = _health(SafetyState.ENABLED)
+    def enable(self, motors=None) -> bool:
+        self.calls.append(("enable",) if motors is None else ("enable", tuple(motors)))
+        self.health = _health(
+            SafetyState.ENABLED if motors is None else SafetyState.PARTIALLY_ENABLED
+        )
         return True
 
-    def disable(self) -> bool:
-        self.calls.append(("disable",))
-        self.health = _health(SafetyState.READY)
+    def disable(self, motors=None) -> bool:
+        self.calls.append(("disable",) if motors is None else ("disable", tuple(motors)))
+        self.health = _health(
+            SafetyState.READY if motors is None else SafetyState.PARTIALLY_ENABLED
+        )
         return True
 
     def configure_mode(self, mode: RuntimeControlMode) -> None:
@@ -149,10 +156,6 @@ class FakeRuntime:
     def clear_faults(self) -> None:
         self.calls.append(("clear",))
 
-    def close(self) -> None:
-        self.calls.append(("close",))
-        self.closed = True
-
     def get_fps(self) -> float:
         return self.fps
 
@@ -166,27 +169,23 @@ class FakeRuntime:
 
 @pytest.fixture
 def product_factory(monkeypatch):
-    created: list[tuple[str, RuntimeControlMode, bool, FakeRuntime]] = []
+    created: list[tuple[RuntimeControlMode, bool, FakeRuntime]] = []
 
-    def create(product_id, mode, *, with_grippers=True):
+    def create(mode, *, with_grippers=True):
         runtime = FakeRuntime(RuntimeControlMode(mode), bool(with_grippers))
-        created.append(
-            (product_id, RuntimeControlMode(mode), bool(with_grippers), runtime)
-        )
+        created.append((RuntimeControlMode(mode), bool(with_grippers), runtime))
         return runtime
 
     monkeypatch.setattr(
-        "arx_d_can.sdk.dual_arm.ArticoreRuntime.create_product", create
+        "arx_d_can.sdk.dual_arm.ArticoreRuntime.create_yunyi", create
     )
     return created
 
 
 def test_constructor_immediately_owns_one_product_runtime(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    assert product_factory[0][:3] == (
-        "yunyi_v1_0", RuntimeControlMode.MIT, True,
-    )
-    assert robot._runtime is product_factory[0][3]
+    assert product_factory[0][:2] == (RuntimeControlMode.MIT, True)
+    assert robot._runtime is product_factory[0][2]
     assert not hasattr(robot, "_left")
     assert not hasattr(robot, "_right")
     assert not hasattr(robot, "_safety_runtime")
@@ -223,6 +222,20 @@ def test_mode_and_health_are_read_only_runtime_state(product_factory) -> None:
     assert robot.control_mode == "mit"
     assert robot.safety_health is runtime.health
     assert runtime.calls == [("configure_mode", RuntimeControlMode.MIT)]
+
+
+def test_subset_motor_power_is_forwarded_as_one_product_transaction(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm()
+    roles = ["l-joint4", "r-joint4"]
+    assert robot.enable(motors=roles)
+    assert robot.enabled
+    assert robot.disable(motors=roles)
+    assert robot._runtime.calls == [
+        ("enable", ("l-joint4", "r-joint4")),
+        ("disable", ("l-joint4", "r-joint4")),
+    ]
 
 
 def test_get_fps_returns_latest_runtime_sample(product_factory) -> None:
@@ -347,13 +360,15 @@ def test_gripperless_product_still_forwards_safe_noop_to_native(
     assert robot._runtime.calls == [("grippers", 100, 900, 3)]
 
 
-def test_close_only_closes_the_product_runtime(product_factory) -> None:
+def test_disconnect_terminally_closes_the_product_runtime(product_factory) -> None:
     robot = ArxDCanDualArm()
     runtime = robot._runtime
-    robot.close()
-    assert runtime.calls == [("close",)]
+    robot.disconnect()
+    robot.disconnect()
+    assert runtime.calls == [("disconnect",)]
     assert runtime.closed
     assert not robot.connected
+    assert not hasattr(robot, "close")
 
 
 def test_removed_python_runtime_assembly_helpers_stay_absent(product_factory) -> None:

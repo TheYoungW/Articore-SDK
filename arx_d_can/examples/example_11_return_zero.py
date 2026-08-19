@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import speed_percent
+from arx_d_can.examples.common import speed_percent
 
 
 def main(args: argparse.Namespace) -> None:
@@ -22,7 +22,7 @@ def main(args: argparse.Namespace) -> None:
         robot.set_grippers(left=0, right=0, gripper_level=3)
         print("双臂已返回零位")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

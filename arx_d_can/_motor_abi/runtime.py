@@ -11,6 +11,7 @@ from ._runtime_abi import (
     CEnableReport,
     CGravityCompensationConfig,
     CGravityCompensationStatus,
+    CMotorPowerReport,
     CProductPose,
     CProductState,
     CRuntimeTransportHealth,
@@ -31,6 +32,8 @@ from .runtime_models import (
     GripperHealth,
     GravityCompensationPhase,
     GravityCompensationStatus,
+    MotorPowerReport,
+    MotorPowerResult,
     RuntimeControlMode,
     RuntimeOperation,
     OperationError,
@@ -59,15 +62,6 @@ def _optional_age(value: int) -> int | None:
     return None if int(value) == _UINT64_MAX else int(value)
 
 
-def _fixed_text(value: str, field: str) -> bytes:
-    if not isinstance(value, str):
-        raise TypeError(f"{field} must be a string")
-    encoded = value.encode()
-    if not encoded or b"\0" in encoded or len(encoded) >= 64:
-        raise ValueError(f"{field} must contain 1..63 UTF-8 bytes and no NUL")
-    return encoded
-
-
 def _transport_health(value: CRuntimeTransportHealth) -> RuntimeTransportHealth:
     return RuntimeTransportHealth(
         connected=bool(value.connected),
@@ -89,26 +83,24 @@ class ArticoreRuntime:
     """Yunyi 双臂产品 Runtime 的轻量 ctypes 绑定。"""
 
     def __init__(self) -> None:
-        raise TypeError("use ArticoreRuntime.create_product()")
+        raise TypeError("use ArticoreRuntime.create_yunyi()")
 
     @classmethod
-    def create_product(
+    def create_yunyi(
         cls,
-        product_id: str,
         control_mode: RuntimeControlMode,
         with_grippers: bool = True,
     ) -> ArticoreRuntime:
-        """创建完全由 C++ 拥有资源和产品配置的整机 Runtime。"""
+        """创建完全由 C++ 拥有资源和配置的 Yunyi 双臂 Runtime。"""
         mode = RuntimeControlMode(control_mode)
         runtime_abi = get_runtime_abi()
-        pointer = runtime_abi.lib.articore_runtime_create_product(
-            _fixed_text(product_id, "product_id"), int(mode),
-            int(bool(with_grippers)),
+        pointer = runtime_abi.lib.articore_runtime_create_yunyi(
+            int(mode), int(bool(with_grippers)),
         )
         if not pointer:
             detail = runtime_abi.lib.articore_runtime_last_error()
             text = detail.decode(errors="replace") if detail else "unknown error"
-            raise RuntimeCallError(f"create_product failed: {text}")
+            raise RuntimeCallError(f"create_yunyi failed: {text}")
         self = cls.__new__(cls)
         self._lock = RLock()
         self._fps = 0.0
@@ -304,7 +296,60 @@ class ArticoreRuntime:
             error=_optional_text(native.error),
         )
 
-    def enable(self) -> bool:
+    def _motor_power_report(self, native: CMotorPowerReport) -> MotorPowerReport:
+        count = min(int(native.motor_count), 32)
+        return MotorPowerReport(
+            success=bool(native.success),
+            requested_enabled=bool(native.requested_enabled),
+            rollback_attempted=bool(native.rollback_attempted),
+            rollback_confirmed=bool(native.rollback_confirmed),
+            requested_count=int(native.requested_count),
+            command_sent_count=int(native.command_sent_count),
+            confirmed_count=int(native.confirmed_count),
+            failure_count=int(native.failure_count),
+            motors=tuple(
+                MotorPowerResult(
+                    side=int(item.side), can_id=int(item.can_id),
+                    role=_text(item.role),
+                    requested_enabled=bool(item.requested_enabled),
+                    command_sent=bool(item.command_sent),
+                    rollback_sent=bool(item.rollback_sent),
+                    has_feedback=bool(item.has_feedback),
+                    feedback_fresh=bool(item.feedback_fresh),
+                    status_code=int(item.status_code),
+                    confirmed=bool(item.confirmed),
+                    error=_optional_text(item.error),
+                )
+                for item in native.motors[:count]
+            ),
+            error=_optional_text(native.error),
+        )
+
+    def _set_motor_power(self, motors: Sequence[str], *, enabled: bool) -> bool:
+        encoded = tuple(role.encode("utf-8") for role in motors)
+        roles = (ctypes.c_char_p * len(encoded))(*encoded)
+        native = CMotorPowerReport()
+        native.struct_size = ctypes.sizeof(native)
+        function = (
+            self._runtime_abi.lib.articore_runtime_enable_motors
+            if enabled
+            else self._runtime_abi.lib.articore_runtime_disable_motors
+        )
+        operation = "enable_motors" if enabled else "disable_motors"
+        with self._lock:
+            rc = int(function(
+                self._require_open(), roles, len(encoded), ctypes.byref(native)
+            ))
+            report = self._motor_power_report(native)
+            if rc != 0:
+                raise RuntimeTransactionError(
+                    f"{operation} failed: {self._last_error()}", report,
+                )
+        return True
+
+    def enable(self, motors: Sequence[str] | None = None) -> bool:
+        if motors is not None:
+            return self._set_motor_power(motors, enabled=True)
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_enable(
                 self._require_open(), int(self._control_mode)
@@ -341,7 +386,9 @@ class ArticoreRuntime:
             error=_optional_text(native.error),
         )
 
-    def disable(self) -> bool:
+    def disable(self, motors: Sequence[str] | None = None) -> bool:
+        if motors is not None:
+            return self._set_motor_power(motors, enabled=False)
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_disable(self._require_open()))
             if rc != 0:
@@ -393,14 +440,21 @@ class ArticoreRuntime:
 
     def disconnect(self) -> None:
         self._stop_fps_monitor()
-        try:
-            self._call(
-                self._runtime_abi.lib.articore_runtime_disconnect,
-                "disconnect",
+        with self._lock:
+            if not self._ptr:
+                return
+            pointer = self._ptr
+            rc = int(
+                self._runtime_abi.lib.articore_runtime_disconnect(pointer)
             )
-        except Exception:
-            self._start_fps_monitor()
-            raise
+            failure = self._last_error() if rc != 0 else None
+            # The C ABI retains an opaque tombstone for idempotency. Python
+            # owns that final allocation and always frees it internally; the
+            # business API never exposes a separate close/free step.
+            self._runtime_abi.lib.articore_runtime_free(pointer)
+            self._ptr = None
+            if failure is not None:
+                raise RuntimeCallError(f"disconnect failed: {failure}")
 
     def set_joint_positions(
         self, positions: Sequence[float], speed: float = 100.0
@@ -581,29 +635,6 @@ class ArticoreRuntime:
             safety_reason=_optional_text(native.safety_reason),
         )
 
-    def close(self) -> None:
-        self._stop_fps_monitor()
-        try:
-            with self._lock:
-                if not self._ptr:
-                    return
-                rc = int(self._runtime_abi.lib.articore_runtime_close(self._ptr))
-                failure = self._last_error() if rc != 0 else None
-                if rc != 0:
-                    try:
-                        report = self._last_disable_report()
-                    except Exception:
-                        report = DisableReport(False, False, 0, 0, 0, 1, 0, (), (), self._last_error())
-                    raise RuntimeTransactionError(
-                        f"close failed: {failure}", report
-                    )
-                self._runtime_abi.lib.articore_runtime_free(self._ptr)
-                self._ptr = None
-        except Exception:
-            if self._ptr:
-                self._start_fps_monitor()
-            raise
-
     def __enter__(self) -> ArticoreRuntime:
         self._require_open()
         return self
@@ -614,10 +645,10 @@ class ArticoreRuntime:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        self.disconnect()
 
     def __del__(self) -> None:
         try:
-            self.close()
+            self.disconnect()
         except Exception:
             pass

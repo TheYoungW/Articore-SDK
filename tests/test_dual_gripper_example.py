@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arx_d_can.examples.dual_arm import (
+from arx_d_can.examples import (
     example_08_set_gripper_openings as example,
 )
 
@@ -78,7 +78,7 @@ def test_gripper_example_submits_required_openings(monkeypatch) -> None:
             captured["openings"] = (left, right)
             captured["gripper_level"] = gripper_level
 
-        def close(self) -> None:
+        def disconnect(self) -> None:
             captured["calls"].append("close")
 
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)

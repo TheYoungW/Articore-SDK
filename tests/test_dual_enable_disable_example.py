@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from arx_d_can.examples.dual_arm import example_03_enable_disable as example
+from arx_d_can.examples import example_03_enable_disable as example
 
 
 def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:
@@ -31,7 +31,7 @@ def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:
         def disable(self) -> None:
             events.append("disable")
 
-        def close(self) -> None:
+        def disconnect(self) -> None:
             events.append("close")
 
     prompts: list[str] = []
@@ -65,7 +65,7 @@ def test_enable_disable_example_closes_after_interruption(monkeypatch) -> None:
         def connect(self) -> None:
             events.append("connect")
 
-        def close(self) -> None:
+        def disconnect(self) -> None:
             events.append("close")
 
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)

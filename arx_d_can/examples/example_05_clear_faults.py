@@ -13,7 +13,7 @@ def main() -> None:
         robot.clear_motor_faults()
         print("双臂和已安装夹爪的电机故障已清除")
     finally:
-        robot.close()
+        robot.disconnect()
         print("双臂已失能并断开连接")
 
 

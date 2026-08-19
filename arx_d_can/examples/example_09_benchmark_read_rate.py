@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import benchmark_state_reads
+from arx_d_can.examples.common import benchmark_state_reads
 
 
 def main(args: argparse.Namespace) -> None:
@@ -27,7 +27,7 @@ def main(args: argparse.Namespace) -> None:
         print(f"最大耗时：{result.max_read_s * 1000.0:.3f} ms")
         print(f"错过周期：{result.missed_deadlines}")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

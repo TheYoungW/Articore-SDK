@@ -33,7 +33,7 @@ def main() -> None:
         print("具体错误：", error or "无")
         print(f"最近 CAN 帧率：{robot.get_fps():.0f} Hz")
     finally:
-        robot.close()
+        robot.disconnect()
 
 
 if __name__ == "__main__":

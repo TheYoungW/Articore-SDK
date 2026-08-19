@@ -231,6 +231,35 @@ class DisableReport:
 
 
 @dataclass(frozen=True)
+class MotorPowerResult:
+    side: int
+    can_id: int
+    role: str
+    requested_enabled: bool
+    command_sent: bool
+    rollback_sent: bool
+    has_feedback: bool
+    feedback_fresh: bool
+    status_code: int
+    confirmed: bool
+    error: str | None
+
+
+@dataclass(frozen=True)
+class MotorPowerReport:
+    success: bool
+    requested_enabled: bool
+    rollback_attempted: bool
+    rollback_confirmed: bool
+    requested_count: int
+    command_sent_count: int
+    confirmed_count: int
+    failure_count: int
+    motors: tuple[MotorPowerResult, ...]
+    error: str | None
+
+
+@dataclass(frozen=True)
 class RuntimeTransportHealth:
     connected: bool
     healthy: bool

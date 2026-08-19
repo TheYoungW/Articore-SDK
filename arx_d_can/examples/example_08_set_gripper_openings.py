@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import gripper_opening
+from arx_d_can.examples.common import gripper_opening
 
 
 def _gripper_level(text: str) -> int:
@@ -33,7 +33,7 @@ def main(args: argparse.Namespace) -> None:
         )
         input("按回车退出并失能...")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

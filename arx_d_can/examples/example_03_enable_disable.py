@@ -25,7 +25,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

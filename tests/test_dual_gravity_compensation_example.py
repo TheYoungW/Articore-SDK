@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from arx_d_can import GravityCompensationPhase
-from arx_d_can.examples.dual_arm.example_15_gravity_compensation import (
+from arx_d_can.examples.example_15_gravity_compensation import (
     _stop_and_close,
 )
 
@@ -27,7 +27,7 @@ class _Robot:
         self.calls.append("disable")
         self.enabled = False
 
-    def close(self) -> None:
+    def disconnect(self) -> None:
         self.calls.append("close")
         self.connected = False
 

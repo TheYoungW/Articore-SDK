@@ -143,6 +143,28 @@ class CDisableReport(Structure):
     ]
 
 
+class CMotorPowerResult(Structure):
+    _fields_ = [
+        ("side", c_uint8), ("can_id", c_uint8),
+        ("requested_enabled", c_uint8), ("command_sent", c_uint8),
+        ("rollback_sent", c_uint8), ("has_feedback", c_uint8),
+        ("feedback_fresh", c_uint8), ("status_code", c_uint8),
+        ("confirmed", c_uint8), ("role", c_char * 64),
+        ("error", c_char * 256),
+    ]
+
+
+class CMotorPowerReport(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32), ("success", c_int32),
+        ("requested_enabled", c_int32), ("rollback_attempted", c_int32),
+        ("rollback_confirmed", c_int32), ("requested_count", c_uint32),
+        ("command_sent_count", c_uint32), ("confirmed_count", c_uint32),
+        ("failure_count", c_uint32), ("motor_count", c_uint32),
+        ("motors", CMotorPowerResult * 32), ("error", c_char * 512),
+    ]
+
+
 class CRuntimeTransportHealth(Structure):
     _fields_ = [
         ("connected", c_int32), ("healthy", c_int32),
@@ -238,9 +260,9 @@ class RuntimeAbi:
         self.lib = ctypes.CDLL(runtime_library_path())
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < 0x00020010:
+        if version < 0x00020015:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI >= 2.16; "
+                "Articore-SDK requires Runtime ABI >= 2.21; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self._bind()
@@ -248,17 +270,26 @@ class RuntimeAbi:
     def _bind(self) -> None:
         lib = self.lib
         lib.articore_runtime_last_error.restype = c_char_p
-        lib.articore_runtime_create_product.argtypes = [c_char_p, c_int32, c_int32]
-        lib.articore_runtime_create_product.restype = c_void_p
+        lib.articore_runtime_create_yunyi.argtypes = [c_int32, c_int32]
+        lib.articore_runtime_create_yunyi.restype = c_void_p
         lib.articore_runtime_free.argtypes = [c_void_p]
 
-        for name in ("connect", "disconnect", "disable", "recover", "close", "clear_faults", "set_zero"):
+        for name in ("connect", "disconnect", "disable", "recover", "clear_faults", "set_zero"):
             function = getattr(lib, f"articore_runtime_{name}")
             function.argtypes = [c_void_p]
             function.restype = c_int32
 
         lib.articore_runtime_enable.argtypes = [c_void_p, c_int32]
         lib.articore_runtime_enable.restype = c_int32
+        role_array = POINTER(c_char_p)
+        lib.articore_runtime_enable_motors.argtypes = [
+            c_void_p, role_array, c_uint32, POINTER(CMotorPowerReport),
+        ]
+        lib.articore_runtime_enable_motors.restype = c_int32
+        lib.articore_runtime_disable_motors.argtypes = [
+            c_void_p, role_array, c_uint32, POINTER(CMotorPowerReport),
+        ]
+        lib.articore_runtime_disable_motors.restype = c_int32
         lib.articore_runtime_estop.argtypes = [c_void_p]
         lib.articore_runtime_estop.restype = c_int32
         lib.articore_runtime_configure_mode.argtypes = [c_void_p, c_int32]

@@ -243,7 +243,7 @@ def main() -> None:
             raise RuntimeError("whole-product disable was not confirmed")
         report["disabled"] = not robot.enabled
     finally:
-        robot.close()
+        robot.disconnect()
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
 

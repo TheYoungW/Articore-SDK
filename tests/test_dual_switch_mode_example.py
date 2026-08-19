@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arx_d_can.examples.dual_arm import (
+from arx_d_can.examples import (
     example_02_switch_control_mode as example,
 )
 
@@ -27,7 +27,7 @@ def test_switch_mode_example_configures_both_arms(monkeypatch, mode: str) -> Non
         def configure_mode(self, requested_mode: str) -> None:
             captured["mode"] = requested_mode
 
-        def close(self) -> None:
+        def disconnect(self) -> None:
             captured["calls"].append("close")
 
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)

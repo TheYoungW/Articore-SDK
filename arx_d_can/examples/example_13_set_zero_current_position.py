@@ -14,7 +14,7 @@ def main() -> None:
             raise RuntimeError("Runtime 未能确认所有电机调零成功")
         print("双臂和已安装夹爪已完成调零")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

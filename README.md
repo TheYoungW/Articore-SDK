@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖固定为 `motor-drive-layer==0.10.22`。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖固定为 `motor-drive-layer==0.10.24`。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -36,7 +36,7 @@ try:
     print(robot.safety_health)
     print(robot.get_fps())
 finally:
-    robot.close()
+    robot.disconnect()
 ```
 
 创建对象只有两个业务参数：
@@ -46,9 +46,16 @@ finally:
 
 没有夹爪时，状态中的左右夹爪都是 `None`；关节控制和关节状态仍然只包含左右各 7 个机械臂关节。
 
+用户生命周期只使用 `connect()` 和 `disconnect()`。`disconnect()` 是终止型安全关闭，会由
+C++ Runtime 完成整机失能确认、停止 worker、关闭双 CAN 并释放产品资源；重复调用安全。
+Python 不公开单独的 `close()` 或 `free()`。
+
 ## 控制接口
 
 - 普通位置：`set_joint_mit()`、`set_joint_pv()`，`velocity` 为 0～100 档位。
+- 电机电源：`enable()` / `disable()` 操作整机；传入
+  `motors=["l-joint4", "r-joint4"]` 时由 C++ Runtime 执行一次原子批量事务。部分使能状态下
+  仍提交完整 14 轴目标，底层自动跳过主动失能的电机。
 - 原始帧：`submit_raw_mit()`、`submit_raw_pv()`。
 - 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=1..5)`。
 - 状态：`read_state()`、`read_cached_state()`。
@@ -70,24 +77,27 @@ conda activate at
 cd ~/Articore-SDK
 
 # 100 Hz 读取，10 Hz 显示
-python -m arx_d_can.examples.dual_arm.example_04_read_state \
+python -m arx_d_can.examples.example_04_read_state \
   --mode continuous \
   --display-hz 10
 
 # 500 Hz 读取性能测试
-python -m arx_d_can.examples.dual_arm.example_09_benchmark_read_rate \
+python -m arx_d_can.examples.example_09_benchmark_read_rate \
   --seconds 15 \
   --hz 500 \
   --cached
 
 # 查看 Runtime 健康和具体错误
-python -m arx_d_can.examples.dual_arm.example_12_diagnose_status
+python -m arx_d_can.examples.example_12_diagnose_status
 
 # MIT：双臂第 4 关节到 90°
-python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
+python -m arx_d_can.examples.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
-  --velocity 30
+  --target-velocity "0,0,0,0,0,0,0" \
+  --kp "190,190,70,125,10,22,28" \
+  --kd "4.55,4.5,2,2.9,0.7,0.89,0.84" \
+  --feedforward-torque "0,0,0,0,0,0,0"
 ```
 
 完整示例见 [arx_d_can/examples/README.md](arx_d_can/examples/README.md)。
@@ -97,7 +107,7 @@ python -m arx_d_can.examples.dual_arm.example_07_send_position_mit \
 ```text
 业务代码
   └─ ArxDCanDualArm
-       └─ ArticoreRuntime.create_product("yunyi_v1_0", ...)
+       └─ ArticoreRuntime.create_yunyi(...)
             └─ libarticore_runtime.so / libmotor_abi.so
                  └─ can-left + can-right + 14 关节 + 可选双夹爪
 ```

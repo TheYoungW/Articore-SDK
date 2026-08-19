@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import positive_velocity_degrees
+from arx_d_can.examples.common import positive_velocity_degrees
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,
     REPLAY_HZ,
@@ -158,7 +158,7 @@ def main(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
-        robot.close()
+        robot.disconnect()
         print("双臂已失能并断开连接")
 
 

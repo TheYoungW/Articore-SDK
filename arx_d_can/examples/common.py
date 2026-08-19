@@ -30,6 +30,13 @@ def joint_degrees(text: str) -> tuple[float, ...]:
     return tuple(math.radians(value) for value in joint_values(text, name="关节角度"))
 
 
+def joint_velocity_degrees(text: str) -> tuple[float, ...]:
+    """解析 Yunyi 单侧 7 个目标速度并从度/秒转换为弧度/秒。"""
+    return tuple(
+        math.radians(value) for value in joint_values(text, name="关节目标速度")
+    )
+
+
 def speed_percent(text: str) -> float:
     """解析普通位置控制的 0～100 速度档位。"""
     value = float(text)

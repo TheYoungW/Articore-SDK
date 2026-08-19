@@ -15,7 +15,7 @@ def main(args: argparse.Namespace) -> None:
         robot.configure_mode(args.mode)
         print(f"左右臂已切换到 {args.mode.upper()} 模式")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

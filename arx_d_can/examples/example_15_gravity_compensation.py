@@ -37,7 +37,7 @@ def _stop_and_close(robot: ArxDCanDualArm) -> None:
             errors.append(exc)
     if robot.connected:
         try:
-            robot.close()
+            robot.disconnect()
         except Exception as exc:
             errors.append(exc)
     if errors:

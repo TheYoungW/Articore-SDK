@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can.examples.dual_arm import example_04_read_state as example
+from arx_d_can.examples import example_04_read_state as example
 
 
 def _state():
@@ -42,7 +42,7 @@ def test_once_mode_reads_one_feedback_sample(monkeypatch) -> None:
             calls.append("read")
             return _state()
 
-        def close(self) -> None:
+        def disconnect(self) -> None:
             calls.append("close")
 
     monkeypatch.setattr(example, "ArxDCanDualArm", Robot)
@@ -69,7 +69,7 @@ def test_continuous_mode_uses_100_hz_until_interrupted(monkeypatch) -> None:
                 raise KeyboardInterrupt
             return _state()
 
-        def close(self) -> None:
+        def disconnect(self) -> None:
             pass
 
     monkeypatch.setattr(example, "ArxDCanDualArm", Robot)

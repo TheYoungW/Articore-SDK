@@ -80,8 +80,8 @@ class ArxDCanDualArm:
     def __init__(
         self, *, control_mode: str = "mit", with_grippers: bool = True
     ) -> None:
-        self._runtime = ArticoreRuntime.create_product(
-            "yunyi_v1_0", _mode(control_mode), with_grippers=with_grippers
+        self._runtime = ArticoreRuntime.create_yunyi(
+            _mode(control_mode), with_grippers=with_grippers
         )
 
     @property
@@ -113,6 +113,7 @@ class ArxDCanDualArm:
             SafetyState.SAFE_HOLD,
             SafetyState.DEGRADED,
             SafetyState.SAFE_STOP,
+            SafetyState.PARTIALLY_ENABLED,
         }
 
     @property
@@ -133,13 +134,13 @@ class ArxDCanDualArm:
     def disconnect(self) -> None:
         self._runtime.disconnect()
 
-    def enable(self) -> bool:
-        """使能完整双臂产品。"""
-        return self._runtime.enable()
+    def enable(self, motors: Sequence[str] | None = None) -> bool:
+        """原子使能整机或指定产品电机。"""
+        return self._runtime.enable(motors=motors)
 
-    def disable(self) -> bool:
-        """失能完整双臂产品。"""
-        return self._runtime.disable()
+    def disable(self, motors: Sequence[str] | None = None) -> bool:
+        """原子失能整机或指定产品电机。"""
+        return self._runtime.disable(motors=motors)
 
     def configure_mode(self, mode: str) -> None:
         self._runtime.configure_mode(_mode(mode))
@@ -281,14 +282,11 @@ class ArxDCanDualArm:
         """Clear recoverable faults without moving or changing calibration."""
         self._runtime.clear_faults()
 
-    def close(self) -> None:
-        self._runtime.close()
-
     def __enter__(self) -> ArxDCanDualArm:
         return self
 
     def __exit__(self, *_args: object) -> None:
-        self.close()
+        self.disconnect()
 
 
 __all__ = ["ArxDCanDualArm", "ArxDCanDualArmState"]

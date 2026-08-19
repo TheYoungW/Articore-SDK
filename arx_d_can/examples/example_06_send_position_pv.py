@@ -6,7 +6,7 @@ import argparse
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.dual_arm.common import joint_degrees, speed_percent
+from arx_d_can.examples.common import joint_degrees, speed_percent
 
 
 def main(args: argparse.Namespace) -> None:
@@ -27,7 +27,7 @@ def main(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
-        robot.close()
+        robot.disconnect()
         print("已断开连接")
 
 

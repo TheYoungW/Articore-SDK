@@ -9,7 +9,7 @@ description = "Yunyi V1.0 dual-arm Python SDK backed by Motor Drive Layer Runtim
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "motor-drive-layer==0.10.22",
+  "motor-drive-layer==0.10.24",
 ]
 
 [project.optional-dependencies]
@@ -22,7 +22,6 @@ include-package-data = false
 packages = [
   "arx_d_can",
   "arx_d_can.examples",
-  "arx_d_can.examples.dual_arm",
   "arx_d_can._motor_abi",
   "arx_d_can.sdk",
   "arx_d_can.service_tools",

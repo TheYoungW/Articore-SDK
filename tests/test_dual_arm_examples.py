@@ -1,11 +1,12 @@
 from pathlib import Path
 
 
-def test_dual_arm_examples_exclude_removed_runtime_trajectory_demo() -> None:
+def test_product_examples_are_flat_and_exclude_removed_runtime_demo() -> None:
     root = Path(__file__).resolve().parents[1] / "arx_d_can" / "examples"
-    dual = sorted(path.name for path in (root / "dual_arm").glob("example_*.py"))
+    examples = sorted(path.name for path in root.glob("example_*.py"))
 
-    assert dual == [
+    assert not (root / "dual_arm").exists()
+    assert examples == [
         "example_02_switch_control_mode.py",
         "example_03_enable_disable.py",
         "example_04_read_state.py",
