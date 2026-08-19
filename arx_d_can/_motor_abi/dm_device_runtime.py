@@ -60,11 +60,6 @@ def _platform_runtimes() -> list[DmDeviceRuntime]:
     raise RuntimeError(f"DM_Device runtime is not available for {sys.platform}/{machine}")
 
 
-def _platform_runtime() -> DmDeviceRuntime:
-    """Return the preferred runtime (kept for callers of the old helper)."""
-    return _platform_runtimes()[0]
-
-
 def _cache_root() -> Path:
     env = os.getenv("MOTOR_DM_DEVICE_CACHE_DIR")
     if env:

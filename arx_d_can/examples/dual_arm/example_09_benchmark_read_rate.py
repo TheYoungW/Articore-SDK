@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.service_tools.read_benchmark import benchmark_state_reads
+from arx_d_can.examples.dual_arm.common import benchmark_state_reads
 
 
 def main(args: argparse.Namespace) -> None:
     robot = ArxDCanDualArm()
-    robot.connect(read_only=True)
+    robot.connect()
     print("机器人连接成功")
     try:
         if args.cached:

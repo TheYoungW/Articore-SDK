@@ -6,7 +6,6 @@ def test_dual_arm_examples_exclude_removed_runtime_trajectory_demo() -> None:
     dual = sorted(path.name for path in (root / "dual_arm").glob("example_*.py"))
 
     assert dual == [
-        "example_01_scan_ids.py",
         "example_02_switch_control_mode.py",
         "example_03_enable_disable.py",
         "example_04_read_state.py",

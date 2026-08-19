@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.single_arm.common import positive_velocity_degrees
+from arx_d_can.examples.dual_arm.common import positive_velocity_degrees
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,
     _submit_raw_positions,

@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 import arx_d_can
-import arx_d_can.actuator as actuator_module
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.dual_arm import (
     example_16_record_gravity_trajectory as record_example,
@@ -38,11 +37,8 @@ def test_public_api_exposes_runtime_gravity_compensation_only() -> None:
     for legacy_name in ("ArxDCan", "JointCfg", "JointGroup", "ArxDCanEndPose"):
         assert legacy_name not in arx_d_can.__all__
         assert not hasattr(arx_d_can, legacy_name)
-    assert {"ArxDCan", "JointCfg", "JointGroup"}.isdisjoint(
-        actuator_module.__all__
-    )
-    for legacy_name in ("ArxDCan", "JointCfg", "JointGroup"):
-        assert not hasattr(actuator_module, legacy_name)
+    assert not hasattr(arx_d_can, "ArxDCanArm")
+    assert not hasattr(arx_d_can, "actuator")
 
 
 def test_replay_parser_defaults_to_safe_atomic_start() -> None:

@@ -9,34 +9,16 @@ from ._runtime_abi import (
     CConnectReport,
     CDisableReport,
     CEnableReport,
-    CGripperCommand,
-    CGripperProductBinding,
     CGravityCompensationConfig,
     CGravityCompensationStatus,
-    CGravityProductBinding,
-    CJointControlConfig,
-    CJointSafetyLimits,
-    CJointTarget,
-    CMitTorqueLimitStats,
-    CMotorIdentity,
-    CMitCommand,
-    CPosVelCommand,
     CProductPose,
     CProductState,
-    CRuntimeConfig,
-    CRuntimeMotorDescriptor,
-    CRuntimeTransportCapabilities,
     CRuntimeTransportHealth,
-    CSafetyHealth,
     CSafetyHealthV2,
     get_runtime_abi,
 )
-from .core import Controller, ControllerGroup, Motor
 from .errors import RuntimeCallError, RuntimeTransactionError
-from .models import PresenceState
 from .runtime_models import (
-    ActiveCapability,
-    CommandLifetime,
     ConnectChannelResult,
     ConnectErrorCode,
     ConnectMotorResult,
@@ -45,20 +27,10 @@ from .runtime_models import (
     DisableReport,
     EnableMotorResult,
     EnableReport,
-    GripperCommand,
     GripperControlState,
     GripperHealth,
-    GripperProductBinding,
     GravityCompensationPhase,
     GravityCompensationStatus,
-    GravityProductBinding,
-    JointControlConfig,
-    JointPositionTarget,
-    JointSafetyLimits,
-    MitTorqueLimitJointStats,
-    MitTorqueLimitStats,
-    MotorPowerState,
-    RuntimeConfig,
     RuntimeControlMode,
     RuntimeOperation,
     OperationError,
@@ -66,9 +38,6 @@ from .runtime_models import (
     ProductGripperState,
     ProductPose,
     ProductState,
-    RuntimeMitCommand,
-    RuntimeMotor,
-    RuntimePvCommand,
     RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
@@ -117,160 +86,10 @@ def _transport_health(value: CRuntimeTransportHealth) -> RuntimeTransportHealth:
 
 
 class ArticoreRuntime:
-    """Official owner-safe Python binding for the native Articore Runtime.
+    """Yunyi 双臂产品 Runtime 的轻量 ctypes 绑定。"""
 
-    All control, watchdog, safety, gripper, and fixed-rate behavior remains in
-    ``libarticore_runtime``. This class only validates Python object ownership,
-    converts typed values, and translates stable native reports.
-    """
-
-    def __init__(
-        self,
-        config: RuntimeConfig,
-        controller_group: ControllerGroup,
-        left_controller: Controller | None,
-        right_controller: Controller | None,
-        motors: Sequence[RuntimeMotor],
-    ) -> None:
-        values = tuple(motors)
-        if not values:
-            raise ValueError("motors must not be empty")
-        if len({id(item.motor) for item in values}) != len(values):
-            raise ValueError("runtime motors must not contain duplicates")
-        if left_controller is None and right_controller is None:
-            raise ValueError("at least one controller is required")
-        controllers = tuple(
-            controller
-            for controller in (left_controller, right_controller)
-            if controller is not None
-        )
-        if len({id(controller) for controller in controllers}) != len(controllers):
-            raise ValueError("left and right controllers must be distinct")
-        if any(controller not in controller_group._controllers for controller in controllers):
-            raise ValueError("runtime controllers must belong to controller_group")
-        for item in values:
-            if item.side not in (0, 1):
-                raise ValueError(f"{item.name}: side must be 0 or 1")
-            expected = left_controller if item.side == 0 else right_controller
-            if expected is None or item.motor._controller is not expected:
-                raise ValueError(f"{item.name}: motor does not belong to its side controller")
-            controller_group._validate_motor(item.motor)
-
-        self._lock = RLock()
-        self._fps = 0.0
-        self._fps_stop = Event()
-        self._fps_thread: Thread | None = None
-        self._ptr: int | None = None
-        self._runtime_abi = get_runtime_abi()
-        self._group = controller_group
-        self._controllers = controllers
-        self._motors = values
-        self._motor_set = {id(item.motor): item.motor for item in values}
-        self._leases: list[object] = []
-        self._product_owned = False
-        self._control_mode: RuntimeControlMode | None = None
-
-        native_config = CRuntimeConfig(
-            int(config.control_hz), int(config.command_timeout_ms),
-            int(config.enable_grace_ms), int(config.safe_hold_hz),
-            int(config.feedback_check_hz), int(config.feedback_failure_threshold),
-            int(config.feedback_max_age_ms), int(config.safe_hold_failure_threshold),
-            int(config.disable_feedback_timeout_ms), float(config.safe_pv_velocity_limit),
-            int(config.gripper_control_hz), int(config.gripper_fault_action),
-        )
-        native_motors = (CRuntimeMotorDescriptor * len(values))()
-        for index, item in enumerate(values):
-            descriptor = native_motors[index]
-            descriptor.motor = item.motor._require_open()
-            descriptor.side = item.side
-            descriptor.is_gripper = int(item.is_gripper)
-            descriptor.name = _fixed_text(item.name, "motor name")
-            descriptor.safe_kp = float(item.safe_kp)
-            descriptor.safe_kd = float(item.safe_kd)
-            # All gripper product fields intentionally remain zero. The SDK
-            # binds a named native product profile before connect().
-
-        resources = (controller_group, *controllers, *(item.motor for item in values))
-        try:
-            for resource in resources:
-                resource._acquire_runtime_lease()
-                self._leases.append(resource)
-            self._motor_api = self._runtime_abi.motor_api()
-            self._maintenance_api = self._runtime_abi.maintenance_api()
-            motor_lib = self._runtime_abi.motor.lib
-            create_arguments = (
-                ctypes.byref(native_config), ctypes.byref(self._motor_api),
-                controller_group._require_open(),
-                left_controller._require_open() if left_controller else None,
-                right_controller._require_open() if right_controller else None,
-                native_motors, len(values),
-                ctypes.cast(motor_lib.motor_controller_enable_all, ctypes.c_void_p),
-                ctypes.cast(motor_lib.motor_handle_enable, ctypes.c_void_p),
-            )
-            if self._runtime_abi.has_transport_aware_create:
-                native_transports = (
-                    CRuntimeTransportCapabilities * len(controllers)
-                )()
-                for output, controller in zip(native_transports, controllers):
-                    capabilities = controller.transport_capabilities()
-                    encoded_transport = capabilities.transport.encode()
-                    if not encoded_transport or len(encoded_transport) >= 32:
-                        raise ValueError(
-                            "transport capability name must contain 1..31 bytes"
-                        )
-                    output.struct_size = ctypes.sizeof(
-                        CRuntimeTransportCapabilities
-                    )
-                    output.side = 0 if controller is left_controller else 1
-                    output.can_fd = int(capabilities.can_fd)
-                    output.can_fd_brs = int(capabilities.can_fd_brs)
-                    output.transport = encoded_transport
-                if self._runtime_abi.has_owner_safe_maintenance:
-                    pointer = self._runtime_abi.lib.articore_runtime_create_ex3(
-                        ctypes.byref(native_config), ctypes.byref(self._motor_api),
-                        ctypes.byref(self._maintenance_api),
-                        controller_group._require_open(),
-                        left_controller._require_open() if left_controller else None,
-                        right_controller._require_open() if right_controller else None,
-                        native_motors, len(values),
-                        ctypes.cast(motor_lib.motor_controller_enable_all, ctypes.c_void_p),
-                        ctypes.cast(motor_lib.motor_handle_enable, ctypes.c_void_p),
-                        native_transports, len(native_transports),
-                    )
-                else:
-                    pointer = self._runtime_abi.lib.articore_runtime_create_ex2(
-                        *create_arguments, native_transports, len(native_transports)
-                    )
-            else:
-                pointer = self._runtime_abi.lib.articore_runtime_create_ex(
-                    *create_arguments
-                )
-            if not pointer:
-                raise RuntimeCallError(
-                    f"articore_runtime_create_ex failed: {self._last_error()}"
-                )
-            self._ptr = int(pointer)
-            motor_ids = tuple(getattr(item.motor, "_motor_id", None) for item in values)
-            if any(value is not None for value in motor_ids):
-                if not all(value is not None for value in motor_ids):
-                    raise ValueError(
-                        "Runtime motor CAN identities are only partially available"
-                    )
-                identities = (CMotorIdentity * len(values))()
-                for identity, item, can_id in zip(identities, values, motor_ids):
-                    identity.struct_size = ctypes.sizeof(CMotorIdentity)
-                    identity.motor = item.motor._require_open()
-                    identity.can_id = int(can_id)
-                self._call(
-                    self._runtime_abi.lib.articore_runtime_configure_motor_identities,
-                    "configure_motor_identities", identities, len(values),
-                )
-        except Exception:
-            if self._ptr:
-                self._runtime_abi.lib.articore_runtime_free(self._ptr)
-                self._ptr = None
-            self._release_leases()
-            raise
+    def __init__(self) -> None:
+        raise TypeError("use ArticoreRuntime.create_product()")
 
     @classmethod
     def create_product(
@@ -297,12 +116,6 @@ class ArticoreRuntime:
         self._fps_thread = None
         self._ptr = pointer
         self._runtime_abi = runtime_abi
-        self._group = None
-        self._controllers = ()
-        self._motors = ()
-        self._motor_set = {}
-        self._leases = []
-        self._product_owned = True
         self._control_mode = mode
         return self
 
@@ -324,16 +137,6 @@ class ArticoreRuntime:
             rc = int(function(self._require_open(), *args))
             if rc != 0:
                 raise RuntimeCallError(f"{operation} failed: {self._last_error()}")
-
-    def _motor_pointer(self, motor: Motor) -> int:
-        owned = self._motor_set.get(id(motor))
-        if owned is not motor:
-            raise ValueError("motor does not belong to this ArticoreRuntime")
-        return motor._require_open()
-
-    def _release_leases(self) -> None:
-        while self._leases:
-            self._leases.pop()._release_runtime_lease()
 
     @property
     def control_hz(self) -> int:
@@ -406,112 +209,6 @@ class ArticoreRuntime:
         )
         return RuntimeControlMode(value.value)
 
-    @property
-    def mit_torque_limit_stats(self) -> MitTorqueLimitStats:
-        native = CMitTorqueLimitStats()
-        native.struct_size = ctypes.sizeof(native)
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_mit_torque_limit_stats,
-            "get_mit_torque_limit_stats", ctypes.byref(native),
-        )
-        motors_by_pointer = {
-            self._motor_pointer(item.motor): item.motor for item in self._motors
-        }
-        product_names = tuple(
-            f"{side}/{prefix}-joint{index}"
-            for side, prefix in (("left", "l"), ("right", "r"))
-            for index in range(1, 8)
-        )
-        count = min(int(native.joint_count), len(native.joints))
-        joints = []
-        for index in range(count):
-            pointer = int(native.joints[index] or 0)
-            motor = motors_by_pointer.get(pointer)
-            if motor is None and self._product_owned and index < len(product_names):
-                motor = product_names[index]
-            if motor is None:
-                raise RuntimeCallError(
-                    "MIT torque limit stats returned an unknown motor handle"
-                )
-            joints.append(MitTorqueLimitJointStats(
-                motor=motor,
-                requested_resultant_torque=float(
-                    native.requested_resultant_torque[index]
-                ),
-                applied_scale=float(native.applied_scale[index]),
-                applied_resultant_torque=float(
-                    native.applied_resultant_torque[index]
-                ),
-                limited=bool(native.torque_limited_joint_mask & (1 << index)),
-            ))
-        return MitTorqueLimitStats(
-            torque_limit_activation_count=int(
-                native.torque_limit_activation_count
-            ),
-            torque_limited_joint_mask=int(native.torque_limited_joint_mask),
-            joints=tuple(joints),
-        )
-
-    def configure_joints(self, configs: Sequence[JointControlConfig]) -> None:
-        values = tuple(configs)
-        native = (CJointControlConfig * len(values))(
-            *(CJointControlConfig(
-                self._motor_pointer(item.motor), item.lower_position,
-                item.upper_position, item.velocity_limit, item.torque_limit,
-                item.mit_kp, item.mit_kd, item.mit_feedforward_torque,
-            ) for item in values)
-        )
-        self._call(self._runtime_abi.lib.articore_runtime_configure_joints,
-                   "configure_joints", native if values else None, len(values))
-
-    def configure_joint_safety_limits(
-        self, limits: Sequence[JointSafetyLimits]
-    ) -> None:
-        values = tuple(limits)
-        native = (CJointSafetyLimits * len(values))()
-        for output, item in zip(native, values):
-            output.struct_size = ctypes.sizeof(CJointSafetyLimits)
-            output.motor = self._motor_pointer(item.motor)
-            output.hard_lower_position = item.hard_lower_position
-            output.hard_upper_position = item.hard_upper_position
-            output.soft_lower_position = item.soft_lower_position
-            output.soft_upper_position = item.soft_upper_position
-            output.soft_limit_braking_zone = item.soft_limit_braking_zone
-            output.braking_acceleration = item.braking_acceleration
-        self._call(
-            self._runtime_abi.lib.articore_runtime_configure_joint_safety_limits,
-            "configure_joint_safety_limits", native if values else None, len(values),
-        )
-
-    def configure_gripper_products(
-        self, bindings: Sequence[GripperProductBinding]
-    ) -> None:
-        values = tuple(bindings)
-        native = (CGripperProductBinding * len(values))()
-        for output, item in zip(native, values):
-            output.struct_size = ctypes.sizeof(CGripperProductBinding)
-            output.motor = self._motor_pointer(item.motor)
-            output.profile_id = _fixed_text(item.profile_id, "profile_id")
-        self._call(
-            self._runtime_abi.lib.articore_runtime_configure_gripper_products,
-            "configure_gripper_products", native if values else None, len(values),
-        )
-
-    def configure_gravity_products(
-        self, bindings: Sequence[GravityProductBinding]
-    ) -> None:
-        values = tuple(bindings)
-        native = (CGravityProductBinding * len(values))()
-        for output, item in zip(native, values):
-            output.struct_size = ctypes.sizeof(CGravityProductBinding)
-            output.runtime_side = item.runtime_side
-            output.robot_side = item.robot_side
-            output.product_id = _fixed_text(item.product_id, "product_id")
-        self._call(
-            self._runtime_abi.lib.articore_runtime_configure_gravity_products,
-            "configure_gravity_products", native if values else None, len(values),
-        )
-
     def start_gravity_compensation(self, transition_ms: int = 0) -> None:
         if not isinstance(transition_ms, int) or not 0 <= transition_ms <= 60_000:
             raise ValueError("transition_ms must be an integer in 0..60000")
@@ -538,20 +235,11 @@ class ArticoreRuntime:
             "get_gravity_compensation_status", ctypes.byref(native),
         )
         count = min(int(native.joint_count), len(native.joints))
-        if self._product_owned:
-            joints = tuple(
-                f"{side}/{prefix}-joint{index}"
-                for side, prefix in (("left", "l"), ("right", "r"))
-                for index in range(1, 8)
-            )[:count]
-        else:
-            motors_by_pointer = {
-                self._motor_pointer(item.motor): item.motor for item in self._motors
-            }
-            joints = tuple(
-                motors_by_pointer[int(native.joints[index] or 0)]
-                for index in range(count)
-            )
+        joints = tuple(
+            f"{side}/{prefix}-joint{index}"
+            for side, prefix in (("left", "l"), ("right", "r"))
+            for index in range(1, 8)
+        )[:count]
         return GravityCompensationStatus(
             phase=GravityCompensationPhase(native.phase),
             active=bool(native.active),
@@ -563,31 +251,6 @@ class ArticoreRuntime:
                 for index in range(count)
             ),
         )
-
-    def declare_motor_presence(self, role: str, state: PresenceState) -> None:
-        encoded = _fixed_text(role, "motor role")
-        self._call(
-            self._runtime_abi.lib.articore_runtime_declare_motor_presence,
-            "declare_motor_presence", encoded, int(state),
-        )
-
-    def motor_presence(self, role: str) -> PresenceState:
-        value = ctypes.c_int32()
-        self._call(
-            self._runtime_abi.lib.articore_runtime_motor_presence,
-            "motor_presence", _fixed_text(role, "motor role"), ctypes.byref(value),
-        )
-        return PresenceState(value.value)
-
-    @property
-    def active_capabilities(self) -> ActiveCapability:
-        with self._lock:
-            value = int(
-                self._runtime_abi.lib.articore_runtime_active_capabilities(
-                    self._require_open()
-                )
-            )
-            return ActiveCapability(value)
 
     def connect(self) -> ConnectReport:
         with self._lock:
@@ -650,26 +313,10 @@ class ArticoreRuntime:
             error=_optional_text(native.error),
         )
 
-    def enable(
-        self,
-        mode: RuntimeControlMode | None = None,
-        *,
-        motor: str | None = None,
-    ) -> bool:
-        if motor is not None:
-            return self.set_motor_enabled(motor, True)
-        try:
-            selected = self._control_mode if mode is None else RuntimeControlMode(mode)
-        except ValueError as error:
-            raise RuntimeTransactionError(
-                "enable failed: control mode must be PV or MIT",
-                self._last_enable_report(),
-            ) from error
-        if selected is None:
-            raise ValueError("control mode is required for a generic Runtime")
+    def enable(self) -> bool:
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_enable(
-                self._require_open(), int(selected)
+                self._require_open(), int(self._control_mode)
             ))
             if rc != 0:
                 raise RuntimeTransactionError(
@@ -677,41 +324,6 @@ class ArticoreRuntime:
                     self._last_enable_report(),
                 )
         return True
-
-    def set_motor_enabled(self, motor: str | None, enabled: bool) -> bool:
-        """Set one motor, or all motors when ``motor`` is ``None``.
-
-        Stable product selectors are ``left/joint1`` through
-        ``left/joint7``, ``right/joint1`` through ``right/joint7``, and the
-        optional ``left/gripper`` / ``right/gripper`` roles.
-        """
-        if not isinstance(enabled, bool):
-            raise TypeError("enabled must be bool")
-        encoded = None if motor is None else _fixed_text(motor, "motor")
-        confirmed = ctypes.c_int32()
-        self._call(
-            self._runtime_abi.lib.articore_runtime_set_motor_power,
-            "set_motor_power", encoded, int(enabled), ctypes.byref(confirmed),
-        )
-        expected = (
-            MotorPowerState.ENABLED if enabled else MotorPowerState.DISABLED
-        )
-        return MotorPowerState(confirmed.value) is expected
-
-    def motor_power_state(self, motor: str | None = None) -> MotorPowerState:
-        encoded = None if motor is None else _fixed_text(motor, "motor")
-        state = ctypes.c_int32()
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_motor_power,
-            "get_motor_power", encoded, ctypes.byref(state),
-        )
-        return MotorPowerState(state.value)
-
-    def is_enabled(self, motor: str | None = None) -> bool:
-        return self.motor_power_state(motor) is MotorPowerState.ENABLED
-
-    def is_disabled(self, motor: str | None = None) -> bool:
-        return self.motor_power_state(motor) is MotorPowerState.DISABLED
 
     def _last_enable_report(self) -> EnableReport:
         native = CEnableReport()
@@ -738,76 +350,7 @@ class ArticoreRuntime:
             error=_optional_text(native.error),
         )
 
-    def set_joint_mit(
-        self, targets: Sequence[JointPositionTarget], speed: float
-    ) -> None:
-        self._set_joint_targets("mit", targets, speed)
-
-    def set_joint_pv(
-        self, targets: Sequence[JointPositionTarget], speed: float
-    ) -> None:
-        self._set_joint_targets("pv", targets, speed)
-
-    def _set_joint_targets(
-        self, mode: str, targets: Sequence[JointPositionTarget], speed: float
-    ) -> None:
-        values = tuple(targets)
-        native = (CJointTarget * len(values))()
-        for output, target in zip(native, values):
-            output.struct_size = ctypes.sizeof(CJointTarget)
-            output.motor = self._motor_pointer(target.motor)
-            output.target_position = float(target.position)
-        self._call(
-            getattr(self._runtime_abi.lib, f"articore_runtime_set_joint_{mode}"),
-            f"set_joint_{mode}", native if values else None, len(values), float(speed),
-        )
-
-    def submit_mit(
-        self, commands: Sequence[RuntimeMitCommand],
-        lifetime: CommandLifetime = CommandLifetime.STREAMING,
-    ) -> None:
-        values = tuple(commands)
-        native = (CMitCommand * len(values))(
-            *(CMitCommand(self._motor_pointer(item.motor), item.position,
-                          item.velocity, item.kp, item.kd,
-                          item.feedforward_torque) for item in values)
-        )
-        self._call(self._runtime_abi.lib.articore_runtime_submit_mit_ex,
-                   "submit_mit", native if values else None, len(values), int(lifetime))
-
-    def submit_pv(
-        self, commands: Sequence[RuntimePvCommand],
-        lifetime: CommandLifetime = CommandLifetime.STREAMING,
-    ) -> None:
-        values = tuple(commands)
-        native = (CPosVelCommand * len(values))(
-            *(CPosVelCommand(self._motor_pointer(item.motor), item.position,
-                             item.velocity_limit) for item in values)
-        )
-        self._call(self._runtime_abi.lib.articore_runtime_submit_pos_vel_ex,
-                   "submit_pv", native if values else None, len(values), int(lifetime))
-
-    def set_grippers(self, commands: Sequence[GripperCommand]) -> None:
-        values = tuple(commands)
-        native = (CGripperCommand * len(values))()
-        for output, item in zip(native, values):
-            output.struct_size = ctypes.sizeof(CGripperCommand)
-            output.motor = self._motor_pointer(item.motor)
-            output.opening = item.opening
-            output.speed = item.speed
-            output.force_level = item.force_level
-        self._call(self._runtime_abi.lib.articore_runtime_set_gripper_commands,
-                   "set_grippers", native if values else None, len(values))
-
-    def report_feedback_failure(self, side: int, reason: str) -> None:
-        if side not in (0, 1):
-            raise ValueError("side must be 0 or 1")
-        self._call(self._runtime_abi.lib.articore_runtime_report_feedback_failure,
-                   "report_feedback_failure", side, reason.encode())
-
-    def disable(self, *, motor: str | None = None) -> bool:
-        if motor is not None:
-            return self.set_motor_enabled(motor, False)
+    def disable(self) -> bool:
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_disable(self._require_open()))
             if rc != 0:
@@ -1058,17 +601,11 @@ class ArticoreRuntime:
                         report = self._last_disable_report()
                     except Exception:
                         report = DisableReport(False, False, 0, 0, 0, 1, 0, (), (), self._last_error())
-                    # A failed native close means physical disable was not
-                    # confirmed. Keep the native Runtime and every acquired lease
-                    # alive so callers can inspect the report and retry close;
-                    # releasing the group/controllers here would violate the
-                    # deterministic-close ownership barrier.
                     raise RuntimeTransactionError(
                         f"close failed: {failure}", report
                     )
                 self._runtime_abi.lib.articore_runtime_free(self._ptr)
                 self._ptr = None
-                self._release_leases()
         except Exception:
             if self._ptr:
                 self._start_fps_monitor()

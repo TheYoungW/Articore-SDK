@@ -11,7 +11,6 @@ from arx_d_can._motor_abi import (
     RuntimeControlMode,
     SafetyHealth,
     SafetyState,
-    MotorPowerState,
     ProductPose,
 )
 
@@ -138,22 +137,13 @@ class ArxDCanDualArm:
     def disconnect(self) -> None:
         self._runtime.disconnect()
 
-    def enable(self, motor: str | None = None) -> bool:
-        """Enable the complete product, or one motor by stable product role."""
-        return self._runtime.enable(motor=motor)
+    def enable(self) -> bool:
+        """使能完整双臂产品。"""
+        return self._runtime.enable()
 
-    def disable(self, motor: str | None = None) -> bool:
-        """Disable the complete product, or one motor by stable product role."""
-        return self._runtime.disable(motor=motor)
-
-    def motor_power_state(self, motor: str | None = None) -> MotorPowerState:
-        return self._runtime.motor_power_state(motor)
-
-    def is_enabled(self, motor: str | None = None) -> bool:
-        return self._runtime.is_enabled(motor)
-
-    def is_disabled(self, motor: str | None = None) -> bool:
-        return self._runtime.is_disabled(motor)
+    def disable(self) -> bool:
+        """失能完整双臂产品。"""
+        return self._runtime.disable()
 
     def configure_mode(self, mode: str) -> None:
         self._runtime.configure_mode(_mode(mode))

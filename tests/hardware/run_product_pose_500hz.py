@@ -242,7 +242,7 @@ def main() -> None:
         report["final_right_pose"] = robot.get_pose("right")
         if not robot.disable():
             raise RuntimeError("whole-product disable was not confirmed")
-        report["disabled"] = robot.is_disabled()
+        report["disabled"] = not robot.enabled
     finally:
         robot.close()
     print(json.dumps(report, indent=2, ensure_ascii=False))

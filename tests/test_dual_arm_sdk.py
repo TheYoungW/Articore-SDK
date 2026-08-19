@@ -6,7 +6,6 @@ import pytest
 
 from arx_d_can._motor_abi import (
     OperationError,
-    MotorPowerState,
     ProductArmState,
     ProductGripperState,
     ProductPose,
@@ -93,15 +92,6 @@ class FakeRuntime:
         self.calls: list[tuple] = []
         self.gravity_compensation_status = SimpleNamespace(active=False)
         self.fps = 8120.0
-        self.power: dict[str, MotorPowerState] = {
-            **{f"left/joint{i}": MotorPowerState.DISABLED for i in range(1, 8)},
-            **{f"right/joint{i}": MotorPowerState.DISABLED for i in range(1, 8)},
-        }
-        if with_grippers:
-            self.power.update({
-                "left/gripper": MotorPowerState.DISABLED,
-                "right/gripper": MotorPowerState.DISABLED,
-            })
 
     @property
     def control_mode(self) -> RuntimeControlMode:
@@ -115,40 +105,15 @@ class FakeRuntime:
         self.calls.append(("disconnect",))
         self.health = _health()
 
-    def enable(self, *, motor=None) -> bool:
-        self.calls.append(("enable",) if motor is None else ("enable", motor))
-        if motor is None:
-            self.power = {key: MotorPowerState.ENABLED for key in self.power}
-            self.health = _health(SafetyState.ENABLED)
-        else:
-            self.power[motor] = MotorPowerState.ENABLED
-            self.health = _health(SafetyState.PARTIALLY_ENABLED)
+    def enable(self) -> bool:
+        self.calls.append(("enable",))
+        self.health = _health(SafetyState.ENABLED)
         return True
 
-    def disable(self, *, motor=None) -> bool:
-        self.calls.append(("disable",) if motor is None else ("disable", motor))
-        if motor is None:
-            self.power = {key: MotorPowerState.DISABLED for key in self.power}
-        else:
-            self.power[motor] = MotorPowerState.DISABLED
-        self.health = _health(
-            SafetyState.READY
-            if all(value is MotorPowerState.DISABLED for value in self.power.values())
-            else SafetyState.PARTIALLY_ENABLED
-        )
+    def disable(self) -> bool:
+        self.calls.append(("disable",))
+        self.health = _health(SafetyState.READY)
         return True
-
-    def motor_power_state(self, motor=None) -> MotorPowerState:
-        if motor is not None:
-            return self.power[motor]
-        values = set(self.power.values())
-        return next(iter(values)) if len(values) == 1 else MotorPowerState.MIXED
-
-    def is_enabled(self, motor=None) -> bool:
-        return self.motor_power_state(motor) is MotorPowerState.ENABLED
-
-    def is_disabled(self, motor=None) -> bool:
-        return self.motor_power_state(motor) is MotorPowerState.DISABLED
 
     def configure_mode(self, mode: RuntimeControlMode) -> None:
         self.calls.append(("configure_mode", mode))
@@ -249,19 +214,6 @@ def test_lifecycle_is_forwarded_to_the_same_runtime(product_factory) -> None:
         ("connect",), ("enable",), ("disable",), ("disconnect",),
     ]
     assert robot._runtime is runtime
-
-
-def test_single_motor_power_and_queries_are_forwarded(product_factory) -> None:
-    robot = ArxDCanDualArm()
-    robot.connect()
-    assert robot.is_disabled()
-    assert robot.enable("left/joint1")
-    assert robot.motor_power_state("left/joint1") is MotorPowerState.ENABLED
-    assert robot.motor_power_state() is MotorPowerState.MIXED
-    assert not robot.enabled
-    assert robot.disable("left/joint1")
-    assert robot.is_disabled("left/joint1")
-    assert robot.is_disabled()
 
 
 def test_mode_and_health_are_read_only_runtime_state(product_factory) -> None:

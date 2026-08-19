@@ -7,15 +7,14 @@ from arx_d_can import ArxDCanDualArm
 
 def main() -> None:
     robot = ArxDCanDualArm()
-    print("正在以维护模式连接；不会切换 MIT/PV，也不会使能电机")
+    robot.connect()
+    print("机器人已连接，电机保持失能")
     try:
-        left, right = robot.clear_motor_faults()
-        print("左臂故障已清除：", ", ".join(left))
-        print("右臂故障已清除：", ", ".join(right))
-        print("所有电机保持失能状态")
+        robot.clear_motor_faults()
+        print("双臂和已安装夹爪的电机故障已清除")
     finally:
         robot.close()
-        print("已断开连接")
+        print("双臂已失能并断开连接")
 
 
 if __name__ == "__main__":

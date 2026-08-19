@@ -10,9 +10,9 @@ def main() -> None:
     robot.connect()
     print("机器人连接成功，电机保持失能状态")
     try:
-        left, right = robot.set_zero()
-        print("左臂零点设置完成：", ", ".join(left))
-        print("右臂零点设置完成：", ", ".join(right))
+        if not robot.set_zero():
+            raise RuntimeError("Runtime 未能确认所有电机调零成功")
+        print("双臂和已安装夹爪已完成调零")
     finally:
         robot.close()
         print("已断开连接")
