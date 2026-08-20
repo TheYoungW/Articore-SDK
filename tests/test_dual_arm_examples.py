@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from arx_d_can.examples import example_13_set_zero_current_position as set_zero
+
 
 def test_product_examples_are_flat_and_exclude_removed_runtime_demo() -> None:
     root = Path(__file__).resolve().parents[1] / "arx_d_can" / "examples"
@@ -22,3 +24,31 @@ def test_product_examples_are_flat_and_exclude_removed_runtime_demo() -> None:
         "example_16_record_gravity_trajectory.py",
         "example_17_replay_trajectory.py",
     ]
+
+
+def test_set_zero_requires_enter_confirmation(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeRobot:
+        def connect(self) -> None:
+            calls.append("connect")
+
+        def set_zero(self) -> bool:
+            calls.append("set_zero")
+            return True
+
+        def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    def confirm(prompt: str) -> str:
+        assert calls == ["connect"]
+        assert "按回车继续" in prompt
+        calls.append("confirm")
+        return ""
+
+    monkeypatch.setattr(set_zero, "ArxDCanDualArm", FakeRobot)
+    monkeypatch.setattr("builtins.input", confirm)
+
+    set_zero.main()
+
+    assert calls == ["connect", "confirm", "set_zero", "disconnect"]

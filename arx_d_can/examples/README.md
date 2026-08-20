@@ -19,10 +19,7 @@ python -m arx_d_can.examples.example_06_send_position_pv \
 python -m arx_d_can.examples.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
-  --target-velocity "0,0,0,0,0,0,0" \
-  --kp "190,190,70,125,10,22,28" \
-  --kd "4.55,4.5,2,2.9,0.7,0.89,0.84" \
-  --feedforward-torque "0,0,0,0,0,0,0"
+  --velocity 10
 
 python -m arx_d_can.examples.example_08_set_gripper_openings \
   --left-gripper 1000 \
@@ -54,4 +51,4 @@ python -m arx_d_can.examples.example_17_replay_trajectory \
   --mit-feedforward-torque "0,0,0,0,0,0,0"
 ```
 
-MIT 单点控制和轨迹回放都会显式提交位置、目标速度、Kp、Kd 和前馈力矩；产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
+MIT 单点控制默认使用普通 `set_joint_mit()`，速度为显式填写的 0～100 档位。轨迹回放属于高级接口，会显式提交完整 raw MIT 帧。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。

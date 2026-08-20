@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖要求为 `motor-drive-layer>=0.10.26,<0.11`。SDK 加载时同时检查 Runtime ABI 2.24 和 Yunyi 产品级十级夹爪能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖要求为 `motor-drive-layer>=0.10.27`。SDK 加载时同时检查 Runtime ABI 2.24 和 Yunyi 产品级十级夹爪能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -97,10 +97,7 @@ python -m arx_d_can.examples.example_12_diagnose_status
 python -m arx_d_can.examples.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
-  --target-velocity "0,0,0,0,0,0,0" \
-  --kp "190,190,70,125,10,22,28" \
-  --kd "4.55,4.5,2,2.9,0.7,0.89,0.84" \
-  --feedforward-torque "0,0,0,0,0,0,0"
+  --velocity 10
 ```
 
 完整示例见 [arx_d_can/examples/README.md](arx_d_can/examples/README.md)。
