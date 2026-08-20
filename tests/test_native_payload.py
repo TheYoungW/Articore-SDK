@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 from arx_d_can._motor_abi._runtime_abi import (
+    ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10,
     ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE,
     ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE,
     ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS,
@@ -26,6 +27,7 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     )
     assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE
     assert runtime_abi.capabilities & ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE
+    assert runtime_abi.capabilities & ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10
 
 
 def test_runtime_library_override_is_explicit(monkeypatch, tmp_path: Path) -> None:

@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖要求为 `motor-drive-layer>=0.10.29`。SDK 加载时同时检查 Runtime ABI 2.26、Yunyi 产品级十级夹爪、直驱和固定 MIT 协议能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖要求为 `motor-drive-layer>=0.10.30`。SDK 加载时同时检查 Runtime ABI 2.27、Yunyi 产品级十级夹爪、直驱、固定 MIT 协议和 DIRECT 十倍增益能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -87,6 +87,8 @@ robot.set_grippers(
 直驱只关闭夹爪自身的接触保持、堵转判断和过载退让；电机硬故障、反馈超时、通信降级、transport 故障、急停和失能仍由 Runtime 处理。
 
 `control_mode` 只决定 14 个机械臂关节使用 PV 还是 MIT。左右夹爪的电机协议始终由 Runtime 固定为 MIT；夹爪的 `protected/direct` 只选择防堵转策略，SDK 不根据机械臂模式推断或配置夹爪协议。
+
+Motor 0.10.30 起，`direct` 模式的 Kp/Kd 十倍增益完全由 C++ Runtime 应用；Python 只原样传递开合度、力度等级和模式，不会再次放大增益。`protected` 参数保持不变，`gripper_level=0` 仍表示 Kp/Kd 均为 0。
 
 ## 常用命令
 

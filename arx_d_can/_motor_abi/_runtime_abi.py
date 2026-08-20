@@ -22,10 +22,11 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x0002001A
+MIN_RUNTIME_ABI_VERSION = 0x0002001B
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1 << 50
+ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1 << 51
 
 
 def _runtime_library_name() -> str:
@@ -297,7 +298,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version < MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI >= 2.26; "
+                "Articore-SDK requires Runtime ABI >= 2.27; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -320,6 +321,12 @@ class RuntimeAbi:
                 "Articore-SDK requires fixed MIT protocol mode for Yunyi "
                 "grippers; the loaded Runtime does not advertise "
                 "ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE"
+            )
+        if not capabilities & ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10:
+            raise AbiLoadError(
+                "Articore-SDK requires the Runtime-owned 10x direct gripper "
+                "gain semantics; the loaded Runtime does not advertise "
+                "ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10"
             )
         self.abi_version = version
         self.capabilities = capabilities
