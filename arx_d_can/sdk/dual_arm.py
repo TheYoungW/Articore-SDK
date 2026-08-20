@@ -282,7 +282,11 @@ class ArxDCanDualArm:
         self._runtime.stop_gravity_compensation()
 
     def estop(self) -> None:
-        """Immediately disable the complete product and latch emergency stop."""
+        """急停：立即停止所有控制、失能整机并锁存急停状态。
+
+        该方法仅用于紧急情况，不是普通失能或恢复步骤。急停锁存后，
+        Runtime 会拒绝继续运动；排除危险并确认安全后才能调用 recover()。
+        """
         self._runtime.estop()
 
     def recover(self) -> None:

@@ -424,6 +424,7 @@ class ArticoreRuntime:
         )
 
     def estop(self) -> None:
+        """请求原生 Runtime 执行整机急停并锁存急停状态。"""
         self._call(self._runtime_abi.lib.articore_runtime_estop, "estop")
 
     def recover(self) -> None:

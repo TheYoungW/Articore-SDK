@@ -30,6 +30,7 @@ python -m arx_d_can.examples.example_08_set_gripper_openings \
 python -m arx_d_can.examples.example_09_benchmark_read_rate \
   --seconds 15 --hz 500 --cached
 
+python -m arx_d_can.examples.example_10_recover_to_zero
 python -m arx_d_can.examples.example_12_diagnose_status
 python -m arx_d_can.examples.example_13_set_zero_current_position
 python -m arx_d_can.examples.example_15_gravity_compensation

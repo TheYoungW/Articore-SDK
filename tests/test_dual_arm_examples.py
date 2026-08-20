@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from arx_d_can.examples import example_10_recover_to_zero as recover
 from arx_d_can.examples import example_13_set_zero_current_position as set_zero
 
 
@@ -17,6 +18,7 @@ def test_product_examples_are_flat_and_exclude_removed_runtime_demo() -> None:
         "example_07_send_position_mit.py",
         "example_08_set_gripper_openings.py",
         "example_09_benchmark_read_rate.py",
+        "example_10_recover_to_zero.py",
         "example_11_return_zero.py",
         "example_12_diagnose_status.py",
         "example_13_set_zero_current_position.py",
@@ -52,3 +54,57 @@ def test_set_zero_requires_enter_confirmation(monkeypatch) -> None:
     set_zero.main()
 
     assert calls == ["connect", "confirm", "set_zero", "disconnect"]
+
+
+def test_recover_example_confirms_then_recovers(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeRobot:
+        def connect(self) -> None:
+            calls.append("connect")
+
+        def recover(self) -> None:
+            calls.append("recover")
+
+        def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    def confirm(prompt: str) -> str:
+        assert calls == ["connect"]
+        assert "低速回到已标定零点" in prompt
+        assert "按回车继续" in prompt
+        calls.append("confirm")
+        return ""
+
+    monkeypatch.setattr(recover, "ArxDCanDualArm", FakeRobot)
+    monkeypatch.setattr("builtins.input", confirm)
+
+    recover.main()
+
+    assert calls == ["connect", "confirm", "recover", "disconnect"]
+
+
+def test_recover_example_handles_connected_configuration_failure(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeRobot:
+        connected = True
+
+        def connect(self) -> None:
+            calls.append("connect")
+            raise recover.RuntimeTransactionError("configure failed", object())
+
+        def recover(self) -> None:
+            calls.append("recover")
+
+        def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    monkeypatch.setattr(recover, "ArxDCanDualArm", FakeRobot)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    recover.main()
+
+    assert calls == ["connect", "recover", "disconnect"]

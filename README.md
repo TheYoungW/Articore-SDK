@@ -110,6 +110,9 @@ python -m arx_d_can.examples.example_09_benchmark_read_rate \
 # 查看 Runtime 健康和具体错误
 python -m arx_d_can.examples.example_12_diagnose_status
 
+# 整机清错、低速回到已标定零点，最后失能
+python -m arx_d_can.examples.example_10_recover_to_zero
+
 # MIT：双臂第 4 关节到 90°
 python -m arx_d_can.examples.example_07_send_position_mit \
   --left "0,0,0,90,0,0,0" \
