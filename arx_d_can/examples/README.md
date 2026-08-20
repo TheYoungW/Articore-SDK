@@ -24,7 +24,8 @@ python -m arx_d_can.examples.example_07_send_position_mit \
 python -m arx_d_can.examples.example_08_set_gripper_openings \
   --left-gripper 1000 \
   --right-gripper 1000 \
-  --gripper-level 3
+  --gripper-level 5 \
+  --mode protected
 
 python -m arx_d_can.examples.example_09_benchmark_read_rate \
   --seconds 15 --hz 500 --cached
@@ -52,3 +53,5 @@ python -m arx_d_can.examples.example_17_replay_trajectory \
 ```
 
 MIT 单点控制默认使用普通 `set_joint_mit()`，速度为显式填写的 0～100 档位。轨迹回放属于高级接口，会显式提交完整 raw MIT 帧。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
+
+夹爪 `direct` 模式会持续追踪目标，不执行接触保持、堵转判断或过载退让。使用时必须关注夹爪温升、机械过载和被夹物体安全；默认应保持 `--mode protected`。

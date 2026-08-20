@@ -22,8 +22,9 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x00020018
+MIN_RUNTIME_ABI_VERSION = 0x00020019
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
+ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 
 
 def _runtime_library_name() -> str:
@@ -295,7 +296,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version < MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI >= 2.24; "
+                "Articore-SDK requires Runtime ABI >= 2.25; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -306,6 +307,12 @@ class RuntimeAbi:
                 "Articore-SDK requires the Yunyi product-level 10-level "
                 "gripper capability; the loaded Runtime does not advertise "
                 "ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS"
+            )
+        if not capabilities & ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE:
+            raise AbiLoadError(
+                "Articore-SDK requires Yunyi product-level direct gripper "
+                "mode; the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE"
             )
         self.abi_version = version
         self.capabilities = capabilities
@@ -355,8 +362,10 @@ class RuntimeAbi:
             c_void_p, float_pointer, float_pointer, c_uint32,
         ]
         lib.articore_runtime_submit_pv_frame.restype = c_int32
-        lib.articore_runtime_set_grippers.argtypes = [c_void_p, c_float, c_float, c_int32]
-        lib.articore_runtime_set_grippers.restype = c_int32
+        lib.articore_runtime_set_grippers_v2.argtypes = [
+            c_void_p, c_float, c_float, c_int32, c_int32,
+        ]
+        lib.articore_runtime_set_grippers_v2.restype = c_int32
         lib.articore_runtime_has_grippers.argtypes = [c_void_p, POINTER(c_int32)]
         lib.articore_runtime_has_grippers.restype = c_int32
 

@@ -51,6 +51,15 @@ def _side(value: str) -> int:
     raise ValueError("side must be 'left' or 'right'")
 
 
+def _gripper_mode(value: str) -> int:
+    normalized = str(value).strip().lower()
+    if normalized == "protected":
+        return 0
+    if normalized == "direct":
+        return 1
+    raise ValueError("gripper mode must be 'protected' or 'direct'")
+
+
 def _frame(left: Sequence[float], right: Sequence[float]) -> tuple[float, ...]:
     """只固定左右产品顺序；数量和数值合法性由 Runtime 校验。"""
     return tuple(float(value) for value in (*left, *right))
@@ -257,9 +266,13 @@ class ArxDCanDualArm:
         left: float,
         right: float,
         gripper_level: int,
+        mode: str = "protected",
     ) -> None:
         self._runtime.set_product_grippers(
-            left=left, right=right, gripper_level=gripper_level
+            left=left,
+            right=right,
+            gripper_level=gripper_level,
+            mode=_gripper_mode(mode),
         )
 
     def start_gravity_compensation(self, *, transition_ms: int = 0) -> None:

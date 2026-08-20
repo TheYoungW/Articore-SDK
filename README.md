@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖要求为 `motor-drive-layer>=0.10.27`。SDK 加载时同时检查 Runtime ABI 2.24 和 Yunyi 产品级十级夹爪能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖要求为 `motor-drive-layer>=0.10.28`。SDK 加载时同时检查 Runtime ABI 2.25、Yunyi 产品级十级夹爪能力和直驱能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -57,7 +57,7 @@ Python 不公开单独的 `close()` 或 `free()`。
   `motors=["l-joint4", "r-joint4"]` 时由 C++ Runtime 执行一次原子批量事务。部分使能状态下
   仍提交完整 14 轴目标，底层自动跳过主动失能的电机。
 - 原始帧：`submit_raw_mit()`、`submit_raw_pv()`。
-- 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=1..10)`。
+- 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=0..10, mode="protected" | "direct")`。默认 `protected`；`direct` 会持续追踪目标且不执行夹爪接触保持、堵转判断和过载退让。直驱时应关注夹爪温升、机械过载和被夹物体安全。
 - 状态：`read_state()`、`read_cached_state()`。
   `state.left.arm.enabled` 和 `state.right.arm.enabled` 返回逐关节
   `tuple[bool | None, ...]`；夹爪的 `enabled` 使用相同语义。数据直接来自底层新鲜反馈缓存，
@@ -72,6 +72,19 @@ Python 不公开单独的 `close()` 或 `free()`。
 - 重力补偿：`start_gravity_compensation()`、`stop_gravity_compensation()`。
 
 所有关节数量、有限值、URDF 限位、速度和安全检查由 C++ Runtime 统一验证。Python 不重复维护一份产品配置。
+
+夹爪默认使用保护模式。只有明确需要持续追踪开合度时才使用直驱：
+
+```python
+robot.set_grippers(
+    left=0,
+    right=0,
+    gripper_level=10,
+    mode="direct",
+)
+```
+
+直驱只关闭夹爪自身的接触保持、堵转判断和过载退让；电机硬故障、反馈超时、通信降级、transport 故障、急停和失能仍由 Runtime 处理。
 
 ## 常用命令
 

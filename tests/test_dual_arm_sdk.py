@@ -140,8 +140,8 @@ class FakeRuntime:
     def submit_pv_frame(self, *values) -> None:
         self.calls.append(("pv", *values))
 
-    def set_product_grippers(self, *, left, right, gripper_level) -> None:
-        self.calls.append(("grippers", left, right, gripper_level))
+    def set_product_grippers(self, *, left, right, gripper_level, mode) -> None:
+        self.calls.append(("grippers", left, right, gripper_level, mode))
 
     def start_gravity_compensation(self, *, transition_ms: int) -> None:
         self.calls.append(("gravity-start", transition_ms))
@@ -397,7 +397,19 @@ def test_maintenance_and_gravity_only_delegate(product_factory) -> None:
 def test_grippers_are_submitted_as_one_two_side_product_frame(product_factory) -> None:
     robot = ArxDCanDualArm()
     robot.set_grippers(left=100, right=900, gripper_level=10)
-    assert robot._runtime.calls == [("grippers", 100, 900, 10)]
+    robot.set_grippers(left=0, right=0, gripper_level=0, mode="direct")
+    assert robot._runtime.calls == [
+        ("grippers", 100, 900, 10, 0),
+        ("grippers", 0, 0, 0, 1),
+    ]
+
+
+def test_gripper_mode_rejects_unknown_value(product_factory) -> None:
+    robot = ArxDCanDualArm()
+    with pytest.raises(ValueError, match="protected.*direct"):
+        robot.set_grippers(
+            left=100, right=900, gripper_level=5, mode="automatic"
+        )
 
 
 def test_gripperless_product_still_forwards_safe_noop_to_native(
@@ -405,7 +417,7 @@ def test_gripperless_product_still_forwards_safe_noop_to_native(
 ) -> None:
     robot = ArxDCanDualArm(with_grippers=False)
     robot.set_grippers(left=100, right=900, gripper_level=3)
-    assert robot._runtime.calls == [("grippers", 100, 900, 3)]
+    assert robot._runtime.calls == [("grippers", 100, 900, 3, 0)]
 
 
 def test_disconnect_terminally_closes_the_product_runtime(product_factory) -> None:

@@ -22,6 +22,21 @@ def test_gripper_example_defaults_to_level_five() -> None:
     )
 
     assert args.gripper_level == 5
+    assert args.mode == "protected"
+
+
+def test_gripper_example_accepts_zero_strength_in_direct_mode() -> None:
+    args = example.build_parser().parse_args(
+        [
+            "--left-gripper", "0",
+            "--right-gripper", "0",
+            "--gripper-level", "0",
+            "--mode", "direct",
+        ]
+    )
+
+    assert args.gripper_level == 0
+    assert args.mode == "direct"
 
 
 @pytest.mark.parametrize("value", ("-1", "1001", "nan", "inf"))
@@ -42,7 +57,7 @@ def test_gripper_example_rejects_invalid_opening(value: str) -> None:
 @pytest.mark.parametrize(
     "argument,value",
     (
-        ("--gripper-level", "0"),
+        ("--gripper-level", "-1"),
         ("--gripper-level", "11"),
         ("--gripper-level", "1.5"),
     ),
@@ -82,9 +97,11 @@ def test_gripper_example_submits_required_openings(monkeypatch) -> None:
             left: float,
             right: float,
             gripper_level: int,
+            mode: str,
         ) -> None:
             captured["openings"] = (left, right)
             captured["gripper_level"] = gripper_level
+            captured["mode"] = mode
 
         def disconnect(self) -> None:
             captured["calls"].append("close")
@@ -99,6 +116,8 @@ def test_gripper_example_submits_required_openings(monkeypatch) -> None:
             "250.5",
             "--gripper-level",
             "10",
+            "--mode",
+            "direct",
         ]
     )
 
@@ -106,4 +125,5 @@ def test_gripper_example_submits_required_openings(monkeypatch) -> None:
 
     assert captured["openings"] == (1000.0, 250.5)
     assert captured["gripper_level"] == 10
+    assert captured["mode"] == "direct"
     assert captured["calls"] == ["connect", "enable", "close"]

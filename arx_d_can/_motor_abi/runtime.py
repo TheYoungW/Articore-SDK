@@ -501,11 +501,12 @@ class ArticoreRuntime:
         )
 
     def set_product_grippers(
-        self, *, left: float, right: float, gripper_level: int
+        self, *, left: float, right: float, gripper_level: int, mode: int
     ) -> None:
         self._call(
-            self._runtime_abi.lib.articore_runtime_set_grippers,
-            "set_product_grippers", float(left), float(right), int(gripper_level),
+            self._runtime_abi.lib.articore_runtime_set_grippers_v2,
+            "set_product_grippers_v2", float(left), float(right),
+            int(gripper_level), int(mode),
         )
 
     @property
