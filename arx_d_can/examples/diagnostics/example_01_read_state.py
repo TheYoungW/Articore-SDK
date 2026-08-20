@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 04：在不使能电机的情况下读取双臂和夹爪状态。"""
+"""诊断示例 01：在不使能电机的情况下读取双臂和夹爪状态。"""
 from __future__ import annotations
 
 import argparse

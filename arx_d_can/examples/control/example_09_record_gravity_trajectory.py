@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 16：双臂同时进入重力补偿并录制示教轨迹。"""
+"""控制示例 09：双臂同时进入重力补偿并录制示教轨迹。"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.example_15_gravity_compensation import (
+from arx_d_can.examples.control.example_08_gravity_compensation import (
     _stop_and_close,
 )
 from arx_d_can.service_tools.dual_trajectory_recording import (

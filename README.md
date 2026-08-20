@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖要求为 `motor-drive-layer>=0.10.30`。SDK 加载时同时检查 Runtime ABI 2.27、Yunyi 产品级十级夹爪、直驱、固定 MIT 协议和 DIRECT 十倍增益能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖要求为 `motor-drive-layer>=0.10.31`。SDK 加载时检查 Runtime ABI 2.30，以及夹爪和三种原生笛卡尔运动能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -33,7 +33,7 @@ try:
     state = robot.read_state()
     print(state.left.positions)
     print(state.right.positions)
-    print(robot.safety_health)
+    print(robot.get_health())
     print(robot.get_fps())
 finally:
     robot.disconnect()
@@ -62,16 +62,23 @@ Python 不公开单独的 `close()` 或 `free()`。
   `state.left.arm.enabled` 和 `state.right.arm.enabled` 返回逐关节
   `tuple[bool | None, ...]`；夹爪的 `enabled` 使用相同语义。数据直接来自底层新鲜反馈缓存，
   `None` 表示缺失、过期或无法确认。
-- 健康：`safety_health`、`get_fps()`。
+- 健康：`get_health()`、`get_fps()`。
 - 位姿：`get_pose("left" | "right")`。
+- PV 笛卡尔运动：`move_pose()`、`move_linear()`、`move_circular()` 一次控制一侧；
+  `cartesian_motion_status` 返回 Runtime 的统一异步状态，`cancel_cartesian_motion()` 取消当前轨迹并保持最后参考位置。
 - 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。
 - 急停：调用无参数 `estop()` 后底层立即停止控制并失能整机；固定原因从
-  `safety_health.fault_reason` 读取，且只能通过 `recover()` 解除锁存。
+  `get_health().fault_reason` 读取，且只能通过 `recover()` 解除锁存。
 - 恢复：`recover()` 由 C++ Runtime 完成整机清错、双臂健康验证、低速回到已标定零位，
-  最后保持整机失能；任一步骤失败都会再次尝试失能并把具体阶段写入 `safety_health`。
+  最后保持整机失能；任一步骤失败都会再次尝试失能并把具体阶段写入 `get_health()` 返回值。
 - 重力补偿：`start_gravity_compensation()`、`stop_gravity_compensation()`。
 
 所有关节数量、有限值、URDF 限位、速度和安全检查由 C++ Runtime 统一验证。Python 不重复维护一份产品配置。
+
+笛卡尔位姿统一为 `[x, y, z, roll, pitch, yaw]`，位置单位为米、姿态单位为弧度，
+`speed_percent` 范围为 `(0, 100]`。IK、五次轨迹、直线/圆弧插值、限位和到位判断均在 Runtime 中完成。
+只有 `status.state == "completed"` 表示真实反馈已经稳定到位；`state == "running"` 且
+`progress == 1.0` 仍表示底层正在等待机械臂稳定。当前接口不是左右臂原子运动，SDK 不会用两次单侧调用伪装同步双臂规划。
 
 夹爪默认使用保护模式。只有明确需要持续追踪开合度时才使用直驱：
 
@@ -97,24 +104,27 @@ conda activate at
 cd ~/Articore-SDK
 
 # 100 Hz 读取，10 Hz 显示
-python -m arx_d_can.examples.example_04_read_state \
+python -m arx_d_can.examples.diagnostics.example_01_read_state \
   --mode continuous \
   --display-hz 10
 
 # 500 Hz 读取性能测试
-python -m arx_d_can.examples.example_09_benchmark_read_rate \
+python -m arx_d_can.examples.diagnostics.example_02_benchmark_read_rate \
   --seconds 15 \
   --hz 500 \
   --cached
 
-# 查看 Runtime 健康和具体错误
-python -m arx_d_can.examples.example_12_diagnose_status
+# 读取 Runtime health 和具体错误
+python -m arx_d_can.examples.diagnostics.example_03_read_health
+
+# 获取左右臂当前法兰位姿
+python -m arx_d_can.examples.diagnostics.example_04_read_pose
 
 # 整机清错、低速回到已标定零点，最后失能
-python -m arx_d_can.examples.example_10_recover_to_zero
+python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 
 # MIT：双臂第 4 关节到 90°
-python -m arx_d_can.examples.example_07_send_position_mit \
+python -m arx_d_can.examples.control.example_04_send_position_mit \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
   --velocity 10

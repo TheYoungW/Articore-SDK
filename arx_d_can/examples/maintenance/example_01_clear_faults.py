@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 05：清除左右臂和夹爪电机故障。"""
+"""维护示例 01：清除左右臂和夹爪电机故障。"""
 from __future__ import annotations
 
 from arx_d_can import ArxDCanDualArm

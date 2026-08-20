@@ -2,8 +2,8 @@ import math
 
 import pytest
 
-from arx_d_can.examples import example_06_send_position_pv as pv_example
-from arx_d_can.examples import example_07_send_position_mit as mit_example
+from arx_d_can.examples.control import example_03_send_position_pv as pv_example
+from arx_d_can.examples.control import example_04_send_position_mit as mit_example
 
 
 def test_pv_example_forwards_positions_and_speed(monkeypatch) -> None:

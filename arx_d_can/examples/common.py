@@ -45,6 +45,24 @@ def speed_percent(text: str) -> float:
     return value
 
 
+def positive_speed_percent(text: str) -> float:
+    """解析原生笛卡尔运动的 (0, 100] 速度百分比。"""
+    value = float(text)
+    if not math.isfinite(value) or not 0.0 < value <= 100.0:
+        raise ValueError("笛卡尔速度百分比必须在 (0, 100] 范围内")
+    return value
+
+
+def pose_values(text: str) -> tuple[float, ...]:
+    """解析 [x, y, z, roll, pitch, yaw]，单位为米和弧度。"""
+    values = tuple(float(value) for value in text.split(",") if value.strip())
+    if len(values) != 6:
+        raise ValueError(f"位姿必须提供 6 个值，当前为 {len(values)} 个")
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("位姿必须全部为有限值")
+    return values
+
+
 def positive_velocity_degrees(text: str) -> float:
     """解析正的角速度（度/秒）并转换为弧度/秒。"""
     value = float(text)

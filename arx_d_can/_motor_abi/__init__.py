@@ -3,6 +3,9 @@
 from .errors import AbiLoadError, RuntimeCallError, RuntimeTransactionError
 from .runtime import ArticoreRuntime
 from .runtime_models import (
+    CartesianInterpolation,
+    CartesianMotionState,
+    CartesianMotionStatus,
     ConnectChannelResult,
     ConnectErrorCode,
     ConnectMotorResult,
@@ -28,6 +31,9 @@ from .runtime_models import (
 __all__ = [
     "AbiLoadError",
     "ArticoreRuntime",
+    "CartesianInterpolation",
+    "CartesianMotionState",
+    "CartesianMotionStatus",
     "ConnectChannelResult",
     "ConnectErrorCode",
     "ConnectMotorResult",

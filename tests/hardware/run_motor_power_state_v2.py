@@ -51,7 +51,8 @@ def main() -> int:
         print("disabled", selected(disabled), disabled.timestamp_ns, disabled.sequence)
         if selected(disabled) != (False, False):
             raise RuntimeError("joint4 disable feedback was not confirmed in state v2")
-        print("health", robot.safety_health.state, robot.safety_health.fault_reason)
+        health = robot.get_health()
+        print("health", health.state, health.fault_reason)
         return 0
     finally:
         if connected:

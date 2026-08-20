@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 12：通过 Runtime health 查看双臂通信和具体故障。"""
+"""诊断示例 03：读取 Runtime health 和具体故障。"""
 from __future__ import annotations
 
 from arx_d_can import ArxDCanDualArm
@@ -19,7 +19,7 @@ def main() -> None:
     robot = ArxDCanDualArm()
     robot.connect()
     try:
-        health = robot.safety_health
+        health = robot.get_health()
         print(f"Runtime 状态：{health.state.name}")
         _transport("左通道", health.left_transport)
         _transport("右通道", health.right_transport)

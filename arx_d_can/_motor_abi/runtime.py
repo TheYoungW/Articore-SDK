@@ -6,6 +6,7 @@ from threading import Event, RLock, Thread
 from types import TracebackType
 
 from ._runtime_abi import (
+    CCartesianMotionStatus,
     CConnectReport,
     CDisableReport,
     CEnableReport,
@@ -20,6 +21,9 @@ from ._runtime_abi import (
 )
 from .errors import RuntimeCallError, RuntimeTransactionError
 from .runtime_models import (
+    CartesianInterpolation,
+    CartesianMotionState,
+    CartesianMotionStatus,
     ConnectChannelResult,
     ConnectErrorCode,
     ConnectMotorResult,
@@ -77,6 +81,15 @@ def _transport_health(value: CRuntimeTransportHealth) -> RuntimeTransportHealth:
         last_rx_age_ns=_optional_age(value.last_rx_age_ns),
         last_error=_optional_text(value.last_error),
     )
+
+
+def _pose(values: Sequence[float]) -> ctypes.Array[ctypes.c_float]:
+    pose = tuple(float(value) for value in values)
+    if len(pose) != 6:
+        raise ValueError(
+            "pose must contain exactly 6 values: x, y, z, roll, pitch, yaw"
+        )
+    return (ctypes.c_float * 6)(*pose)
 
 
 class ArticoreRuntime:
@@ -588,6 +601,104 @@ class ArticoreRuntime:
     def get_pose(self, side: int) -> list[float]:
         """Return cached flange pose as [x, y, z, roll, pitch, yaw]."""
         return list(self.get_pose_sample(side).values)
+
+    def move_pose(
+        self, side: int, target_pose: Sequence[float], speed_percent: float
+    ) -> int:
+        target = _pose(target_pose)
+        motion_id = ctypes.c_uint64()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_move_pose,
+            "move_pose", int(side), target, float(speed_percent),
+            ctypes.byref(motion_id),
+        )
+        return int(motion_id.value)
+
+    def move_linear(
+        self, side: int, target_pose: Sequence[float], speed_percent: float
+    ) -> int:
+        target = _pose(target_pose)
+        motion_id = ctypes.c_uint64()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_move_linear,
+            "move_linear", int(side), target, float(speed_percent),
+            ctypes.byref(motion_id),
+        )
+        return int(motion_id.value)
+
+    def move_circular(
+        self,
+        side: int,
+        start_pose: Sequence[float],
+        via_pose: Sequence[float],
+        end_pose: Sequence[float],
+        speed_percent: float,
+    ) -> int:
+        start = _pose(start_pose)
+        via = _pose(via_pose)
+        end = _pose(end_pose)
+        motion_id = ctypes.c_uint64()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_move_circular,
+            "move_circular", int(side), start, via, end,
+            float(speed_percent), ctypes.byref(motion_id),
+        )
+        return int(motion_id.value)
+
+    @property
+    def cartesian_motion_status(self) -> CartesianMotionStatus:
+        native = CCartesianMotionStatus()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_cartesian_motion_status,
+            "get_cartesian_motion_status", ctypes.byref(native),
+        )
+        states = {
+            0: CartesianMotionState.IDLE,
+            1: CartesianMotionState.RUNNING,
+            2: CartesianMotionState.COMPLETED,
+            3: CartesianMotionState.CANCELLED,
+            4: CartesianMotionState.FAULT,
+        }
+        interpolations = {
+            1: CartesianInterpolation.POINT_TO_POINT,
+            2: CartesianInterpolation.LINEAR,
+            3: CartesianInterpolation.CIRCULAR,
+        }
+        state_value = int(native.state)
+        try:
+            state = states[state_value]
+        except KeyError as exc:
+            raise RuntimeCallError(
+                f"get_cartesian_motion_status returned unknown state {state_value}"
+            ) from exc
+        try:
+            interpolation = interpolations[int(native.interpolation)]
+        except KeyError as exc:
+            raise RuntimeCallError(
+                "get_cartesian_motion_status returned unknown interpolation "
+                f"{int(native.interpolation)}"
+            ) from exc
+        values = tuple(float(value) for value in native.target_pose)
+        return CartesianMotionStatus(
+            state=state,
+            motion_id=int(native.motion_id),
+            superseded_motion_id=int(native.superseded_motion_id),
+            side="left" if int(native.side) == 0 else "right",
+            interpolation=interpolation,
+            speed_percent=float(native.speed_percent),
+            elapsed_s=float(native.elapsed_s),
+            duration_s=float(native.duration_s),
+            progress=float(native.progress),
+            target_pose=values,  # type: ignore[arg-type]
+            error=_optional_text(native.error),
+        )
+
+    def cancel_cartesian_motion(self) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_cancel_cartesian_motion,
+            "cancel_cartesian_motion",
+        )
 
     def clear_faults(self) -> None:
         """Clear recoverable motor faults without commanding motion."""

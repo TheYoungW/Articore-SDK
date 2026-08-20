@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 11：使用普通 MIT 位置接口控制双臂返回零位。"""
+"""控制示例 06：使用普通 MIT 位置接口控制双臂返回零位。"""
 from __future__ import annotations
 
 import argparse

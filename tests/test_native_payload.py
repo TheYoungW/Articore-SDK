@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import importlib.util
+import ctypes
 from pathlib import Path
 
 from arx_d_can._motor_abi._runtime_abi import (
     ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10,
     ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE,
+    ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR,
+    ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR,
+    ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT,
     ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE,
     ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS,
+    CCartesianMotionStatus,
     MIN_RUNTIME_ABI_VERSION,
     RuntimeAbi,
     runtime_library_path,
@@ -28,6 +33,13 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE
     assert runtime_abi.capabilities & ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE
     assert runtime_abi.capabilities & ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10
+    assert (
+        runtime_abi.capabilities
+        & ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT
+    )
+    assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR
+    assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR
+    assert ctypes.sizeof(CCartesianMotionStatus) == 600
 
 
 def test_runtime_library_override_is_explicit(monkeypatch, tmp_path: Path) -> None:

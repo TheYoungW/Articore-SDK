@@ -8,11 +8,11 @@ import pytest
 
 import arx_d_can
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples import (
-    example_16_record_gravity_trajectory as record_example,
+from arx_d_can.examples.control import (
+    example_09_record_gravity_trajectory as record_example,
 )
-from arx_d_can.examples import (
-    example_17_replay_trajectory as replay_example,
+from arx_d_can.examples.control import (
+    example_10_replay_trajectory as replay_example,
 )
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,

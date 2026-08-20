@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 09：测试一帧完整双臂状态的读取频率。"""
+"""诊断示例 02：测试一帧完整双臂状态的读取频率。"""
 from __future__ import annotations
 
 import argparse

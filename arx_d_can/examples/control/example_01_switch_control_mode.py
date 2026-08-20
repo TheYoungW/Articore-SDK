@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 02：在双臂失能状态下切换 PV/MIT 控制模式。"""
+"""控制示例 01：在双臂失能状态下切换 PV/MIT 控制模式。"""
 from __future__ import annotations
 
 import argparse

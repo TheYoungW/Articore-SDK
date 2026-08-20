@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from arx_d_can.examples import (
-    example_08_set_gripper_openings as example,
+from arx_d_can.examples.control import (
+    example_05_set_gripper_openings as example,
 )
 
 

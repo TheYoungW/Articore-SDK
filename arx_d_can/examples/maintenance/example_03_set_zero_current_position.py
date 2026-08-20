@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 13：将双臂所有已安装电机的当前位置设置为零点。"""
+"""维护示例 03：将双臂所有已安装电机的当前位置设置为零点。"""
 from __future__ import annotations
 
 from arx_d_can import ArxDCanDualArm

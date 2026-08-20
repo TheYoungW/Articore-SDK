@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 17：安全回到双臂轨迹起点后，按原始时间戳原子回放。"""
+"""控制示例 10：安全回到双臂轨迹起点后，按原始时间戳原子回放。"""
 from __future__ import annotations
 
 import argparse

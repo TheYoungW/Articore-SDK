@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 10：整机清错、低速回到已标定零点，最后保持失能。"""
+"""维护示例 02：整机清错、低速回到已标定零点，最后保持失能。"""
 from __future__ import annotations
 
 from arx_d_can import ArxDCanDualArm, RuntimeTransactionError

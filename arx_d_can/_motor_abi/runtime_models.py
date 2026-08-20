@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 
 class SafetyState(IntEnum):
@@ -19,6 +19,20 @@ class SafetyState(IntEnum):
 class RuntimeControlMode(IntEnum):
     PV = 1
     MIT = 2
+
+
+class CartesianMotionState(str, Enum):
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAULT = "fault"
+
+
+class CartesianInterpolation(str, Enum):
+    POINT_TO_POINT = "point_to_point"
+    LINEAR = "linear"
+    CIRCULAR = "circular"
 
 
 class RuntimeOperation(IntEnum):
@@ -131,6 +145,21 @@ class ProductPose:
     @property
     def yaw(self) -> float:
         return self.values[5]
+
+
+@dataclass(frozen=True)
+class CartesianMotionStatus:
+    state: CartesianMotionState
+    motion_id: int
+    superseded_motion_id: int
+    side: str
+    interpolation: CartesianInterpolation
+    speed_percent: float
+    elapsed_s: float
+    duration_s: float
+    progress: float
+    target_pose: tuple[float, float, float, float, float, float]
+    error: str | None
 
 
 @dataclass(frozen=True)

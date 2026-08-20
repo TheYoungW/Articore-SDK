@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from arx_d_can.examples import example_03_enable_disable as example
+from arx_d_can.examples.control import example_02_enable_disable as example
 
 
 def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:

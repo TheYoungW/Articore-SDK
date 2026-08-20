@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from ._motor_abi import (
+    CartesianInterpolation,
+    CartesianMotionState,
+    CartesianMotionStatus,
     GravityCompensationPhase,
     GravityCompensationStatus,
     GripperHealth,
@@ -24,6 +27,9 @@ __all__ = [
     "ArxDCanDualArm",
     "ArxDCanDualArmState",
     "ArxDCanState",
+    "CartesianInterpolation",
+    "CartesianMotionState",
+    "CartesianMotionStatus",
     "DualArmGripperState",
     "GravityCompensationPhase",
     "GravityCompensationStatus",

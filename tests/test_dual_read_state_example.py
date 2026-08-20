@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can.examples import example_04_read_state as example
+from arx_d_can.examples.diagnostics import example_01_read_state as example
 
 
 def _state():

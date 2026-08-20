@@ -22,11 +22,14 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x0002001B
+MIN_RUNTIME_ABI_VERSION = 0x0002001E
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1 << 50
 ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1 << 51
+ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT = 1 << 52
+ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR = 1 << 53
+ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR = 1 << 54
 
 
 def _runtime_library_name() -> str:
@@ -274,6 +277,17 @@ class CProductPose(Structure):
     ]
 
 
+class CCartesianMotionStatus(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32), ("state", c_int32),
+        ("motion_id", c_uint64), ("superseded_motion_id", c_uint64),
+        ("side", c_uint32), ("interpolation", c_int32),
+        ("speed_percent", c_float), ("elapsed_s", ctypes.c_double),
+        ("duration_s", ctypes.c_double), ("progress", c_float),
+        ("target_pose", c_float * 6), ("error", c_char * 512),
+    ]
+
+
 class CGravityCompensationConfig(Structure):
     _fields_ = [("struct_size", c_uint32), ("transition_ms", c_uint32)]
 
@@ -298,7 +312,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version < MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI >= 2.27; "
+                "Articore-SDK requires Runtime ABI >= 2.30; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -328,6 +342,25 @@ class RuntimeAbi:
                 "gain semantics; the loaded Runtime does not advertise "
                 "ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10"
             )
+        for capability, name in (
+            (
+                ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT,
+                "ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT",
+            ),
+            (
+                ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR,
+                "ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR",
+            ),
+            (
+                ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR,
+                "ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR",
+            ),
+        ):
+            if not capabilities & capability:
+                raise AbiLoadError(
+                    "Articore-SDK requires native Yunyi Cartesian motion; "
+                    f"the loaded Runtime does not advertise {name}"
+                )
         self.abi_version = version
         self.capabilities = capabilities
         self._bind()
@@ -391,6 +424,24 @@ class RuntimeAbi:
         lib.articore_runtime_get_state_v2.restype = c_int32
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
+        for name in ("move_pose", "move_linear"):
+            function = getattr(lib, f"articore_runtime_{name}")
+            function.argtypes = [
+                c_void_p, c_uint32, float_pointer, c_float,
+                POINTER(c_uint64),
+            ]
+            function.restype = c_int32
+        lib.articore_runtime_move_circular.argtypes = [
+            c_void_p, c_uint32, float_pointer, float_pointer,
+            float_pointer, c_float, POINTER(c_uint64),
+        ]
+        lib.articore_runtime_move_circular.restype = c_int32
+        lib.articore_runtime_get_cartesian_motion_status.argtypes = [
+            c_void_p, POINTER(CCartesianMotionStatus),
+        ]
+        lib.articore_runtime_get_cartesian_motion_status.restype = c_int32
+        lib.articore_runtime_cancel_cartesian_motion.argtypes = [c_void_p]
+        lib.articore_runtime_cancel_cartesian_motion.restype = c_int32
         lib.articore_runtime_get_health_v2.argtypes = [c_void_p, POINTER(CSafetyHealthV2)]
         lib.articore_runtime_get_health_v2.restype = c_int32
         lib.articore_runtime_get_last_connect_report.argtypes = [c_void_p, POINTER(CConnectReport)]

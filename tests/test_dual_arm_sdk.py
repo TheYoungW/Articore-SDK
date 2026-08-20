@@ -7,6 +7,9 @@ import ctypes
 import pytest
 
 from arx_d_can._motor_abi import (
+    CartesianInterpolation,
+    CartesianMotionState,
+    CartesianMotionStatus,
     OperationError,
     ProductArmState,
     ProductGripperState,
@@ -19,7 +22,10 @@ from arx_d_can._motor_abi import (
     SafetyState,
 )
 from arx_d_can.sdk.dual_arm import ArxDCanDualArm
-from arx_d_can._motor_abi._runtime_abi import CProductStateV2
+from arx_d_can._motor_abi._runtime_abi import (
+    CCartesianMotionStatus,
+    CProductStateV2,
+)
 from arx_d_can._motor_abi.runtime import ArticoreRuntime
 
 
@@ -96,6 +102,19 @@ class FakeRuntime:
         self.closed = False
         self.calls: list[tuple] = []
         self.gravity_compensation_status = SimpleNamespace(active=False)
+        self.cartesian_motion_status = CartesianMotionStatus(
+            state=CartesianMotionState.RUNNING,
+            motion_id=9,
+            superseded_motion_id=0,
+            side="left",
+            interpolation=CartesianInterpolation.LINEAR,
+            speed_percent=20.0,
+            elapsed_s=0.5,
+            duration_s=1.0,
+            progress=0.5,
+            target_pose=(0.1, 0.2, 0.3, 0.0, 0.0, 0.0),
+            error=None,
+        )
         self.fps = 8120.0
 
     @property
@@ -172,6 +191,26 @@ class FakeRuntime:
     def get_pose(self, side: int) -> list[float]:
         return list(self.get_pose_sample(side).values)
 
+    def move_pose(self, side, target_pose, speed_percent) -> int:
+        self.calls.append(("move_pose", side, tuple(target_pose), speed_percent))
+        return 10
+
+    def move_linear(self, side, target_pose, speed_percent) -> int:
+        self.calls.append(("move_linear", side, tuple(target_pose), speed_percent))
+        return 11
+
+    def move_circular(
+        self, side, start_pose, via_pose, end_pose, speed_percent
+    ) -> int:
+        self.calls.append((
+            "move_circular", side, tuple(start_pose), tuple(via_pose),
+            tuple(end_pose), speed_percent,
+        ))
+        return 12
+
+    def cancel_cartesian_motion(self) -> None:
+        self.calls.append(("cancel_cartesian_motion",))
+
 
 @pytest.fixture
 def product_factory(monkeypatch):
@@ -226,7 +265,8 @@ def test_mode_and_health_are_read_only_runtime_state(product_factory) -> None:
     assert robot.control_mode == "pv"
     robot.configure_mode("mit")
     assert robot.control_mode == "mit"
-    assert robot.safety_health is runtime.health
+    assert robot.get_health() is runtime.health
+    assert not hasattr(robot, "safety_health")
     assert runtime.calls == [("configure_mode", RuntimeControlMode.MIT)]
 
 
@@ -363,6 +403,87 @@ def test_get_pose_returns_six_values_and_optional_sample_metadata(
     assert right.sequence == 77
     with pytest.raises(ValueError, match="side"):
         robot.get_pose("center")
+
+
+def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm(control_mode="mit")
+    target = (0.3, 0.2, 0.4, 0.0, 0.1, 0.2)
+    start = (0.2, 0.1, 0.3, 0.0, 0.0, 0.0)
+    via = (0.25, 0.15, 0.35, 0.0, 0.05, 0.1)
+
+    assert robot.move_pose(
+        side="left", target_pose=target, speed_percent=10
+    ) == 10
+    assert robot.move_linear(
+        side="right", target_pose=target, speed_percent=20
+    ) == 11
+    assert robot.move_circular(
+        side="left", start_pose=start, via_pose=via, end_pose=target,
+        speed_percent=30,
+    ) == 12
+    assert robot.cartesian_motion_status.state == "running"
+    robot.cancel_cartesian_motion()
+
+    assert robot._runtime.calls == [
+        ("move_pose", 0, target, 10),
+        ("move_linear", 1, target, 20),
+        ("move_circular", 0, start, via, target, 30),
+        ("cancel_cartesian_motion",),
+    ]
+
+
+def test_cartesian_motion_does_not_duplicate_native_mode_or_speed_checks(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm(control_mode="mit")
+    robot.move_pose(
+        side="left", target_pose=(0.0,) * 6, speed_percent=0
+    )
+    assert robot._runtime.calls == [
+        ("move_pose", 0, (0.0,) * 6, 0),
+    ]
+
+
+def test_ctypes_cartesian_status_maps_all_native_fields() -> None:
+    def get_status(_pointer, output) -> int:
+        native = ctypes.cast(
+            output, ctypes.POINTER(CCartesianMotionStatus)
+        ).contents
+        native.state = 1
+        native.motion_id = 42
+        native.superseded_motion_id = 41
+        native.side = 1
+        native.interpolation = 3
+        native.speed_percent = 25.0
+        native.elapsed_s = 2.0
+        native.duration_s = 2.0
+        native.progress = 1.0
+        native.target_pose[:] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+        native.error = b"waiting for physical settling"
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(
+        lib=SimpleNamespace(
+            articore_runtime_get_cartesian_motion_status=get_status
+        )
+    )
+
+    status = runtime.cartesian_motion_status
+
+    assert status.state == "running"
+    assert status.progress == pytest.approx(1.0)
+    assert status.state != "completed"
+    assert status.motion_id == 42
+    assert status.superseded_motion_id == 41
+    assert status.side == "right"
+    assert status.interpolation == "circular"
+    assert status.target_pose == pytest.approx((0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
+    assert status.error == "waiting for physical settling"
 
 
 def test_gripperless_product_returns_arm_state_and_none_grippers(

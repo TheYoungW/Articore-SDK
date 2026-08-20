@@ -232,11 +232,14 @@ def test_dual_record_uses_cached_runtime_state_and_grippers(
     )
 
     class Robot:
-        safety_health = type(
+        health = type(
             "Health",
             (),
             {"safe_holding": False, "fault_reason": None},
         )()
+
+        def get_health(self):
+            return self.health
 
         def read_cached_state(self):
             side = lambda opening: type(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 06（PV）：以统一速度设置双臂目标位置。"""
+"""控制示例 04（MIT）：以统一速度设置双臂目标位置。"""
 from __future__ import annotations
 
 import argparse
@@ -10,18 +10,21 @@ from arx_d_can.examples.common import joint_degrees, speed_percent
 
 
 def main(args: argparse.Namespace) -> None:
-    robot = ArxDCanDualArm(control_mode="pv")
+    robot = ArxDCanDualArm(control_mode="mit")
     robot.connect()
     print("机器人连接成功")
     try:
         robot.enable()
-        print("已进入 PV 模式")
-        robot.set_joint_pv(
+        print("已进入普通 MIT 模式")
+        robot.set_joint_mit(
             left=joint_degrees(args.left),
             right=joint_degrees(args.right),
             velocity=args.velocity,
         )
-        print("目标已提交，Runtime 正在平滑推进；按 Ctrl+C 失能并退出")
+        print(
+            f"目标已提交，速度档位={args.velocity:g}；"
+            "Runtime 正在平滑推进，按 Ctrl+C 失能并退出"
+        )
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:

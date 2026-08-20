@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 08：使用 0～1000 开合度设置左右夹爪。"""
+"""控制示例 05：使用 0～1000 开合度设置左右夹爪。"""
 from __future__ import annotations
 
 import argparse

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 03：交互式使能和失能双臂。"""
+"""控制示例 02：交互式使能和失能双臂。"""
 from __future__ import annotations
 
 from arx_d_can import ArxDCanDualArm

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""示例 15：开启 Yunyi 双臂重力补偿。"""
+"""控制示例 08：开启 Yunyi 双臂重力补偿。"""
 from __future__ import annotations
 
 import argparse
@@ -56,7 +56,7 @@ def main(args: argparse.Namespace) -> None:
         robot.start_gravity_compensation(transition_ms=500)
         print("双臂重力补偿已启动，按 Ctrl+C 停止")
         while True:
-            health = robot.safety_health
+            health = robot.get_health()
             if health.safe_holding or health.fault_reason:
                 raise RuntimeError(health.fault_reason or "双臂已进入安全保持")
             robot.read_cached_state()

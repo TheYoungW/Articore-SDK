@@ -7,6 +7,7 @@ from typing import Sequence
 
 from arx_d_can._motor_abi import (
     ArticoreRuntime,
+    CartesianMotionStatus,
     GravityCompensationStatus,
     RuntimeControlMode,
     SafetyHealth,
@@ -125,8 +126,8 @@ class ArxDCanDualArm:
             SafetyState.PARTIALLY_ENABLED,
         }
 
-    @property
-    def safety_health(self) -> SafetyHealth:
+    def get_health(self) -> SafetyHealth:
+        """读取 Runtime 统一健康状态和最近一次具体错误。"""
         return self._runtime.health
 
     def get_fps(self) -> float:
@@ -259,6 +260,41 @@ class ArxDCanDualArm:
     def get_pose_sample(self, side: str) -> ProductPose:
         """返回位姿及其底层反馈时间戳和序列号。"""
         return self._runtime.get_pose_sample(_side(side))
+
+    def move_pose(
+        self, *, side: str, target_pose: Sequence[float], speed_percent: float
+    ) -> int:
+        """在 PV 模式下执行单侧关节空间点到点笛卡尔运动。"""
+        return self._runtime.move_pose(_side(side), target_pose, speed_percent)
+
+    def move_linear(
+        self, *, side: str, target_pose: Sequence[float], speed_percent: float
+    ) -> int:
+        """在 PV 模式下执行单侧笛卡尔直线运动。"""
+        return self._runtime.move_linear(_side(side), target_pose, speed_percent)
+
+    def move_circular(
+        self,
+        *,
+        side: str,
+        start_pose: Sequence[float],
+        via_pose: Sequence[float],
+        end_pose: Sequence[float],
+        speed_percent: float,
+    ) -> int:
+        """在 PV 模式下执行单侧三点圆弧运动。"""
+        return self._runtime.move_circular(
+            _side(side), start_pose, via_pose, end_pose, speed_percent
+        )
+
+    @property
+    def cartesian_motion_status(self) -> CartesianMotionStatus:
+        """返回 Runtime 的原生运动状态；running 且进度为 1 仍未到位。"""
+        return self._runtime.cartesian_motion_status
+
+    def cancel_cartesian_motion(self) -> None:
+        """取消当前笛卡尔轨迹并保持最后参考位置，不自动失能。"""
+        self._runtime.cancel_cartesian_motion()
 
     def set_grippers(
         self,

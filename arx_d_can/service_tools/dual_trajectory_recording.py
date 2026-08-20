@@ -68,7 +68,7 @@ def record(
             time.sleep(remaining)
         if time.perf_counter() >= deadline:
             break
-        health = robot.safety_health
+        health = robot.get_health()
         if health.safe_holding or health.fault_reason:
             raise RuntimeError(health.fault_reason or "dual arm entered safe hold")
         state = robot.read_cached_state()

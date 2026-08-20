@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from arx_d_can.examples import (
-    example_02_switch_control_mode as example,
+from arx_d_can.examples.control import (
+    example_01_switch_control_mode as example,
 )
 
 

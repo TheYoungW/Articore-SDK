@@ -35,7 +35,7 @@ def set_joint_positions(
 
 
 def require_motion_health(robot: ArxDCanDualArm) -> None:
-    health = robot.safety_health
+    health = robot.get_health()
     if health.state in {
         SafetyState.FAULT,
         SafetyState.SAFE_STOP,
@@ -198,7 +198,7 @@ def main() -> None:
     try:
         robot.connect()
         report["control_mode"] = args.mode.upper()
-        report["connected_health"] = robot.safety_health.state.name
+        report["connected_health"] = robot.get_health().state.name
         if not robot.enable():
             raise RuntimeError("whole-product enable was not confirmed")
 
@@ -236,7 +236,7 @@ def main() -> None:
         }
         if args.soak_seconds > 0.0:
             report["hold_soak"] = sample_fixed_rate(robot, args.soak_seconds)
-        report["final_health"] = robot.safety_health.state.name
+        report["final_health"] = robot.get_health().state.name
         report["final_left_pose"] = robot.get_pose("left")
         report["final_right_pose"] = robot.get_pose("right")
         if not robot.disable():

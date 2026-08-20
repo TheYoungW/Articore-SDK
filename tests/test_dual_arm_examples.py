@@ -1,30 +1,46 @@
 from pathlib import Path
 
-from arx_d_can.examples import example_10_recover_to_zero as recover
-from arx_d_can.examples import example_13_set_zero_current_position as set_zero
+from arx_d_can.examples.maintenance import example_02_recover_to_zero as recover
+from arx_d_can.examples.maintenance import (
+    example_03_set_zero_current_position as set_zero,
+)
 
 
-def test_product_examples_are_flat_and_exclude_removed_runtime_demo() -> None:
+def test_product_examples_are_grouped_into_three_purpose_directories() -> None:
     root = Path(__file__).resolve().parents[1] / "arx_d_can" / "examples"
-    examples = sorted(path.name for path in root.glob("example_*.py"))
+    directories = sorted(
+        path.name for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith("__")
+    )
 
-    assert not (root / "dual_arm").exists()
-    assert examples == [
-        "example_02_switch_control_mode.py",
-        "example_03_enable_disable.py",
-        "example_04_read_state.py",
-        "example_05_clear_faults.py",
-        "example_06_send_position_pv.py",
-        "example_07_send_position_mit.py",
-        "example_08_set_gripper_openings.py",
-        "example_09_benchmark_read_rate.py",
-        "example_10_recover_to_zero.py",
-        "example_11_return_zero.py",
-        "example_12_diagnose_status.py",
-        "example_13_set_zero_current_position.py",
-        "example_15_gravity_compensation.py",
-        "example_16_record_gravity_trajectory.py",
-        "example_17_replay_trajectory.py",
+    assert directories == ["control", "diagnostics", "maintenance"]
+    assert not list(root.glob("example_*.py"))
+    assert sorted(path.name for path in (root / "control").glob("example_*.py")) == [
+        "example_01_switch_control_mode.py",
+        "example_02_enable_disable.py",
+        "example_03_send_position_pv.py",
+        "example_04_send_position_mit.py",
+        "example_05_set_gripper_openings.py",
+        "example_06_return_zero.py",
+        "example_07_cartesian_motion.py",
+        "example_08_gravity_compensation.py",
+        "example_09_record_gravity_trajectory.py",
+        "example_10_replay_trajectory.py",
+    ]
+    assert sorted(
+        path.name for path in (root / "diagnostics").glob("example_*.py")
+    ) == [
+        "example_01_read_state.py",
+        "example_02_benchmark_read_rate.py",
+        "example_03_read_health.py",
+        "example_04_read_pose.py",
+    ]
+    assert sorted(
+        path.name for path in (root / "maintenance").glob("example_*.py")
+    ) == [
+        "example_01_clear_faults.py",
+        "example_02_recover_to_zero.py",
+        "example_03_set_zero_current_position.py",
     ]
 
 
