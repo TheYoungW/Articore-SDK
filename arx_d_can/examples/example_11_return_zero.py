@@ -19,7 +19,7 @@ def main(args: argparse.Namespace) -> None:
             velocity=args.velocity,
         )
         input("目标已提交，确认双臂回到零位后按回车...")
-        robot.set_grippers(left=0, right=0, gripper_level=3)
+        robot.set_grippers(left=0, right=0, gripper_level=5)
         print("双臂已返回零位")
     finally:
         robot.disconnect()

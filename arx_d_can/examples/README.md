@@ -45,6 +45,13 @@ python -m arx_d_can.examples.example_16_record_gravity_trajectory \
 
 python -m arx_d_can.examples.example_17_replay_trajectory \
   --input trajectories/dual.json --mode pv --interpolation quintic
+
+python -m arx_d_can.examples.example_17_replay_trajectory \
+  --input trajectories/dual.json --mode mit --interpolation quintic \
+  --mit-target-velocity "0,0,0,0,0,0,0" \
+  --mit-kp "190,190,70,125,10,22,28" \
+  --mit-kd "4.55,4.5,2,2.9,0.7,0.89,0.84" \
+  --mit-feedforward-torque "0,0,0,0,0,0,0"
 ```
 
-MIT 示例显式提交位置、目标速度、Kp、Kd 和前馈力矩；产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
+MIT 单点控制和轨迹回放都会显式提交位置、目标速度、Kp、Kd 和前馈力矩；产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。

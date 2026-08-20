@@ -79,6 +79,7 @@ class ProductArmState:
     positions: tuple[float, ...]
     velocities: tuple[float, ...]
     torques: tuple[float, ...]
+    enabled: tuple[bool | None, ...] = (None,) * 7
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class ProductGripperState:
     available: bool
     opening: float
     gripper_level: int
+    enabled: bool | None = None
 
 
 @dataclass(frozen=True)

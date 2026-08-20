@@ -3,7 +3,12 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from arx_d_can._motor_abi._runtime_abi import RuntimeAbi, runtime_library_path
+from arx_d_can._motor_abi._runtime_abi import (
+    ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS,
+    MIN_RUNTIME_ABI_VERSION,
+    RuntimeAbi,
+    runtime_library_path,
+)
 
 
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
@@ -11,7 +16,12 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     runtime = Path(runtime_library_path())
     assert runtime.is_file()
     assert "motor_drive_layer_native/lib" in runtime.as_posix()
-    assert RuntimeAbi().lib.articore_runtime_abi_version() >= 0x00020010
+    runtime_abi = RuntimeAbi()
+    assert runtime_abi.abi_version >= MIN_RUNTIME_ABI_VERSION
+    assert (
+        runtime_abi.capabilities
+        & ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS
+    )
 
 
 def test_runtime_library_override_is_explicit(monkeypatch, tmp_path: Path) -> None:

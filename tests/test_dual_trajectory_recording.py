@@ -3,6 +3,10 @@ from __future__ import annotations
 import pytest
 
 from arx_d_can.service_tools.dual_trajectory_recording import (
+    DEFAULT_MIT_FEEDFORWARD_TORQUES,
+    DEFAULT_MIT_KD,
+    DEFAULT_MIT_KP,
+    DEFAULT_MIT_TARGET_VELOCITIES,
     DualArmTrajectorySample,
     interpolate_sample,
     load_trajectory,
@@ -101,7 +105,7 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
 
     assert commands == [
         ("arms", (0.1,), (0.2,)),
-        ("grippers", 1000.0, 0.0, 3),
+        ("grippers", 1000.0, 0.0, 5),
     ]
 
 
@@ -171,7 +175,7 @@ def test_dual_interpolation_modes(mode, expected) -> None:
     assert sample.right_gripper == pytest.approx(500.0 * expected)
 
 
-def test_dual_mit_replay_uses_yaml_gains_and_zero_dynamic_targets(
+def test_dual_mit_replay_sends_explicit_gains_and_zero_dynamic_targets(
     monkeypatch,
 ) -> None:
     commands = []
@@ -196,7 +200,16 @@ def test_dual_mit_replay_uses_yaml_gains_and_zero_dynamic_targets(
     )
 
     assert commands == [
-        {"left_positions": (0.1,), "right_positions": (-0.2,)}
+        {
+            "left_positions": (0.1,),
+            "right_positions": (-0.2,),
+            "left_velocities": DEFAULT_MIT_TARGET_VELOCITIES,
+            "right_velocities": DEFAULT_MIT_TARGET_VELOCITIES,
+            "kp": DEFAULT_MIT_KP,
+            "kd": DEFAULT_MIT_KD,
+            "left_feedforward_torques": DEFAULT_MIT_FEEDFORWARD_TORQUES,
+            "right_feedforward_torques": DEFAULT_MIT_FEEDFORWARD_TORQUES,
+        }
     ]
 
 

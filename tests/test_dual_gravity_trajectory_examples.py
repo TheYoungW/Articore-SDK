@@ -48,6 +48,10 @@ def test_replay_parser_defaults_to_safe_atomic_start() -> None:
     assert math.degrees(args.pv_velocity_limit) == pytest.approx(100.0)
     assert args.mode == "pv"
     assert args.interpolation == "quintic"
+    assert args.mit_target_velocity == (0.0,) * 7
+    assert args.mit_kp == (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
+    assert args.mit_kd == (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
+    assert args.mit_feedforward_torque == (0.0,) * 7
     assert math.degrees(args.position_tolerance) == pytest.approx(1.0)
     assert math.degrees(args.velocity_tolerance) == pytest.approx(2.0)
 

@@ -10,8 +10,8 @@ from arx_d_can.examples.common import gripper_opening
 
 def _gripper_level(text: str) -> int:
     value = int(text)
-    if not 1 <= value <= 5:
-        raise argparse.ArgumentTypeError("gripper level must be in 1..5")
+    if not 1 <= value <= 10:
+        raise argparse.ArgumentTypeError("gripper level must be in 1..10")
     return value
 
 
@@ -54,8 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gripper-level",
         type=_gripper_level,
-        default=3,
-        help="夹持力等级 1..5；默认 3",
+        default=5,
+        help="夹持力等级 1..10；默认 5",
     )
     return parser
 

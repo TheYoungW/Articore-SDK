@@ -13,7 +13,7 @@ from ._runtime_abi import (
     CGravityCompensationStatus,
     CMotorPowerReport,
     CProductPose,
-    CProductState,
+    CProductStateV2,
     CRuntimeTransportHealth,
     CSafetyHealthV2,
     get_runtime_abi,
@@ -501,7 +501,7 @@ class ArticoreRuntime:
         )
 
     def set_product_grippers(
-        self, *, left: float, right: float, gripper_level: int = 3
+        self, *, left: float, right: float, gripper_level: int
     ) -> None:
         self._call(
             self._runtime_abi.lib.articore_runtime_set_grippers,
@@ -519,23 +519,32 @@ class ArticoreRuntime:
 
     @property
     def state(self) -> ProductState:
-        native = CProductState()
+        native = CProductStateV2()
         native.struct_size = ctypes.sizeof(native)
         self._call(
-            self._runtime_abi.lib.articore_runtime_get_state,
-            "get_state", ctypes.byref(native),
+            self._runtime_abi.lib.articore_runtime_get_state_v2,
+            "get_state_v2", ctypes.byref(native),
         )
         def arm(value) -> ProductArmState:
+            enabled = tuple(
+                bool(value.enabled_mask & (1 << index))
+                if value.enabled_valid_mask & (1 << index) else None
+                for index in range(7)
+            )
             return ProductArmState(
                 tuple(float(item) for item in value.positions),
                 tuple(float(item) for item in value.velocities),
                 tuple(float(item) for item in value.torques),
+                enabled,
             )
-        def gripper(available, opening, level) -> ProductGripperState | None:
+        def gripper(
+            available, opening, level, enabled, enabled_valid,
+        ) -> ProductGripperState | None:
             if not available:
                 return None
             return ProductGripperState(
                 True, float(opening), int(level),
+                bool(enabled) if enabled_valid else None,
             )
         return ProductState(
             bool(native.has_grippers),
@@ -544,11 +553,15 @@ class ArticoreRuntime:
                 native.left_gripper_available,
                 native.left_gripper_opening,
                 native.left_gripper_level,
+                native.left_gripper_enabled,
+                native.left_gripper_enabled_valid,
             ),
             gripper(
                 native.right_gripper_available,
                 native.right_gripper_opening,
                 native.right_gripper_level,
+                native.right_gripper_enabled,
+                native.right_gripper_enabled_valid,
             ),
             int(native.timestamp_ns), int(native.sequence),
         )

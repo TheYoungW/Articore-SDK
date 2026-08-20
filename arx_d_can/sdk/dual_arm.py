@@ -217,6 +217,7 @@ class ArxDCanDualArm:
                 gripper = DualArmGripperState(
                     opening=gripper_source.opening,
                     gripper_level=gripper_source.gripper_level,
+                    enabled=gripper_source.enabled,
                 )
             return ArxDCanState(
                 arm=JointState(
@@ -224,6 +225,7 @@ class ArxDCanDualArm:
                     positions=source.positions,
                     velocities=source.velocities,
                     torques=source.torques,
+                    enabled=source.enabled,
                 ),
                 gripper=gripper,
             )
@@ -254,7 +256,7 @@ class ArxDCanDualArm:
         *,
         left: float,
         right: float,
-        gripper_level: int = 3,
+        gripper_level: int,
     ) -> None:
         self._runtime.set_product_grippers(
             left=left, right=right, gripper_level=gripper_level

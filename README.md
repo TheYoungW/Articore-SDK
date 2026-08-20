@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖固定为 `motor-drive-layer==0.10.24`。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+依赖要求为 `motor-drive-layer>=0.10.26,<0.11`。SDK 加载时同时检查 Runtime ABI 2.24 和 Yunyi 产品级十级夹爪能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -28,7 +28,7 @@ try:
         right=[0.0] * 7,
         velocity=30,
     )
-    robot.set_grippers(left=1000, right=1000, gripper_level=3)
+    robot.set_grippers(left=1000, right=1000, gripper_level=5)
 
     state = robot.read_state()
     print(state.left.positions)
@@ -57,8 +57,11 @@ Python 不公开单独的 `close()` 或 `free()`。
   `motors=["l-joint4", "r-joint4"]` 时由 C++ Runtime 执行一次原子批量事务。部分使能状态下
   仍提交完整 14 轴目标，底层自动跳过主动失能的电机。
 - 原始帧：`submit_raw_mit()`、`submit_raw_pv()`。
-- 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=1..5)`。
+- 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=1..10)`。
 - 状态：`read_state()`、`read_cached_state()`。
+  `state.left.arm.enabled` 和 `state.right.arm.enabled` 返回逐关节
+  `tuple[bool | None, ...]`；夹爪的 `enabled` 使用相同语义。数据直接来自底层新鲜反馈缓存，
+  `None` 表示缺失、过期或无法确认。
 - 健康：`safety_health`、`get_fps()`。
 - 位姿：`get_pose("left" | "right")`。
 - 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。

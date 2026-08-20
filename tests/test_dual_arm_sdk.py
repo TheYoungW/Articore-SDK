@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from threading import RLock
+import ctypes
 
 import pytest
 
@@ -17,6 +19,8 @@ from arx_d_can._motor_abi import (
     SafetyState,
 )
 from arx_d_can.sdk.dual_arm import ArxDCanDualArm
+from arx_d_can._motor_abi._runtime_abi import CProductStateV2
+from arx_d_can._motor_abi.runtime import ArticoreRuntime
 
 
 def _transport(connected: bool = False) -> RuntimeTransportHealth:
@@ -66,17 +70,19 @@ def _product_state(with_grippers: bool = True) -> ProductState:
         tuple(float(i) for i in range(7)),
         tuple(float(i + 10) for i in range(7)),
         tuple(float(i + 20) for i in range(7)),
+        (True, True, True, None, False, False, True),
     )
     right = ProductArmState(
         tuple(float(i + 30) for i in range(7)),
         tuple(float(i + 40) for i in range(7)),
         tuple(float(i + 50) for i in range(7)),
+        (False, False, None, True, True, True, True),
     )
     return ProductState(
         with_grippers,
         left, right,
-        ProductGripperState(True, 750.0, 3) if with_grippers else None,
-        ProductGripperState(True, 250.0, 3) if with_grippers else None,
+        ProductGripperState(True, 750.0, 3, True) if with_grippers else None,
+        ProductGripperState(True, 250.0, 3, None) if with_grippers else None,
         123456, 77,
     )
 
@@ -294,14 +300,56 @@ def test_read_state_uses_one_native_product_snapshot(product_factory) -> None:
     robot = ArxDCanDualArm()
     state = robot.read_state()
     assert state.left.arm.positions == tuple(float(i) for i in range(7))
+    assert state.left.arm.enabled == (True, True, True, None, False, False, True)
     assert state.right.arm.positions == tuple(float(i + 30) for i in range(7))
+    assert state.right.arm.enabled == (False, False, None, True, True, True, True)
     assert state.left.gripper is not None
     assert state.left.gripper.opening == pytest.approx(750.0)
     assert state.left.gripper.gripper_level == 3
+    assert state.left.gripper.enabled is True
     assert state.right.gripper is not None
     assert state.right.gripper.opening == pytest.approx(250.0)
+    assert state.right.gripper.enabled is None
     assert state.timestamp_ns == 123456
     assert state.sequence == 77
+
+
+def test_ctypes_state_v2_maps_feedback_masks_without_per_motor_queries() -> None:
+    calls = 0
+
+    def get_state_v2(_pointer, output) -> int:
+        nonlocal calls
+        calls += 1
+        native = ctypes.cast(
+            output, ctypes.POINTER(CProductStateV2)
+        ).contents
+        native.has_grippers = 1
+        native.left.enabled_mask = 0b0000101
+        native.left.enabled_valid_mask = 0b0000111
+        native.right.enabled_mask = 0b0000010
+        native.right.enabled_valid_mask = 0b0000011
+        native.left_gripper_available = 1
+        native.left_gripper_enabled = 0
+        native.left_gripper_enabled_valid = 1
+        native.right_gripper_available = 1
+        native.right_gripper_enabled_valid = 0
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(
+        lib=SimpleNamespace(articore_runtime_get_state_v2=get_state_v2)
+    )
+    state = runtime.state
+
+    assert calls == 1
+    assert state.left.enabled == (True, False, True, None, None, None, None)
+    assert state.right.enabled == (False, True, None, None, None, None, None)
+    assert state.left_gripper is not None
+    assert state.left_gripper.enabled is False
+    assert state.right_gripper is not None
+    assert state.right_gripper.enabled is None
 
 
 def test_get_pose_returns_six_values_and_optional_sample_metadata(
@@ -348,8 +396,8 @@ def test_maintenance_and_gravity_only_delegate(product_factory) -> None:
 
 def test_grippers_are_submitted_as_one_two_side_product_frame(product_factory) -> None:
     robot = ArxDCanDualArm()
-    robot.set_grippers(left=100, right=900, gripper_level=3)
-    assert robot._runtime.calls == [("grippers", 100, 900, 3)]
+    robot.set_grippers(left=100, right=900, gripper_level=10)
+    assert robot._runtime.calls == [("grippers", 100, 900, 10)]
 
 
 def test_gripperless_product_still_forwards_safe_noop_to_native(

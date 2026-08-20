@@ -8,8 +8,16 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.common import positive_velocity_degrees
+from arx_d_can.examples.common import (
+    joint_values,
+    joint_velocity_degrees,
+    positive_velocity_degrees,
+)
 from arx_d_can.service_tools.dual_trajectory_recording import (
+    DEFAULT_MIT_FEEDFORWARD_TORQUES,
+    DEFAULT_MIT_KD,
+    DEFAULT_MIT_KP,
+    DEFAULT_MIT_TARGET_VELOCITIES,
     DualArmTrajectorySample,
     REPLAY_HZ,
     _submit_raw_positions,
@@ -28,6 +36,10 @@ def _move_to_start(
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
+    mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
+    mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
+    mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
+    mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
     state = robot.read_cached_state()
     current = DualArmTrajectorySample(
@@ -63,7 +75,15 @@ def _move_to_start(
         remaining = started + elapsed - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        _submit_raw_positions(robot, sample, velocity_limit=velocity_limit)
+        _submit_raw_positions(
+            robot,
+            sample,
+            velocity_limit=velocity_limit,
+            mit_target_velocities=mit_target_velocities,
+            mit_kp=mit_kp,
+            mit_kd=mit_kd,
+            mit_feedforward_torques=mit_feedforward_torques,
+        )
         if elapsed >= duration:
             break
         captured_at = time.perf_counter()
@@ -73,7 +93,15 @@ def _move_to_start(
     stable_since = None
     next_tick = time.perf_counter()
     while time.monotonic() < deadline:
-        _submit_raw_positions(robot, target, velocity_limit=velocity_limit)
+        _submit_raw_positions(
+            robot,
+            target,
+            velocity_limit=velocity_limit,
+            mit_target_velocities=mit_target_velocities,
+            mit_kp=mit_kp,
+            mit_kd=mit_kd,
+            mit_feedforward_torques=mit_feedforward_torques,
+        )
         state = robot.read_cached_state()
         position_error = max(
             *(
@@ -141,6 +169,10 @@ def main(args: argparse.Namespace) -> None:
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
+            mit_target_velocities=args.mit_target_velocity,
+            mit_kp=args.mit_kp,
+            mit_kd=args.mit_kd,
+            mit_feedforward_torques=args.mit_feedforward_torque,
         )
         print(
             f"开始原子回放 {len(samples)} 个双臂轨迹点，"
@@ -153,6 +185,10 @@ def main(args: argparse.Namespace) -> None:
             samples=samples,
             interpolation=args.interpolation,
             velocity_limit=(args.pv_velocity_limit if args.mode == "pv" else None),
+            mit_target_velocities=args.mit_target_velocity,
+            mit_kp=args.mit_kp,
+            mit_kd=args.mit_kd,
+            mit_feedforward_torques=args.mit_feedforward_torque,
         )
         print("双臂轨迹回放完成")
     except KeyboardInterrupt:
@@ -188,6 +224,30 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("none", "linear", "quintic"),
         default="quintic",
         help="回放插值：none=零阶保持，linear=线性，quintic=五次 S 曲线",
+    )
+    parser.add_argument(
+        "--mit-target-velocity",
+        type=joint_velocity_degrees,
+        default=DEFAULT_MIT_TARGET_VELOCITIES,
+        help="MIT 7 轴目标速度，单位为度/秒；默认全部为 0",
+    )
+    parser.add_argument(
+        "--mit-kp",
+        type=lambda text: joint_values(text, name="MIT Kp"),
+        default=DEFAULT_MIT_KP,
+        help="MIT 7 轴 Kp；默认 190,190,70,125,10,22,28",
+    )
+    parser.add_argument(
+        "--mit-kd",
+        type=lambda text: joint_values(text, name="MIT Kd"),
+        default=DEFAULT_MIT_KD,
+        help="MIT 7 轴 Kd；默认 4.55,4.5,2,2.9,0.7,0.89,0.84",
+    )
+    parser.add_argument(
+        "--mit-feedforward-torque",
+        type=lambda text: joint_values(text, name="MIT 前馈力矩"),
+        default=DEFAULT_MIT_FEEDFORWARD_TORQUES,
+        help="MIT 7 轴前馈力矩，单位为 N·m；默认全部为 0",
     )
     parser.add_argument("--start-timeout", type=float, default=30.0)
     parser.add_argument(

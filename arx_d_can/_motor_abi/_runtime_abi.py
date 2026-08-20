@@ -22,6 +22,10 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
+MIN_RUNTIME_ABI_VERSION = 0x00020018
+ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
+
+
 def _runtime_library_name() -> str:
     if sys.platform.startswith("win"):
         return "articore_runtime.dll"
@@ -231,6 +235,34 @@ class CProductState(Structure):
     ]
 
 
+class CProductArmStateV2(Structure):
+    _fields_ = [
+        ("positions", c_float * 7),
+        ("velocities", c_float * 7),
+        ("torques", c_float * 7),
+        ("enabled_mask", c_uint32),
+        ("enabled_valid_mask", c_uint32),
+    ]
+
+
+class CProductStateV2(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32), ("has_grippers", c_int32),
+        ("left", CProductArmStateV2), ("right", CProductArmStateV2),
+        ("left_gripper_available", c_int32),
+        ("right_gripper_available", c_int32),
+        ("left_gripper_opening", c_float),
+        ("right_gripper_opening", c_float),
+        ("left_gripper_level", c_int32),
+        ("right_gripper_level", c_int32),
+        ("left_gripper_enabled", c_int32),
+        ("right_gripper_enabled", c_int32),
+        ("left_gripper_enabled_valid", c_int32),
+        ("right_gripper_enabled_valid", c_int32),
+        ("timestamp_ns", c_uint64), ("sequence", c_uint64),
+    ]
+
+
 class CProductPose(Structure):
     _fields_ = [
         ("struct_size", c_uint32), ("side", c_uint32),
@@ -258,13 +290,25 @@ class CGravityCompensationStatus(Structure):
 class RuntimeAbi:
     def __init__(self) -> None:
         self.lib = ctypes.CDLL(runtime_library_path())
+        self.lib.articore_runtime_abi_version.argtypes = []
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < 0x00020015:
+        if version < MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI >= 2.21; "
+                "Articore-SDK requires Runtime ABI >= 2.24; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
+        self.lib.articore_runtime_capabilities.argtypes = []
+        self.lib.articore_runtime_capabilities.restype = c_uint64
+        capabilities = int(self.lib.articore_runtime_capabilities())
+        if not capabilities & ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS:
+            raise AbiLoadError(
+                "Articore-SDK requires the Yunyi product-level 10-level "
+                "gripper capability; the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS"
+            )
+        self.abi_version = version
+        self.capabilities = capabilities
         self._bind()
 
     def _bind(self) -> None:
@@ -318,6 +362,10 @@ class RuntimeAbi:
 
         lib.articore_runtime_get_state.argtypes = [c_void_p, POINTER(CProductState)]
         lib.articore_runtime_get_state.restype = c_int32
+        lib.articore_runtime_get_state_v2.argtypes = [
+            c_void_p, POINTER(CProductStateV2),
+        ]
+        lib.articore_runtime_get_state_v2.restype = c_int32
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
         lib.articore_runtime_get_health_v2.argtypes = [c_void_p, POINTER(CSafetyHealthV2)]

@@ -15,6 +15,10 @@ if TYPE_CHECKING:
 FORMAT_VERSION = 1
 InterpolationMode = Literal["none", "linear", "quintic"]
 REPLAY_HZ = 100.0
+DEFAULT_MIT_TARGET_VELOCITIES = (0.0,) * 7
+DEFAULT_MIT_KP = (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
+DEFAULT_MIT_KD = (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
+DEFAULT_MIT_FEEDFORWARD_TORQUES = (0.0,) * 7
 
 
 @dataclass(slots=True, frozen=True)
@@ -196,6 +200,10 @@ def replay(
     samples: list[DualArmTrajectorySample],
     interpolation: InterpolationMode = "quintic",
     velocity_limit: float | None = 1.0,
+    mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
+    mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
+    mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
+    mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
     """按应用层频率重采样，并通过 raw PV/MIT 原子提交双臂。"""
     if not samples or len(timestamps) != len(samples):
@@ -241,12 +249,20 @@ def replay(
         remaining = started + elapsed - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        _submit_raw_positions(robot, sample, velocity_limit=velocity_limit)
+        _submit_raw_positions(
+            robot,
+            sample,
+            velocity_limit=velocity_limit,
+            mit_target_velocities=mit_target_velocities,
+            mit_kp=mit_kp,
+            mit_kd=mit_kd,
+            mit_feedforward_torques=mit_feedforward_torques,
+        )
         if sample.left_gripper is not None or sample.right_gripper is not None:
             robot.set_grippers(
                 left=0.0 if sample.left_gripper is None else sample.left_gripper,
                 right=0.0 if sample.right_gripper is None else sample.right_gripper,
-                gripper_level=3,
+                gripper_level=5,
             )
         if elapsed >= duration:
             return
@@ -259,6 +275,10 @@ def _submit_raw_positions(
     sample: DualArmTrajectorySample,
     *,
     velocity_limit: float | None,
+    mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
+    mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
+    mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
+    mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
     """按机器人构造模式提交一帧 raw PV 或 raw MIT 双臂目标。"""
     mode = robot.control_mode
@@ -279,6 +299,12 @@ def _submit_raw_positions(
         robot.submit_raw_mit(
             left_positions=sample.left_positions,
             right_positions=sample.right_positions,
+            left_velocities=mit_target_velocities,
+            right_velocities=mit_target_velocities,
+            kp=mit_kp,
+            kd=mit_kd,
+            left_feedforward_torques=mit_feedforward_torques,
+            right_feedforward_torques=mit_feedforward_torques,
         )
     else:
         raise RuntimeError("trajectory replay requires PV or MIT mode")
@@ -322,6 +348,10 @@ def interpolate_sample(
 
 
 __all__ = [
+    "DEFAULT_MIT_FEEDFORWARD_TORQUES",
+    "DEFAULT_MIT_KD",
+    "DEFAULT_MIT_KP",
+    "DEFAULT_MIT_TARGET_VELOCITIES",
     "DualArmTrajectorySample",
     "InterpolationMode",
     "interpolate_sample",
