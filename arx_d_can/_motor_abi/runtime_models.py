@@ -47,6 +47,12 @@ class RuntimeOperation(IntEnum):
     DISCONNECT = 8
     COMMAND = 9
     RECOVER = 10
+    START_TRAJECTORY = 11
+    CANCEL_TRAJECTORY = 12
+    MOVE_POSE = 13
+    CANCEL_MOVE_POSE = 14
+    MOVE_LINEAR = 15
+    MOVE_CIRCULAR = 16
 
 
 class OperationError(IntEnum):

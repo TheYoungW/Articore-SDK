@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""诊断示例 04：只读获取左右臂当前法兰位姿。"""
+"""诊断示例 04：只读获取左右臂当前产品控制点位姿。"""
 from __future__ import annotations
 
 from arx_d_can import ArxDCanDualArm
@@ -16,6 +16,7 @@ def main() -> None:
         left = robot.get_pose("left")
         right = robot.get_pose("right")
         print("位姿格式：[x, y, z, roll, pitch, yaw]")
+        print("控制点：有夹爪为 tool0；无夹爪为 link7")
         print("位置单位：米；姿态单位：弧度")
         print(f"left:  {_format_pose(left)}")
         print(f"right: {_format_pose(right)}")

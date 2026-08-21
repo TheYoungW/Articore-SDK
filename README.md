@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-依赖要求为 `motor-drive-layer>=0.10.31`。SDK 加载时检查 Runtime ABI 2.30，以及夹爪和三种原生笛卡尔运动能力，避免误加载旧动态库。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+当前版本只依赖 `motor-drive-layer==0.12.0`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.0，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -23,6 +23,7 @@ try:
     robot.connect()
     robot.enable()
 
+    robot.set_max_speed(70)
     robot.set_joint_mit(
         left=[0.0] * 7,
         right=[0.0] * 7,
@@ -52,11 +53,16 @@ Python 不公开单独的 `close()` 或 `free()`。
 
 ## 控制接口
 
-- 普通位置：`set_joint_mit()`、`set_joint_pv()`，`velocity` 为 0～100 档位。
+- 普通 PV 位置：先按需调用 `set_max_speed(0..100)`，再调用不带速度参数的
+  `set_joint_pv(left=..., right=...)`。最大速度默认值为 70；100 对应14个关节统一
+  5 rad/s，70 对应3.5 rad/s。Runtime 在原生周期内按该上限逐步推进 reference。
+  SDK 不再提供每条 PV 位置命令的速度参数，也不公开 Raw PV 直发。
+- 普通 MIT 位置继续使用 `set_joint_mit()` 的显式 `velocity`；Raw MIT 保留给明确需要
+  Kp、Kd、目标速度和前馈力矩的高级控制。
 - 电机电源：`enable()` / `disable()` 操作整机；传入
   `motors=["l-joint4", "r-joint4"]` 时由 C++ Runtime 执行一次原子批量事务。部分使能状态下
   仍提交完整 14 轴目标，底层自动跳过主动失能的电机。
-- 原始帧：`submit_raw_mit()`、`submit_raw_pv()`。
+- 原始帧：产品 SDK 只保留 `submit_raw_mit()`；PV 必须走 Runtime 步进路径。
 - 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=0..10, mode="protected" | "direct")`。默认 `protected`；`direct` 会持续追踪目标且不执行夹爪接触保持、堵转判断和过载退让。直驱时应关注夹爪温升、机械过载和被夹物体安全。
 - 状态：`read_state()`、`read_cached_state()`。
   `state.left.arm.enabled` 和 `state.right.arm.enabled` 返回逐关节
@@ -75,10 +81,16 @@ Python 不公开单独的 `close()` 或 `free()`。
 
 所有关节数量、有限值、URDF 限位、速度和安全检查由 C++ Runtime 统一验证。Python 不重复维护一份产品配置。
 
+`get_pose()` 和全部笛卡尔运动统一使用产品控制点：`with_grippers=True` 时为夹爪中心
+`l-tool0/r-tool0`，`with_grippers=False` 时为法兰 `l-link7/r-link7`。SDK 不提供另一套
+`get_flange_pose()`，也不在 Python 中换算工具偏移。URDF 中 `tool0` 相对 `link7` 的固定
+变换为 `xyz=[-0.004, 0, -0.178] m`、`rpy=[0, 0, 0]`。
+
 笛卡尔位姿统一为 `[x, y, z, roll, pitch, yaw]`，位置单位为米、姿态单位为弧度，
 `speed_percent` 范围为 `(0, 100]`。IK、五次轨迹、直线/圆弧插值、限位和到位判断均在 Runtime 中完成。
 只有 `status.state == "completed"` 表示真实反馈已经稳定到位；`state == "running"` 且
 `progress == 1.0` 仍表示底层正在等待机械臂稳定。当前接口不是左右臂原子运动，SDK 不会用两次单侧调用伪装同步双臂规划。
+圆弧运动只传入 `via_pose` 和 `end_pose`；起点由 Runtime 在同一个底层事务中读取当前规划参考位姿，Python 不调用 `get_pose()` 获取或推断起点。
 
 夹爪默认使用保护模式。只有明确需要持续追踪开合度时才使用直驱：
 
@@ -117,7 +129,7 @@ python -m arx_d_can.examples.diagnostics.example_02_benchmark_read_rate \
 # 读取 Runtime health 和具体错误
 python -m arx_d_can.examples.diagnostics.example_03_read_health
 
-# 获取左右臂当前法兰位姿
+# 获取左右臂当前产品控制点位姿（有夹爪为 tool0，无夹爪为 link7）
 python -m arx_d_can.examples.diagnostics.example_04_read_pose
 
 # 整机清错、低速回到已标定零点，最后失能
@@ -138,10 +150,10 @@ python -m arx_d_can.examples.control.example_04_send_position_mit \
 业务代码
   └─ ArxDCanDualArm
        └─ ArticoreRuntime.create_yunyi(...)
-            └─ libarticore_runtime.so / libmotor_abi.so
-                 └─ can-left + can-right + 14 关节 + 可选双夹爪
+            └─ libarticore_runtime.so
+                 └─ C++ MotorBackend + can-left/can-right + 14 关节 + 可选双夹爪
 ```
 
 SDK 不再包含 `ArxDCanArm`、单臂示例、YAML 电机配置、旧 actuator/driver 包或 Python 动力学实现。
-私有目录 `_motor_abi` 也只保留产品 Runtime 的动态库加载、C 结构映射、Python 数据模型和调用转发；
+私有目录 `_motor_abi` 只保留产品 Runtime C ABI 的动态库加载、C 结构映射、Python 数据模型和调用转发；
 不再向 SDK 暴露 Motor、Controller、寄存器、总线扫描或原生 CLI。

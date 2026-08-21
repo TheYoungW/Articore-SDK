@@ -24,7 +24,6 @@ def _start_motion(robot: ArxDCanDualArm, args: argparse.Namespace) -> int:
         )
     return robot.move_circular(
         side=args.side,
-        start_pose=args.start,
         via_pose=args.via,
         end_pose=args.target,
         speed_percent=args.speed,
@@ -32,8 +31,8 @@ def _start_motion(robot: ArxDCanDualArm, args: argparse.Namespace) -> int:
 
 
 def main(args: argparse.Namespace) -> None:
-    if args.motion == "circular" and (args.start is None or args.via is None):
-        raise ValueError("圆弧运动必须提供 --start 和 --via")
+    if args.motion == "circular" and args.via is None:
+        raise ValueError("圆弧运动必须提供 --via")
 
     robot = ArxDCanDualArm(control_mode="pv")
     submitted = False
@@ -86,10 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target", type=pose_values, required=True,
         help="目标/圆弧终点 x,y,z,roll,pitch,yaw（米、弧度）",
-    )
-    parser.add_argument(
-        "--start", type=pose_values,
-        help="圆弧起点 x,y,z,roll,pitch,yaw（必须匹配当前规划位姿）",
     )
     parser.add_argument(
         "--via", type=pose_values,

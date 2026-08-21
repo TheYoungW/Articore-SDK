@@ -252,6 +252,12 @@
     <axis xyz="1 0 0" />
     <limit lower="-1.3956" upper="1.3956" effort="7" velocity="20" />
   </joint>
+  <link name="l-tool0" />
+  <joint name="l-tool0-fixed-joint" type="fixed">
+    <origin xyz="-0.004 0 -0.178" rpy="0 0 0" />
+    <parent link="l-link7" />
+    <child link="l-tool0" />
+  </joint>
   <link name="l-link8">
     <inertial>
       <origin xyz="1.39241307299358E-08 -0.0112681143652671 0.0446697879205081" rpy="0 0 0" />
@@ -539,6 +545,12 @@
     <child link="r-link7" />
     <axis xyz="1 0 0" />
     <limit lower="-1.3956" upper="1.3956" effort="7" velocity="20" />
+  </joint>
+  <link name="r-tool0" />
+  <joint name="r-tool0-fixed-joint" type="fixed">
+    <origin xyz="-0.004 0 -0.178" rpy="0 0 0" />
+    <parent link="r-link7" />
+    <child link="r-tool0" />
   </joint>
   <link name="r-link8">
     <inertial>

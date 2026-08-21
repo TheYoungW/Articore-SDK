@@ -116,6 +116,7 @@ class FakeRuntime:
             error=None,
         )
         self.fps = 8120.0
+        self.max_speed = 70.0
 
     @property
     def control_mode(self) -> RuntimeControlMode:
@@ -150,14 +151,22 @@ class FakeRuntime:
         self.calls.append(("configure_mode", mode))
         self._mode = mode
 
-    def set_joint_positions(self, positions, velocity) -> None:
-        self.calls.append(("positions", tuple(positions), velocity))
+    def set_max_speed(self, max_speed_percent) -> None:
+        self.max_speed = float(max_speed_percent)
+        self.calls.append(("set_max_speed", float(max_speed_percent)))
+
+    def get_max_speed(self) -> float:
+        self.calls.append(("get_max_speed",))
+        return self.max_speed
+
+    def set_joint_positions(self, positions, velocity=None) -> None:
+        if velocity is None:
+            self.calls.append(("positions", tuple(positions)))
+        else:
+            self.calls.append(("positions", tuple(positions), velocity))
 
     def submit_mit_frame(self, *values) -> None:
         self.calls.append(("mit", *values))
-
-    def submit_pv_frame(self, *values) -> None:
-        self.calls.append(("pv", *values))
 
     def set_product_grippers(self, *, left, right, gripper_level, mode) -> None:
         self.calls.append(("grippers", left, right, gripper_level, mode))
@@ -200,11 +209,11 @@ class FakeRuntime:
         return 11
 
     def move_circular(
-        self, side, start_pose, via_pose, end_pose, speed_percent
+        self, side, via_pose, end_pose, speed_percent
     ) -> int:
         self.calls.append((
-            "move_circular", side, tuple(start_pose), tuple(via_pose),
-            tuple(end_pose), speed_percent,
+            "move_circular", side, tuple(via_pose), tuple(end_pose),
+            speed_percent,
         ))
         return 12
 
@@ -241,6 +250,33 @@ def test_constructor_rejects_unknown_mode_before_native_create(product_factory) 
     with pytest.raises(ValueError, match="control_mode"):
         ArxDCanDualArm(control_mode="velocity")
     assert product_factory == []
+
+
+def test_native_factory_uses_abi3_output_pointer(monkeypatch) -> None:
+    calls: list[tuple] = []
+
+    def create_yunyi(mode, with_grippers, output):
+        calls.append((mode, with_grippers))
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = 456
+        return 0
+
+    fake_abi = SimpleNamespace(
+        lib=SimpleNamespace(
+            articore_runtime_create_yunyi=create_yunyi,
+        ),
+    )
+    monkeypatch.setattr(
+        "arx_d_can._motor_abi.runtime.get_runtime_abi", lambda: fake_abi
+    )
+
+    runtime = ArticoreRuntime.create_yunyi(
+        RuntimeControlMode.PV, with_grippers=True
+    )
+    try:
+        assert runtime._ptr == 456
+        assert calls == [(1, 1)]
+    finally:
+        runtime._ptr = None
 
 
 def test_lifecycle_is_forwarded_to_the_same_runtime(product_factory) -> None:
@@ -290,11 +326,40 @@ def test_get_fps_returns_latest_runtime_sample(product_factory) -> None:
     assert robot.get_fps() == 8120.0
 
 
+def test_ordinary_motion_max_speed_uses_canonical_runtime_names(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+
+    assert robot.get_max_speed() == 70.0
+    robot.set_max_speed(0)
+    robot.set_max_speed(100)
+    assert robot.get_max_speed() == 100.0
+    assert not hasattr(robot, "set_speed")
+    assert not hasattr(robot, "get_speed")
+    assert robot._runtime.calls == [
+        ("get_max_speed",),
+        ("set_max_speed", 0.0),
+        ("set_max_speed", 100.0),
+        ("get_max_speed",),
+    ]
+
+
+def test_max_speed_does_not_apply_to_mit(product_factory) -> None:
+    robot = ArxDCanDualArm(control_mode="mit")
+
+    with pytest.raises(RuntimeError, match="requires PV mode"):
+        robot.set_max_speed(50)
+    with pytest.raises(RuntimeError, match="requires PV mode"):
+        robot.get_max_speed()
+    assert robot._runtime.calls == []
+
+
 def test_ordinary_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
     robot.set_joint_mit(left=range(7), right=range(7, 14), velocity=50)
     assert robot._runtime.calls == [
-        ("positions", tuple(float(i) for i in range(14)), 50.0)
+        ("positions", tuple(float(i) for i in range(14)), 50)
     ]
 
 
@@ -302,6 +367,21 @@ def test_ordinary_position_default_is_selected_by_native_product(product_factory
     robot = ArxDCanDualArm(control_mode="mit")
     robot.set_joint_mit(left=(0,) * 7, right=(0,) * 7)
     assert robot._runtime.calls == [("positions", (0.0,) * 14, 100.0)]
+
+
+def test_pv_position_uses_only_the_persistent_native_max_speed(product_factory) -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+    robot.set_joint_pv(left=(0,) * 7, right=(1,) * 7)
+    assert robot._runtime.calls == [
+        ("positions", (0.0,) * 7 + (1.0,) * 7)
+    ]
+    assert not hasattr(robot, "submit_raw_pv")
+    with pytest.raises(TypeError, match="velocity"):
+        robot.set_joint_pv(
+            left=(0,) * 7,
+            right=(1,) * 7,
+            velocity=50,
+        )
 
 
 def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) -> None:
@@ -321,19 +401,6 @@ def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) 
     assert call[3] is None
     assert call[4] == (3.0,) * 14
     assert call[5] == (0.5,) * 14
-
-
-def test_raw_pv_is_one_fixed_product_frame(product_factory) -> None:
-    robot = ArxDCanDualArm(control_mode="pv")
-    robot.submit_raw_pv(
-        left_positions=(0,) * 7,
-        right_positions=(1,) * 7,
-        left_velocity_limits=(2,) * 7,
-        right_velocity_limits=(3,) * 7,
-    )
-    assert robot._runtime.calls == [
-        ("pv", (0.0,) * 7 + (1.0,) * 7, (2.0,) * 7 + (3.0,) * 7)
-    ]
 
 
 def test_read_state_uses_one_native_product_snapshot(product_factory) -> None:
@@ -410,7 +477,6 @@ def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
 ) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
     target = (0.3, 0.2, 0.4, 0.0, 0.1, 0.2)
-    start = (0.2, 0.1, 0.3, 0.0, 0.0, 0.0)
     via = (0.25, 0.15, 0.35, 0.0, 0.05, 0.1)
 
     assert robot.move_pose(
@@ -420,7 +486,7 @@ def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
         side="right", target_pose=target, speed_percent=20
     ) == 11
     assert robot.move_circular(
-        side="left", start_pose=start, via_pose=via, end_pose=target,
+        side="left", via_pose=via, end_pose=target,
         speed_percent=30,
     ) == 12
     assert robot.cartesian_motion_status.state == "running"
@@ -429,7 +495,7 @@ def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
     assert robot._runtime.calls == [
         ("move_pose", 0, target, 10),
         ("move_linear", 1, target, 20),
-        ("move_circular", 0, start, via, target, 30),
+        ("move_circular", 0, via, target, 30),
         ("cancel_cartesian_motion",),
     ]
 

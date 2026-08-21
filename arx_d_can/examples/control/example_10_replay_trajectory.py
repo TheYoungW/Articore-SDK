@@ -12,6 +12,7 @@ from arx_d_can.examples.common import (
     joint_values,
     joint_velocity_degrees,
     positive_velocity_degrees,
+    speed_percent,
 )
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DEFAULT_MIT_FEEDFORWARD_TORQUES,
@@ -20,7 +21,7 @@ from arx_d_can.service_tools.dual_trajectory_recording import (
     DEFAULT_MIT_TARGET_VELOCITIES,
     DualArmTrajectorySample,
     REPLAY_HZ,
-    _submit_raw_positions,
+    _submit_positions,
     interpolate_sample,
     load_trajectory,
     replay,
@@ -32,7 +33,7 @@ def _move_to_start(
     target: DualArmTrajectorySample,
     *,
     start_velocity: float,
-    velocity_limit: float | None,
+    max_speed_percent: float,
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
@@ -48,60 +49,73 @@ def _move_to_start(
         left_gripper=target.left_gripper,
         right_gripper=target.right_gripper,
     )
-    largest_move = max(
-        *(
-            abs(end - start)
-            for start, end in zip(current.left_positions, target.left_positions)
-        ),
-        *(
-            abs(end - start)
-            for start, end in zip(current.right_positions, target.right_positions)
-        ),
-    )
-    # 五次 smoothstep 的最大归一化速度为 1.875；按此放大时长可保证
-    # 生成 reference 的峰值速度不超过 start_velocity。
-    duration = 1.875 * largest_move / start_velocity
-    started = time.perf_counter()
-    tick = 0
-    while True:
-        elapsed = min(tick / REPLAY_HZ, duration)
-        progress = 1.0 if duration == 0.0 else elapsed / duration
-        sample = interpolate_sample(
-            current,
-            target,
-            progress=progress,
-            mode="quintic",
+    if robot.control_mode == "pv":
+        robot.set_max_speed(max_speed_percent)
+        robot.set_joint_pv(
+            left=target.left_positions,
+            right=target.right_positions,
         )
-        remaining = started + elapsed - time.perf_counter()
-        if remaining > 0.0:
-            time.sleep(remaining)
-        _submit_raw_positions(
-            robot,
-            sample,
-            velocity_limit=velocity_limit,
-            mit_target_velocities=mit_target_velocities,
-            mit_kp=mit_kp,
-            mit_kd=mit_kd,
-            mit_feedforward_torques=mit_feedforward_torques,
+    else:
+        largest_move = max(
+            *(
+                abs(end - start)
+                for start, end in zip(
+                    current.left_positions,
+                    target.left_positions,
+                )
+            ),
+            *(
+                abs(end - start)
+                for start, end in zip(
+                    current.right_positions,
+                    target.right_positions,
+                )
+            ),
         )
-        if elapsed >= duration:
-            break
-        captured_at = time.perf_counter()
-        tick = max(tick + 1, math.floor((captured_at - started) * REPLAY_HZ) + 1)
+        duration = 1.875 * largest_move / start_velocity
+        started = time.perf_counter()
+        tick = 0
+        while True:
+            elapsed = min(tick / REPLAY_HZ, duration)
+            progress = 1.0 if duration == 0.0 else elapsed / duration
+            sample = interpolate_sample(
+                current,
+                target,
+                progress=progress,
+                mode="quintic",
+            )
+            remaining = started + elapsed - time.perf_counter()
+            if remaining > 0.0:
+                time.sleep(remaining)
+            _submit_positions(
+                robot,
+                sample,
+                mit_target_velocities=mit_target_velocities,
+                mit_kp=mit_kp,
+                mit_kd=mit_kd,
+                mit_feedforward_torques=mit_feedforward_torques,
+            )
+            if elapsed >= duration:
+                break
+            captured_at = time.perf_counter()
+            tick = max(
+                tick + 1,
+                math.floor((captured_at - started) * REPLAY_HZ) + 1,
+            )
 
     deadline = time.monotonic() + timeout
     stable_since = None
     next_tick = time.perf_counter()
     while time.monotonic() < deadline:
-        _submit_raw_positions(
-            robot,
-            target,
-            velocity_limit=velocity_limit,
-            mit_target_velocities=mit_target_velocities,
-            mit_kp=mit_kp,
-            mit_kd=mit_kd,
-            mit_feedforward_torques=mit_feedforward_torques,
-        )
+        if robot.control_mode == "mit":
+            _submit_positions(
+                robot,
+                target,
+                mit_target_velocities=mit_target_velocities,
+                mit_kp=mit_kp,
+                mit_kd=mit_kd,
+                mit_feedforward_torques=mit_feedforward_torques,
+            )
         state = robot.read_cached_state()
         position_error = max(
             *(
@@ -150,22 +164,22 @@ def main(args: argparse.Namespace) -> None:
     )
     samples = recorded
     first = samples[0]
-    if args.mode == "pv" and args.start_velocity > args.pv_velocity_limit:
-        raise ValueError("--start-velocity cannot exceed --pv-velocity-limit")
-
     robot.connect()
     print("机器人连接成功")
     try:
         robot.enable()
-        print(
-            f"正以 {math.degrees(args.start_velocity):g}°/s "
-            "原子移动双臂到轨迹起点……"
-        )
+        if args.mode == "pv":
+            print(f"正以 {args.max_speed:g}% 最大速度移动双臂到轨迹起点……")
+        else:
+            print(
+                f"正以 {math.degrees(args.start_velocity):g}°/s "
+                "原子移动双臂到轨迹起点……"
+            )
         _move_to_start(
             robot,
             first,
             start_velocity=args.start_velocity,
-            velocity_limit=(args.pv_velocity_limit if args.mode == "pv" else None),
+            max_speed_percent=args.max_speed,
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
@@ -184,7 +198,7 @@ def main(args: argparse.Namespace) -> None:
             timestamps=timestamps,
             samples=samples,
             interpolation=args.interpolation,
-            velocity_limit=(args.pv_velocity_limit if args.mode == "pv" else None),
+            max_speed_percent=args.max_speed,
             mit_target_velocities=args.mit_target_velocity,
             mit_kp=args.mit_kp,
             mit_kd=args.mit_kd,
@@ -205,19 +219,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("pv", "mit"),
         default="pv",
-        help="raw 回放控制模式；默认 pv",
+        help="回放控制模式；默认 pv",
     )
     parser.add_argument(
         "--start-velocity",
         type=positive_velocity_degrees,
         default=math.radians(30.0),
-        help="返回轨迹起点的统一速度，单位为度/秒；默认 30",
+        help="MIT 返回轨迹起点的统一速度，单位为度/秒；PV 模式忽略；默认 30",
     )
     parser.add_argument(
-        "--pv-velocity-limit",
-        type=positive_velocity_degrees,
-        default=math.radians(100.0),
-        help="raw PV 协议统一速度上限，单位为度/秒；MIT 模式忽略；默认 100",
+        "--max-speed",
+        type=speed_percent,
+        default=70.0,
+        help="PV 最大速度百分比 0–100；MIT 模式忽略；默认 70",
     )
     parser.add_argument(
         "--interpolation",

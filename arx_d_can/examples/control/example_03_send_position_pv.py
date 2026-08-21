@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 03（PV）：以统一速度设置双臂目标位置。"""
+"""控制示例 03（PV）：按 Runtime 最大速度平滑设置双臂目标位置。"""
 from __future__ import annotations
 
 import argparse
@@ -16,10 +16,10 @@ def main(args: argparse.Namespace) -> None:
     try:
         robot.enable()
         print("已进入 PV 模式")
+        robot.set_max_speed(args.max_speed)
         robot.set_joint_pv(
             left=joint_degrees(args.left),
             right=joint_degrees(args.right),
-            velocity=args.velocity,
         )
         print("目标已提交，Runtime 正在平滑推进；按 Ctrl+C 失能并退出")
         while True:
@@ -36,10 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--left", required=True, help="左臂 7 个关节角度，单位为度")
     parser.add_argument("--right", required=True, help="右臂 7 个关节角度，单位为度")
     parser.add_argument(
-        "--velocity",
+        "--max-speed",
         type=speed_percent,
-        required=True,
-        help="双臂统一速度档位，范围 0～100",
+        default=70.0,
+        help="Runtime 最大速度百分比，范围 0～100，默认 70",
     )
     return parser
 

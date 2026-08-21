@@ -98,7 +98,6 @@ def test_circular_example_forwards_three_poses_without_second_side_call(
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)
     args = example.build_parser().parse_args([
         "--side", "left", "--motion", "circular",
-        "--start", "0.2,0.1,0.3,0,0,0",
         "--via", "0.25,0.15,0.35,0,0,0",
         "--target", "0.3,0.1,0.3,0,0,0",
         "--speed", "15",
@@ -110,3 +109,4 @@ def test_circular_example_forwards_three_poses_without_second_side_call(
     assert calls[0][0] == "move_circular"
     assert calls[0][1]["side"] == "left"
     assert calls[0][1]["speed_percent"] == 15.0
+    assert "start_pose" not in calls[0][1]

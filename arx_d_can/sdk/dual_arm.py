@@ -134,6 +134,18 @@ class ArxDCanDualArm:
         """非阻塞返回最近 0.1 秒窗口内的双通道 CAN 总帧率。"""
         return self._runtime.get_fps()
 
+    def set_max_speed(self, max_speed_percent: float) -> None:
+        """设置普通 PV 位置运动的持续最大速度百分比（0～100）。"""
+        if self._runtime.control_mode is not RuntimeControlMode.PV:
+            raise RuntimeError("set_max_speed() requires PV mode")
+        self._runtime.set_max_speed(max_speed_percent)
+
+    def get_max_speed(self) -> float:
+        """返回普通 PV 位置运动的当前最大速度百分比。"""
+        if self._runtime.control_mode is not RuntimeControlMode.PV:
+            raise RuntimeError("get_max_speed() requires PV mode")
+        return self._runtime.get_max_speed()
+
     @property
     def gravity_compensation_status(self) -> GravityCompensationStatus:
         return self._runtime.gravity_compensation_status
@@ -164,24 +176,17 @@ class ArxDCanDualArm:
     ) -> None:
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
             raise RuntimeError("set_joint_mit() requires MIT mode")
-        self._runtime.set_joint_positions(
-            _frame(left, right),
-            float(velocity),
-        )
+        self._runtime.set_joint_positions(_frame(left, right), velocity)
 
     def set_joint_pv(
         self,
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float = 100.0,
     ) -> None:
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_joint_pv() requires PV mode")
-        self._runtime.set_joint_positions(
-            _frame(left, right),
-            float(velocity),
-        )
+        self._runtime.set_joint_positions(_frame(left, right))
 
     def submit_raw_mit(
         self,
@@ -203,19 +208,6 @@ class ArxDCanDualArm:
             ),
             _gain_frame(kp),
             _gain_frame(kd),
-        )
-
-    def submit_raw_pv(
-        self,
-        *,
-        left_positions: Sequence[float],
-        right_positions: Sequence[float],
-        left_velocity_limits: Sequence[float],
-        right_velocity_limits: Sequence[float],
-    ) -> None:
-        self._runtime.submit_pv_frame(
-            _frame(left_positions, right_positions),
-            _frame(left_velocity_limits, right_velocity_limits),
         )
 
     def read_state(self) -> ArxDCanDualArmState:
@@ -254,7 +246,7 @@ class ArxDCanDualArm:
         return self.read_state()
 
     def get_pose(self, side: str) -> list[float]:
-        """返回指定手臂法兰位姿 [x, y, z, roll, pitch, yaw]。"""
+        """返回指定手臂当前产品控制点位姿 [x, y, z, roll, pitch, yaw]。"""
         return self._runtime.get_pose(_side(side))
 
     def get_pose_sample(self, side: str) -> ProductPose:
@@ -277,14 +269,13 @@ class ArxDCanDualArm:
         self,
         *,
         side: str,
-        start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        """在 PV 模式下执行单侧三点圆弧运动。"""
+        """从 Runtime 当前规划位姿开始执行单侧圆弧运动。"""
         return self._runtime.move_circular(
-            _side(side), start_pose, via_pose, end_pose, speed_percent
+            _side(side), via_pose, end_pose, speed_percent
         )
 
     @property

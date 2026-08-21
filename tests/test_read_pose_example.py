@@ -30,5 +30,6 @@ def test_read_pose_example_reads_both_sides_without_enabling(monkeypatch, capsys
     ]
     output = capsys.readouterr().out
     assert "[x, y, z, roll, pitch, yaw]" in output
+    assert "有夹爪为 tool0；无夹爪为 link7" in output
     assert "left:" in output
     assert "right:" in output

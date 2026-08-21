@@ -77,8 +77,8 @@ python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 python -m arx_d_can.examples.maintenance.example_03_set_zero_current_position
 ```
 
-MIT 单点控制默认使用普通 `set_joint_mit()`，速度为显式填写的 0～100 档位。轨迹回放属于高级接口，会显式提交完整 raw MIT 帧。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
+PV 单点控制只使用 `set_max_speed(0..100)` 和不带速度参数的 `set_joint_pv()`；默认最大速度为 70。Runtime 在原生周期内平滑推进 reference，SDK 不再公开 Raw PV。MIT 仍可通过 `set_joint_mit()` 的显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
 
-控制示例 07 只用于 PV 模式，一次只控制 `left` 或 `right`。点到点使用 `--motion ptp`，直线使用 `linear`；圆弧使用 `circular`，并额外提供 `--start` 和 `--via`。位姿单位为米和弧度。示例只在 Runtime 返回 `completed` 后报告到位，不会把 `running + progress=100%` 误判为完成。
+控制示例 07 只用于 PV 模式，一次只控制 `left` 或 `right`。点到点使用 `--motion ptp`，直线使用 `linear`；圆弧使用 `circular` 并额外提供 `--via`，起点由 Runtime 自动读取当前规划参考位姿。位姿单位为米和弧度。示例只在 Runtime 返回 `completed` 后报告到位，不会把 `running + progress=100%` 误判为完成。
 
 夹爪 `direct` 模式会持续追踪目标，不执行接触保持、堵转判断或过载退让。使用时必须关注夹爪温升、机械过载和被夹物体安全；默认应保持 `--mode protected`。

@@ -6,7 +6,7 @@ from arx_d_can.examples.control import example_03_send_position_pv as pv_example
 from arx_d_can.examples.control import example_04_send_position_mit as mit_example
 
 
-def test_pv_example_forwards_positions_and_speed(monkeypatch) -> None:
+def test_pv_example_sets_one_persistent_max_speed_then_positions(monkeypatch) -> None:
     captured = {"calls": []}
 
     class FakeRobot:
@@ -15,6 +15,9 @@ def test_pv_example_forwards_positions_and_speed(monkeypatch) -> None:
 
         def enable(self):
             captured["calls"].append("enable")
+
+        def set_max_speed(self, value):
+            captured["max_speed"] = value
 
         def set_joint_pv(self, **kwargs):
             captured.update(kwargs)
@@ -32,7 +35,7 @@ def test_pv_example_forwards_positions_and_speed(monkeypatch) -> None:
         [
             "--left", "0,10,20,30,40,50,60",
             "--right", "0,-10,-20,-30,-40,-50,-60",
-            "--velocity", "90",
+            "--max-speed", "90",
         ]
     )
     pv_example.main(args)
@@ -45,18 +48,18 @@ def test_pv_example_forwards_positions_and_speed(monkeypatch) -> None:
     assert captured["right"] == pytest.approx(
         tuple(math.radians(value) for value in (0, -10, -20, -30, -40, -50, -60))
     )
-    assert captured["velocity"] == 90.0
+    assert captured["max_speed"] == 90.0
+    assert "velocity" not in captured
 
 
-def test_pv_example_requires_a_zero_to_one_hundred_speed() -> None:
+def test_pv_example_defaults_to_seventy_and_validates_max_speed() -> None:
     parser = pv_example.build_parser()
     base = ["--left", "0,0,0,0,0,0,0", "--right", "0,0,0,0,0,0,0"]
 
+    assert parser.parse_args(base).max_speed == 70.0
+    assert parser.parse_args([*base, "--max-speed", "0"]).max_speed == 0.0
     with pytest.raises(SystemExit):
-        parser.parse_args(base)
-    assert parser.parse_args([*base, "--velocity", "0"]).velocity == 0.0
-    with pytest.raises(SystemExit):
-        parser.parse_args([*base, "--velocity", "100.1"])
+        parser.parse_args([*base, "--max-speed", "100.1"])
 
 
 def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:

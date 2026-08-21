@@ -30,8 +30,11 @@ def set_joint_positions(
     left: tuple[float, ...],
     right: tuple[float, ...],
 ) -> None:
-    command = robot.set_joint_mit if mode == "mit" else robot.set_joint_pv
-    command(left=left, right=right, velocity=SPEED_PERCENT)
+    if mode == "mit":
+        robot.set_joint_mit(left=left, right=right, velocity=SPEED_PERCENT)
+    else:
+        robot.set_max_speed(SPEED_PERCENT)
+        robot.set_joint_pv(left=left, right=right)
 
 
 def require_motion_health(robot: ArxDCanDualArm) -> None:

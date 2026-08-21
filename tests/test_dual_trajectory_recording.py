@@ -78,16 +78,12 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
         has_grippers = True
         control_mode = "pv"
 
-        def submit_raw_pv(
-            self,
-            *,
-            left_positions,
-            right_positions,
-            left_velocity_limits,
-            right_velocity_limits,
-        ) -> None:
+        def set_max_speed(self, value) -> None:
+            commands.append(("max-speed", value))
+
+        def set_joint_pv(self, *, left, right) -> None:
             commands.append(
-                ("arms", tuple(left_positions), tuple(right_positions))
+                ("arms", tuple(left), tuple(right))
             )
 
         def set_grippers(self, *, left, right, gripper_level) -> None:
@@ -104,12 +100,13 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
     )
 
     assert commands == [
+        ("max-speed", 70.0),
         ("arms", (0.1,), (0.2,)),
         ("grippers", 1000.0, 0.0, 5),
     ]
 
 
-def test_dual_replay_refreshes_raw_target_across_long_sample_gap(
+def test_dual_replay_refreshes_stepped_target_across_long_sample_gap(
     monkeypatch,
 ) -> None:
     now = 0.0
@@ -123,11 +120,12 @@ def test_dual_replay_refreshes_raw_target_across_long_sample_gap(
         has_grippers = False
         control_mode = "pv"
 
-        def submit_raw_pv(
-            self, *, left_positions, right_positions, **_kwargs
-        ) -> None:
+        def set_max_speed(self, value) -> None:
+            assert value == 70.0
+
+        def set_joint_pv(self, *, left, right) -> None:
             positions.append(
-                (now, tuple(left_positions), tuple(right_positions))
+                (now, tuple(left), tuple(right))
             )
 
     monkeypatch.setattr(
@@ -196,7 +194,6 @@ def test_dual_mit_replay_sends_explicit_gains_and_zero_dynamic_targets(
         timestamps=[0.0],
         samples=[DualArmTrajectorySample((0.1,), (-0.2,), None, None)],
         interpolation="none",
-        velocity_limit=None,
     )
 
     assert commands == [

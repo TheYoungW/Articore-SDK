@@ -199,13 +199,13 @@ def replay(
     timestamps: list[float],
     samples: list[DualArmTrajectorySample],
     interpolation: InterpolationMode = "quintic",
-    velocity_limit: float | None = 1.0,
+    max_speed_percent: float = 70.0,
     mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
     mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
     mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
     mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
-    """按应用层频率重采样，并通过 raw PV/MIT 原子提交双臂。"""
+    """按应用层频率重采样；PV走步进位置路径，MIT保留raw参数。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
     if interpolation not in {"none", "linear", "quintic"}:
@@ -217,6 +217,13 @@ def replay(
         for sample in samples
     ) and not robot.has_grippers:
         raise RuntimeError("trajectory requires the dual-arm gripper pair")
+    if robot.control_mode == "pv":
+        if (
+            not math.isfinite(max_speed_percent)
+            or not 0.0 <= max_speed_percent <= 100.0
+        ):
+            raise ValueError("max_speed_percent must be in 0..100")
+        robot.set_max_speed(max_speed_percent)
     replay_hz = REPLAY_HZ
 
     started = time.perf_counter()
@@ -249,10 +256,9 @@ def replay(
         remaining = started + elapsed - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
-        _submit_raw_positions(
+        _submit_positions(
             robot,
             sample,
-            velocity_limit=velocity_limit,
             mit_target_velocities=mit_target_velocities,
             mit_kp=mit_kp,
             mit_kd=mit_kd,
@@ -270,30 +276,21 @@ def replay(
         tick = max(tick + 1, math.floor((captured_at - started) * replay_hz) + 1)
 
 
-def _submit_raw_positions(
+def _submit_positions(
     robot: ArxDCanDualArm,
     sample: DualArmTrajectorySample,
     *,
-    velocity_limit: float | None,
     mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
     mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
     mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
     mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
-    """按机器人构造模式提交一帧 raw PV 或 raw MIT 双臂目标。"""
+    """PV提交步进位置目标；MIT提交一帧显式动态参数。"""
     mode = robot.control_mode
     if mode == "pv":
-        if (
-            velocity_limit is None
-            or not math.isfinite(velocity_limit)
-            or velocity_limit <= 0.0
-        ):
-            raise ValueError("PV velocity_limit must be finite and positive")
-        robot.submit_raw_pv(
-            left_positions=sample.left_positions,
-            right_positions=sample.right_positions,
-            left_velocity_limits=(velocity_limit,) * len(sample.left_positions),
-            right_velocity_limits=(velocity_limit,) * len(sample.right_positions),
+        robot.set_joint_pv(
+            left=sample.left_positions,
+            right=sample.right_positions,
         )
     elif mode == "mit":
         robot.submit_raw_mit(

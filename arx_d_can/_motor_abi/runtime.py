@@ -107,10 +107,11 @@ class ArticoreRuntime:
         """创建完全由 C++ 拥有资源和配置的 Yunyi 双臂 Runtime。"""
         mode = RuntimeControlMode(control_mode)
         runtime_abi = get_runtime_abi()
-        pointer = runtime_abi.lib.articore_runtime_create_yunyi(
-            int(mode), int(bool(with_grippers)),
-        )
-        if not pointer:
+        output = ctypes.c_void_p()
+        result = int(runtime_abi.lib.articore_runtime_create_yunyi(
+            int(mode), int(bool(with_grippers)), ctypes.byref(output),
+        ))
+        if result != 0 or not output.value:
             detail = runtime_abi.lib.articore_runtime_last_error()
             text = detail.decode(errors="replace") if detail else "unknown error"
             raise RuntimeCallError(f"create_yunyi failed: {text}")
@@ -119,7 +120,7 @@ class ArticoreRuntime:
         self._fps = 0.0
         self._fps_stop = Event()
         self._fps_thread = None
-        self._ptr = pointer
+        self._ptr = output.value
         self._runtime_abi = runtime_abi
         self._control_mode = mode
         return self
@@ -470,15 +471,43 @@ class ArticoreRuntime:
             if failure is not None:
                 raise RuntimeCallError(f"disconnect failed: {failure}")
 
+    def set_max_speed(self, max_speed_percent: float) -> None:
+        """Set the persistent 0..100 maximum for ordinary PV motion."""
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_max_speed,
+            "set_max_speed", float(max_speed_percent),
+        )
+
+    def get_max_speed(self) -> float:
+        """Return the persistent ordinary-PV maximum speed percentage."""
+        value = ctypes.c_float()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_max_speed,
+            "get_max_speed", ctypes.byref(value),
+        )
+        return float(value.value)
+
     def set_joint_positions(
-        self, positions: Sequence[float], speed: float = 100.0
+        self,
+        positions: Sequence[float],
+        speed_percent: float | None = None,
     ) -> None:
         values = tuple(float(value) for value in positions)
         native = (ctypes.c_float * len(values))(*values)
+        if self.control_mode is RuntimeControlMode.PV:
+            if speed_percent is not None:
+                raise ValueError(
+                    "PV position commands use the persistent max speed"
+                )
+            self._call(
+                self._runtime_abi.lib.articore_runtime_set_joint_positions_v2,
+                "set_joint_positions_v2", native, len(values),
+            )
+            return
         self._call(
             self._runtime_abi.lib.articore_runtime_set_joint_positions,
             "set_joint_positions", native, len(values),
-            float(speed),
+            100.0 if speed_percent is None else float(speed_percent),
         )
 
     def submit_mit_frame(
@@ -500,18 +529,6 @@ class ArticoreRuntime:
             self._runtime_abi.lib.articore_runtime_submit_mit_frame,
             "submit_mit_frame", native_q, optional(velocities),
             optional(feedforward_torques), optional(kp), optional(kd), len(q),
-        )
-
-    def submit_pv_frame(
-        self, positions: Sequence[float], velocity_limits: Sequence[float]
-    ) -> None:
-        q = tuple(float(value) for value in positions)
-        v = tuple(float(value) for value in velocity_limits)
-        native_q = (ctypes.c_float * len(q))(*q)
-        native_v = (ctypes.c_float * len(v))(*v)
-        self._call(
-            self._runtime_abi.lib.articore_runtime_submit_pv_frame,
-            "submit_pv_frame", native_q, native_v, len(q),
         )
 
     def set_product_grippers(
@@ -599,7 +616,7 @@ class ArticoreRuntime:
         )
 
     def get_pose(self, side: int) -> list[float]:
-        """Return cached flange pose as [x, y, z, roll, pitch, yaw]."""
+        """Return the cached product-control pose as [x, y, z, roll, pitch, yaw]."""
         return list(self.get_pose_sample(side).values)
 
     def move_pose(
@@ -629,18 +646,16 @@ class ArticoreRuntime:
     def move_circular(
         self,
         side: int,
-        start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        start = _pose(start_pose)
         via = _pose(via_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_circular,
-            "move_circular", int(side), start, via, end,
+            self._runtime_abi.lib.articore_runtime_move_circular_v2,
+            "move_circular_v2", int(side), via, end,
             float(speed_percent), ctypes.byref(motion_id),
         )
         return int(motion_id.value)

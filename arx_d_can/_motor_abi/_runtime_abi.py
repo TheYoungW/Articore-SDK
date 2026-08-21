@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x0002001E
+MIN_RUNTIME_ABI_VERSION = 0x00030000
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1 << 50
@@ -30,6 +30,11 @@ ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1 << 51
 ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT = 1 << 52
 ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR = 1 << 53
 ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR = 1 << 54
+ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START = 1 << 55
+ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1 << 60
+ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1 << 61
+ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1 << 62
+ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE = 1 << 63
 
 
 def _runtime_library_name() -> str:
@@ -310,9 +315,9 @@ class RuntimeAbi:
         self.lib.articore_runtime_abi_version.argtypes = []
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version < MIN_RUNTIME_ABI_VERSION:
+        if version != MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI >= 2.30; "
+                "Articore-SDK requires Runtime ABI 3.0; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -355,12 +360,40 @@ class RuntimeAbi:
                 ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR,
                 "ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR",
             ),
+            (
+                ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START,
+                "ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START",
+            ),
         ):
             if not capabilities & capability:
                 raise AbiLoadError(
                     "Articore-SDK requires native Yunyi Cartesian motion; "
                     f"the loaded Runtime does not advertise {name}"
                 )
+        if not capabilities & ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE:
+            raise AbiLoadError(
+                "Articore-SDK requires the unified Yunyi product-control "
+                "pose; the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE"
+            )
+        if not capabilities & ARTICORE_CAP_PV_MAX_SPEED_ONLY:
+            raise AbiLoadError(
+                "Articore-SDK requires persistent max-speed-only PV control; "
+                "the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PV_MAX_SPEED_ONLY"
+            )
+        if not capabilities & ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING:
+            raise AbiLoadError(
+                "Articore-SDK requires the Yunyi ordinary-motion maximum "
+                "speed setting; the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING"
+            )
+        if not capabilities & ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE:
+            raise AbiLoadError(
+                "Articore-SDK requires the direct C++ Yunyi Motor core; "
+                "the loaded Runtime does not advertise "
+                "ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE"
+            )
         self.abi_version = version
         self.capabilities = capabilities
         self._bind()
@@ -368,8 +401,10 @@ class RuntimeAbi:
     def _bind(self) -> None:
         lib = self.lib
         lib.articore_runtime_last_error.restype = c_char_p
-        lib.articore_runtime_create_yunyi.argtypes = [c_int32, c_int32]
-        lib.articore_runtime_create_yunyi.restype = c_void_p
+        lib.articore_runtime_create_yunyi.argtypes = [
+            c_int32, c_int32, POINTER(c_void_p),
+        ]
+        lib.articore_runtime_create_yunyi.restype = c_int32
         lib.articore_runtime_free.argtypes = [c_void_p]
 
         for name in ("connect", "disconnect", "disable", "recover", "clear_faults", "set_zero"):
@@ -396,19 +431,25 @@ class RuntimeAbi:
         lib.articore_runtime_get_control_mode.restype = c_int32
 
         float_pointer = POINTER(c_float)
+        lib.articore_runtime_set_max_speed.argtypes = [c_void_p, c_float]
+        lib.articore_runtime_set_max_speed.restype = c_int32
+        lib.articore_runtime_get_max_speed.argtypes = [
+            c_void_p, POINTER(c_float),
+        ]
+        lib.articore_runtime_get_max_speed.restype = c_int32
         lib.articore_runtime_set_joint_positions.argtypes = [
             c_void_p, float_pointer, c_uint32, c_float,
         ]
         lib.articore_runtime_set_joint_positions.restype = c_int32
+        lib.articore_runtime_set_joint_positions_v2.argtypes = [
+            c_void_p, float_pointer, c_uint32,
+        ]
+        lib.articore_runtime_set_joint_positions_v2.restype = c_int32
         lib.articore_runtime_submit_mit_frame.argtypes = [
             c_void_p, float_pointer, float_pointer, float_pointer,
             float_pointer, float_pointer, c_uint32,
         ]
         lib.articore_runtime_submit_mit_frame.restype = c_int32
-        lib.articore_runtime_submit_pv_frame.argtypes = [
-            c_void_p, float_pointer, float_pointer, c_uint32,
-        ]
-        lib.articore_runtime_submit_pv_frame.restype = c_int32
         lib.articore_runtime_set_grippers_v2.argtypes = [
             c_void_p, c_float, c_float, c_int32, c_int32,
         ]
@@ -431,11 +472,11 @@ class RuntimeAbi:
                 POINTER(c_uint64),
             ]
             function.restype = c_int32
-        lib.articore_runtime_move_circular.argtypes = [
+        lib.articore_runtime_move_circular_v2.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer,
-            float_pointer, c_float, POINTER(c_uint64),
+            c_float, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_circular.restype = c_int32
+        lib.articore_runtime_move_circular_v2.restype = c_int32
         lib.articore_runtime_get_cartesian_motion_status.argtypes = [
             c_void_p, POINTER(CCartesianMotionStatus),
         ]

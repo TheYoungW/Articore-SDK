@@ -45,7 +45,7 @@ def test_replay_parser_defaults_to_safe_atomic_start() -> None:
     args = replay_example.build_parser().parse_args(["--input", "dual.json"])
 
     assert math.degrees(args.start_velocity) == pytest.approx(30.0)
-    assert math.degrees(args.pv_velocity_limit) == pytest.approx(100.0)
+    assert args.max_speed == pytest.approx(70.0)
     assert args.mode == "pv"
     assert args.interpolation == "quintic"
     assert args.mit_target_velocity == (0.0,) * 7
@@ -63,7 +63,7 @@ def test_replay_does_not_duplicate_product_limit_logic_in_python() -> None:
     assert "robot.pv_velocity_limit" not in source
 
 
-def test_move_to_start_uses_application_rate_for_raw_pv(monkeypatch) -> None:
+def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
     now = 0.0
 
     def sleep(seconds: float) -> None:
@@ -77,10 +77,14 @@ def test_move_to_start_uses_application_rate_for_raw_pv(monkeypatch) -> None:
     class Robot:
         def __init__(self):
             self.control_mode = "pv"
-            self.raw_commands = []
+            self.max_speeds = []
+            self.position_commands = []
 
-        def submit_raw_pv(self, **kwargs):
-            self.raw_commands.append(kwargs)
+        def set_max_speed(self, value):
+            self.max_speeds.append(value)
+
+        def set_joint_pv(self, **kwargs):
+            self.position_commands.append(kwargs)
 
         def read_cached_state(self):
             side = SimpleNamespace(
@@ -94,16 +98,12 @@ def test_move_to_start_uses_application_rate_for_raw_pv(monkeypatch) -> None:
         robot,
         target,
         start_velocity=0.5,
-        velocity_limit=1.0,
+        max_speed_percent=70.0,
         timeout=1.0,
         position_tolerance=0.01,
         velocity_tolerance=0.01,
     )
 
     assert now >= 0.5
-    assert len(robot.raw_commands) >= 50
-    assert all(
-        command["left_velocity_limits"] == (1.0,)
-        and command["right_velocity_limits"] == (1.0,)
-        for command in robot.raw_commands
-    )
+    assert robot.max_speeds == [70.0]
+    assert robot.position_commands == [{"left": (0.0,), "right": (0.0,)}]
