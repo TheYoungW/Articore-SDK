@@ -369,7 +369,7 @@
     <origin xyz="5E-05 -0.11949 0.01871" rpy="-0.261799387799152 0 0" />
     <parent link="r-base-link" />
     <child link="r-link1" />
-    <axis xyz="0 -1 0" />
+    <axis xyz="0 1 0" />
     <limit lower="-2.745" upper="2.745" effort="40" velocity="16" />
   </joint>
   <link name="r-link2">

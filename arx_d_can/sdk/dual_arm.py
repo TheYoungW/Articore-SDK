@@ -256,26 +256,34 @@ class ArxDCanDualArm:
     def move_pose(
         self, *, side: str, target_pose: Sequence[float], speed_percent: float
     ) -> int:
-        """在 PV 模式下执行单侧关节空间点到点笛卡尔运动。"""
+        """求最近种子 IK，并由 Runtime 使用普通 PV 参考异步执行 PTP。"""
         return self._runtime.move_pose(_side(side), target_pose, speed_percent)
 
     def move_linear(
-        self, *, side: str, target_pose: Sequence[float], speed_percent: float
+        self,
+        *,
+        side: str,
+        start_pose: Sequence[float],
+        end_pose: Sequence[float],
+        speed_percent: float,
     ) -> int:
-        """在 PV 模式下执行单侧笛卡尔直线运动。"""
-        return self._runtime.move_linear(_side(side), target_pose, speed_percent)
+        """验证显式起点后，由 Runtime 执行 start_pose→end_pose 直线。"""
+        return self._runtime.move_linear(
+            _side(side), start_pose, end_pose, speed_percent
+        )
 
     def move_circular(
         self,
         *,
         side: str,
+        start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        """从 Runtime 当前规划位姿开始执行单侧圆弧运动。"""
+        """验证显式起点后，执行 start_pose→via_pose→end_pose 圆弧。"""
         return self._runtime.move_circular(
-            _side(side), via_pose, end_pose, speed_percent
+            _side(side), start_pose, via_pose, end_pose, speed_percent
         )
 
     @property
@@ -284,7 +292,7 @@ class ArxDCanDualArm:
         return self._runtime.cartesian_motion_status
 
     def cancel_cartesian_motion(self) -> None:
-        """取消当前笛卡尔轨迹并保持最后参考位置，不自动失能。"""
+        """取消当前笛卡尔运动并保持最后 PV 参考位置，不自动失能。"""
         self._runtime.cancel_cartesian_motion()
 
     def set_grippers(

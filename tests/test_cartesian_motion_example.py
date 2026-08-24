@@ -51,7 +51,8 @@ def test_example_waits_for_completed_after_progress_reaches_one(
     args = example.build_parser().parse_args([
         "--side", "right",
         "--motion", "linear",
-        "--target", "0.3,0.2,0.4,0,0,0",
+        "--start", "0.2,0.1,0.3,0,0,0",
+        "--end", "0.3,0.2,0.4,0,0,0",
         "--speed", "20",
     ])
 
@@ -63,7 +64,8 @@ def test_example_waits_for_completed_after_progress_reaches_one(
         "move_linear",
         {
             "side": "right",
-            "target_pose": (0.3, 0.2, 0.4, 0.0, 0.0, 0.0),
+            "start_pose": (0.2, 0.1, 0.3, 0.0, 0.0, 0.0),
+            "end_pose": (0.3, 0.2, 0.4, 0.0, 0.0, 0.0),
             "speed_percent": 20.0,
         },
     )
@@ -98,8 +100,9 @@ def test_circular_example_forwards_three_poses_without_second_side_call(
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)
     args = example.build_parser().parse_args([
         "--side", "left", "--motion", "circular",
+        "--start", "0.2,0.2,0.3,0,0,0",
         "--via", "0.25,0.15,0.35,0,0,0",
-        "--target", "0.3,0.1,0.3,0,0,0",
+        "--end", "0.3,0.1,0.3,0,0,0",
         "--speed", "15",
     ])
 
@@ -109,4 +112,4 @@ def test_circular_example_forwards_three_poses_without_second_side_call(
     assert calls[0][0] == "move_circular"
     assert calls[0][1]["side"] == "left"
     assert calls[0][1]["speed_percent"] == 15.0
-    assert "start_pose" not in calls[0][1]
+    assert calls[0][1]["start_pose"] == (0.2, 0.2, 0.3, 0.0, 0.0, 0.0)

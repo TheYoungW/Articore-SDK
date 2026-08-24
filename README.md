@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-当前版本只依赖 `motor-drive-layer==0.12.1`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.0，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+当前版本只依赖 `motor-drive-layer==0.12.2`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.1，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -71,7 +71,7 @@ Python 不公开单独的 `close()` 或 `free()`。
 - 健康：`get_health()`、`get_fps()`。
 - 位姿：`get_pose("left" | "right")`。
 - PV 笛卡尔运动：`move_pose()`、`move_linear()`、`move_circular()` 一次控制一侧；
-  `cartesian_motion_status` 返回 Runtime 的统一异步状态，`cancel_cartesian_motion()` 取消当前轨迹并保持最后参考位置。
+  `cartesian_motion_status` 返回 Runtime 的统一异步状态，`cancel_cartesian_motion()` 取消当前运动并保持最后 PV 参考位置。
 - 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。
 - 急停：调用无参数 `estop()` 后底层立即停止控制并失能整机；固定原因从
   `get_health().fault_reason` 读取，且只能通过 `recover()` 解除锁存。
@@ -87,10 +87,17 @@ Python 不公开单独的 `close()` 或 `free()`。
 变换为 `xyz=[-0.004, 0, -0.178] m`、`rpy=[0, 0, 0]`。
 
 笛卡尔位姿统一为 `[x, y, z, roll, pitch, yaw]`，位置单位为米、姿态单位为弧度，
-`speed_percent` 范围为 `(0, 100]`。IK、五次轨迹、直线/圆弧插值、限位和到位判断均在 Runtime 中完成。
+`speed_percent` 范围为 `(0, 100]`。SDK 只提交完整目标，不在 Python 中求 IK、插值或逐帧
+发送。PTP 由 Runtime 基于当前规划参考求最近种子 IK，并用普通 PV 参考执行；Linear 和
+Circular 在底层生成直线/圆弧与 SLERP 样本、连续求 IK，再由 500 Hz worker 分段发送 PV
+参考。产品笛卡尔运动不使用五次多项式；独立的原生多路点轨迹接口仍可使用五次插值。
+产品限位、速度约束和真实反馈到位判断全部由 Runtime 完成。
 只有 `status.state == "completed"` 表示真实反馈已经稳定到位；`state == "running"` 且
 `progress == 1.0` 仍表示底层正在等待机械臂稳定。当前接口不是左右臂原子运动，SDK 不会用两次单侧调用伪装同步双臂规划。
-圆弧运动只传入 `via_pose` 和 `end_pose`；起点由 Runtime 在同一个底层事务中读取当前规划参考位姿，Python 不调用 `get_pose()` 获取或推断起点。
+PTP 只传 `target_pose`。Linear 统一传 `start_pose` 与 `end_pose`，Circular 统一传
+`start_pose`、`via_pose` 与 `end_pose`。显式起点只是几何声明，不会触发自动运动到起点；
+Runtime 会在安装前把它与当前规划参考位姿比较，阈值为 5 mm / 0.035 rad。起点不匹配、
+规划期间参考发生变化或任一路径校验失败时，当前运动保持不变。
 
 夹爪默认使用保护模式。只有明确需要持续追踪开合度时才使用直驱：
 

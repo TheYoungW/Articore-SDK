@@ -622,6 +622,7 @@ class ArticoreRuntime:
     def move_pose(
         self, side: int, target_pose: Sequence[float], speed_percent: float
     ) -> int:
+        """Submit one native PTP IK target for sampled PV execution."""
         target = _pose(target_pose)
         motion_id = ctypes.c_uint64()
         self._call(
@@ -632,30 +633,39 @@ class ArticoreRuntime:
         return int(motion_id.value)
 
     def move_linear(
-        self, side: int, target_pose: Sequence[float], speed_percent: float
+        self,
+        side: int,
+        start_pose: Sequence[float],
+        end_pose: Sequence[float],
+        speed_percent: float,
     ) -> int:
-        target = _pose(target_pose)
+        """Submit an explicit start-to-end Cartesian line."""
+        start = _pose(start_pose)
+        end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_linear,
-            "move_linear", int(side), target, float(speed_percent),
-            ctypes.byref(motion_id),
+            self._runtime_abi.lib.articore_runtime_move_linear_v2,
+            "move_linear_v2", int(side), start, end,
+            float(speed_percent), ctypes.byref(motion_id),
         )
         return int(motion_id.value)
 
     def move_circular(
         self,
         side: int,
+        start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
+        """Submit an explicit start/via/end circular and SLERP path."""
+        start = _pose(start_pose)
         via = _pose(via_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_circular_v2,
-            "move_circular_v2", int(side), via, end,
+            self._runtime_abi.lib.articore_runtime_move_circular,
+            "move_circular", int(side), start, via, end,
             float(speed_percent), ctypes.byref(motion_id),
         )
         return int(motion_id.value)

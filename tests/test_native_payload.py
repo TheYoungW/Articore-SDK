@@ -14,7 +14,6 @@ from arx_d_can._motor_abi._runtime_abi import (
     ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE,
     ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE,
     ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR,
-    ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START,
     ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR,
     ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT,
     ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING,
@@ -33,7 +32,7 @@ from arx_d_can._motor_abi.errors import RuntimeCallError
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
     assert importlib.util.find_spec("motor_drive_layer") is None
     package = distribution("motor-drive-layer")
-    assert package.version == "0.12.1"
+    assert package.version == "0.12.2"
     package_files = {entry.as_posix() for entry in package.files or ()}
     native_payload = {
         entry for entry in package_files
@@ -65,10 +64,6 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     )
     assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR
     assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR
-    assert (
-        runtime_abi.capabilities
-        & ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START
-    )
     assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING
     assert runtime_abi.capabilities & ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE
     assert runtime_abi.capabilities & ARTICORE_CAP_PV_MAX_SPEED_ONLY

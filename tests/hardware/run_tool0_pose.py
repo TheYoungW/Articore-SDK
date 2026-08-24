@@ -265,7 +265,8 @@ def move_and_return(
         )
         reached = robot.get_pose(side)
         return_id = robot.move_linear(
-            side=side, target_pose=start, speed_percent=speed_percent
+            side=side, start_pose=reached, end_pose=start,
+            speed_percent=speed_percent,
         )
         returned = wait_motion(robot, return_id, 15.0, allow_fault=True)
         return_hold = collect_hold(

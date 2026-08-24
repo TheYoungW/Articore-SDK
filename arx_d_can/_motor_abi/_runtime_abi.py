@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x00030000
+MIN_RUNTIME_ABI_VERSION = 0x00030001
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1 << 50
@@ -30,7 +30,6 @@ ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1 << 51
 ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT = 1 << 52
 ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR = 1 << 53
 ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR = 1 << 54
-ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START = 1 << 55
 ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1 << 60
 ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1 << 61
 ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1 << 62
@@ -317,7 +316,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI 3.0; "
+                "Articore-SDK requires Runtime ABI 3.1; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -359,10 +358,6 @@ class RuntimeAbi:
             (
                 ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR,
                 "ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR",
-            ),
-            (
-                ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START,
-                "ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR_AUTO_START",
             ),
         ):
             if not capabilities & capability:
@@ -465,18 +460,20 @@ class RuntimeAbi:
         lib.articore_runtime_get_state_v2.restype = c_int32
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
-        for name in ("move_pose", "move_linear"):
-            function = getattr(lib, f"articore_runtime_{name}")
-            function.argtypes = [
-                c_void_p, c_uint32, float_pointer, c_float,
-                POINTER(c_uint64),
-            ]
-            function.restype = c_int32
-        lib.articore_runtime_move_circular_v2.argtypes = [
+        lib.articore_runtime_move_pose.argtypes = [
+            c_void_p, c_uint32, float_pointer, c_float, POINTER(c_uint64),
+        ]
+        lib.articore_runtime_move_pose.restype = c_int32
+        lib.articore_runtime_move_linear_v2.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer,
             c_float, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_circular_v2.restype = c_int32
+        lib.articore_runtime_move_linear_v2.restype = c_int32
+        lib.articore_runtime_move_circular.argtypes = [
+            c_void_p, c_uint32, float_pointer, float_pointer, float_pointer,
+            c_float, POINTER(c_uint64),
+        ]
+        lib.articore_runtime_move_circular.restype = c_int32
         lib.articore_runtime_get_cartesian_motion_status.argtypes = [
             c_void_p, POINTER(CCartesianMotionStatus),
         ]

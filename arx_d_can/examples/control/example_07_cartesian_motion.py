@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 07（PV）：执行单侧原生点到点、直线或三点圆弧运动。"""
+"""控制示例 07（PV）：提交单侧原生采样 PV 点到点、直线或圆弧运动。"""
 from __future__ import annotations
 
 import argparse
@@ -19,18 +19,26 @@ def _start_motion(robot: ArxDCanDualArm, args: argparse.Namespace) -> int:
     if args.motion == "linear":
         return robot.move_linear(
             side=args.side,
-            target_pose=args.target,
+            start_pose=args.start,
+            end_pose=args.end,
             speed_percent=args.speed,
         )
     return robot.move_circular(
         side=args.side,
+        start_pose=args.start,
         via_pose=args.via,
-        end_pose=args.target,
+        end_pose=args.end,
         speed_percent=args.speed,
     )
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.motion == "ptp" and args.target is None:
+        raise ValueError("PTP 必须提供 --target")
+    if args.motion in {"linear", "circular"} and (
+        args.start is None or args.end is None
+    ):
+        raise ValueError("直线和圆弧运动必须提供 --start 与 --end")
     if args.motion == "circular" and args.via is None:
         raise ValueError("圆弧运动必须提供 --via")
 
@@ -83,8 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--motion", choices=("ptp", "linear", "circular"), required=True
     )
     parser.add_argument(
-        "--target", type=pose_values, required=True,
-        help="目标/圆弧终点 x,y,z,roll,pitch,yaw（米、弧度）",
+        "--target", type=pose_values,
+        help="仅用于 PTP 的目标 x,y,z,roll,pitch,yaw（米、弧度）",
+    )
+    parser.add_argument(
+        "--start", type=pose_values,
+        help="直线/圆弧显式起点 x,y,z,roll,pitch,yaw",
+    )
+    parser.add_argument(
+        "--end", type=pose_values,
+        help="直线/圆弧终点 x,y,z,roll,pitch,yaw",
     )
     parser.add_argument(
         "--via", type=pose_values,
