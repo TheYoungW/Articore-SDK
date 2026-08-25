@@ -45,7 +45,7 @@ def test_replay_parser_defaults_to_safe_atomic_start() -> None:
     args = replay_example.build_parser().parse_args(["--input", "dual.json"])
 
     assert math.degrees(args.start_velocity) == pytest.approx(30.0)
-    assert args.max_speed == pytest.approx(70.0)
+    assert args.max_speed == pytest.approx(50.0)
     assert args.mode == "pv"
     assert args.interpolation == "quintic"
     assert args.mit_target_velocity == (0.0,) * 7

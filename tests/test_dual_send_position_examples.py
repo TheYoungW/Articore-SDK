@@ -52,11 +52,11 @@ def test_pv_example_sets_one_persistent_max_speed_then_positions(monkeypatch) ->
     assert "velocity" not in captured
 
 
-def test_pv_example_defaults_to_seventy_and_validates_max_speed() -> None:
+def test_pv_example_defaults_to_tuned_speed_and_validates_max_speed() -> None:
     parser = pv_example.build_parser()
     base = ["--left", "0,0,0,0,0,0,0", "--right", "0,0,0,0,0,0,0"]
 
-    assert parser.parse_args(base).max_speed == 70.0
+    assert parser.parse_args(base).max_speed == pytest.approx(50.0)
     assert parser.parse_args([*base, "--max-speed", "0"]).max_speed == 0.0
     with pytest.raises(SystemExit):
         parser.parse_args([*base, "--max-speed", "100.1"])

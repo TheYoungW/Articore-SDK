@@ -472,14 +472,14 @@ class ArticoreRuntime:
                 raise RuntimeCallError(f"disconnect failed: {failure}")
 
     def set_max_speed(self, max_speed_percent: float) -> None:
-        """Set the persistent 0..100 maximum for ordinary PV motion."""
+        """Set persistent PV reference speed; 0..100 maps to 0..3 rad/s."""
         self._call(
             self._runtime_abi.lib.articore_runtime_set_max_speed,
             "set_max_speed", float(max_speed_percent),
         )
 
     def get_max_speed(self) -> float:
-        """Return the persistent ordinary-PV maximum speed percentage."""
+        """Return the persistent 0..100 ordinary-PV reference percentage."""
         value = ctypes.c_float()
         self._call(
             self._runtime_abi.lib.articore_runtime_get_max_speed,

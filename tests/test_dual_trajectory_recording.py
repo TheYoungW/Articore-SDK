@@ -100,7 +100,7 @@ def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> Non
     )
 
     assert commands == [
-        ("max-speed", 70.0),
+        ("max-speed", 50.0),
         ("arms", (0.1,), (0.2,)),
         ("grippers", 1000.0, 0.0, 5),
     ]
@@ -121,7 +121,7 @@ def test_dual_replay_refreshes_stepped_target_across_long_sample_gap(
         control_mode = "pv"
 
         def set_max_speed(self, value) -> None:
-            assert value == 70.0
+            assert value == 50.0
 
         def set_joint_pv(self, *, left, right) -> None:
             positions.append(

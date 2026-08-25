@@ -116,7 +116,7 @@ class FakeRuntime:
             error=None,
         )
         self.fps = 8120.0
-        self.max_speed = 70.0
+        self.max_speed = 50.0
 
     @property
     def control_mode(self) -> RuntimeControlMode:
@@ -334,7 +334,7 @@ def test_ordinary_motion_max_speed_uses_canonical_runtime_names(
 ) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
 
-    assert robot.get_max_speed() == 70.0
+    assert robot.get_max_speed() == pytest.approx(50.0)
     robot.set_max_speed(0)
     robot.set_max_speed(100)
     assert robot.get_max_speed() == 100.0

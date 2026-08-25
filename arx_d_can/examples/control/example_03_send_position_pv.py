@@ -38,8 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-speed",
         type=speed_percent,
-        default=70.0,
-        help="Runtime 最大速度百分比，范围 0～100，默认 70",
+        default=50.0,
+        help="PV reference 速度百分比，0～100 对应 0～3 rad/s，默认 50（1.5 rad/s）",
     )
     return parser
 

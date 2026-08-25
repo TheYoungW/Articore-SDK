@@ -32,7 +32,7 @@ from arx_d_can._motor_abi.errors import RuntimeCallError
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
     assert importlib.util.find_spec("motor_drive_layer") is None
     package = distribution("motor-drive-layer")
-    assert package.version == "0.12.2"
+    assert package.version == "0.12.3"
     package_files = {entry.as_posix() for entry in package.files or ()}
     native_payload = {
         entry for entry in package_files
@@ -83,7 +83,7 @@ def test_native_ordinary_motion_max_speed_default_and_range() -> None:
         RuntimeControlMode.PV, with_grippers=False
     )
     try:
-        assert runtime.get_max_speed() == pytest.approx(70.0)
+        assert runtime.get_max_speed() == pytest.approx(50.0)
         runtime.set_max_speed(0)
         assert runtime.get_max_speed() == pytest.approx(0.0)
         runtime.set_max_speed(100)

@@ -78,7 +78,7 @@ python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 python -m arx_d_can.examples.maintenance.example_03_set_zero_current_position
 ```
 
-PV 单点控制只使用 `set_max_speed(0..100)` 和不带速度参数的 `set_joint_pv()`；默认最大速度为 70。Runtime 在原生周期内平滑推进 reference，SDK 不再公开 Raw PV。MIT 仍可通过 `set_joint_mit()` 的显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
+PV 单点控制只使用 `set_max_speed(0..100)` 和不带速度参数的 `set_joint_pv()`；0～100 线性对应 0～3 rad/s reference slew，产品默认值为 50，对应 1.5 rad/s 和 500 Hz 下每周期 0.003 rad。达妙 `v_des` 上限保持 3 rad/s，SDK 不再公开 Raw PV。MIT 仍可通过 `set_joint_mit()` 的显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
 
 控制示例 07 只用于 PV 模式，一次只控制 `left` 或 `right`。点到点使用 `--motion ptp --target ...`；直线使用 `linear --start ... --end ...`；圆弧使用 `circular --start ... --via ... --end ...`。Runtime 会核验显式起点与当前规划参考位姿是否匹配，不会自动运动到起点。位姿单位为米和弧度。示例只在 Runtime 返回 `completed` 后报告到位，不会把 `running + progress=100%` 误判为完成。
 

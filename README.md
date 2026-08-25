@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-当前版本只依赖 `motor-drive-layer==0.12.2`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.1，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+当前版本只依赖 `motor-drive-layer==0.12.3`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.1，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -54,8 +54,9 @@ Python 不公开单独的 `close()` 或 `free()`。
 ## 控制接口
 
 - 普通 PV 位置：先按需调用 `set_max_speed(0..100)`，再调用不带速度参数的
-  `set_joint_pv(left=..., right=...)`。最大速度默认值为 70；100 对应14个关节统一
-  5 rad/s，70 对应3.5 rad/s。Runtime 在原生周期内按该上限逐步推进 reference。
+  `set_joint_pv(left=..., right=...)`。0～100 线性对应 0～3 rad/s reference
+  slew；产品默认值为 50，对应 1.5 rad/s 和 500 Hz 下每周期 0.003 rad。
+  达妙 `v_des` 上限保持 3 rad/s，为电机追赶 reference 保留余量。
   SDK 不再提供每条 PV 位置命令的速度参数，也不公开 Raw PV 直发。
 - 普通 MIT 位置继续使用 `set_joint_mit()` 的显式 `velocity`；Raw MIT 保留给明确需要
   Kp、Kd、目标速度和前馈力矩的高级控制。

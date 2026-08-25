@@ -135,7 +135,7 @@ class ArxDCanDualArm:
         return self._runtime.get_fps()
 
     def set_max_speed(self, max_speed_percent: float) -> None:
-        """设置普通 PV 位置运动的持续最大速度百分比（0～100）。"""
+        """设置普通 PV reference 速度百分比；0～100 线性对应 0～3 rad/s。"""
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_max_speed() requires PV mode")
         self._runtime.set_max_speed(max_speed_percent)

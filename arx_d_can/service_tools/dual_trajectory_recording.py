@@ -199,7 +199,7 @@ def replay(
     timestamps: list[float],
     samples: list[DualArmTrajectorySample],
     interpolation: InterpolationMode = "quintic",
-    max_speed_percent: float = 70.0,
+    max_speed_percent: float = 50.0,
     mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
     mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
     mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
