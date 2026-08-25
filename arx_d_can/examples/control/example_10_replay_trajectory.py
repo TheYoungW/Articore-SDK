@@ -231,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-speed",
         type=speed_percent,
         default=50.0,
-        help="PV reference 速度百分比 0–100；MIT 模式忽略；默认 50（1.5 rad/s）",
+        help="PV reference 速度百分比 0–100；MIT 模式忽略；默认 50（1 rad/s）",
     )
     parser.add_argument(
         "--interpolation",

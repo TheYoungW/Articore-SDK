@@ -102,7 +102,7 @@ class FakeRuntime:
         self.closed = False
         self.calls: list[tuple] = []
         self.gravity_compensation_status = SimpleNamespace(active=False)
-        self.cartesian_motion_status = CartesianMotionStatus(
+        self._cartesian_motion_status = CartesianMotionStatus(
             state=CartesianMotionState.RUNNING,
             motion_id=9,
             superseded_motion_id=0,
@@ -117,6 +117,16 @@ class FakeRuntime:
         )
         self.fps = 8120.0
         self.max_speed = 50.0
+
+    @property
+    def cartesian_motion_status(self) -> CartesianMotionStatus:
+        return self._cartesian_motion_status
+
+    def get_cartesian_motion_status(
+        self, motion_id: int
+    ) -> CartesianMotionStatus:
+        self.calls.append(("get_cartesian_motion_status", motion_id))
+        return self._cartesian_motion_status
 
     @property
     def control_mode(self) -> RuntimeControlMode:
@@ -200,9 +210,16 @@ class FakeRuntime:
     def get_pose(self, side: int) -> list[float]:
         return list(self.get_pose_sample(side).values)
 
-    def move_pose(self, side, target_pose, speed_percent) -> int:
+    def move_pose(self, side, target_pose, speed_percent=50.0) -> None:
         self.calls.append(("move_pose", side, tuple(target_pose), speed_percent))
-        return 10
+
+    def move_poses(
+        self, left_target_pose, right_target_pose, speed_percent=50.0
+    ) -> None:
+        self.calls.append((
+            "move_poses", tuple(left_target_pose), tuple(right_target_pose),
+            speed_percent,
+        ))
 
     def move_linear(self, side, start_pose, end_pose, speed_percent) -> int:
         self.calls.append((
@@ -483,9 +500,12 @@ def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
     start = (0.2, 0.1, 0.3, 0.0, 0.0, 0.1)
     via = (0.25, 0.15, 0.35, 0.0, 0.05, 0.1)
 
-    assert robot.move_pose(
-        side="left", target_pose=target, speed_percent=10
-    ) == 10
+    assert robot.move_pose(side="left", target_pose=target) is None
+    assert robot.move_poses(
+        left_target_pose=target,
+        right_target_pose=via,
+        speed_percent=25,
+    ) is None
     assert robot.move_linear(
         side="right", start_pose=start, end_pose=target, speed_percent=20
     ) == 11
@@ -494,12 +514,15 @@ def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
         speed_percent=30,
     ) == 12
     assert robot.cartesian_motion_status.state == "running"
+    assert robot.get_cartesian_motion_status(10).motion_id == 9
     robot.cancel_cartesian_motion()
 
     assert robot._runtime.calls == [
-        ("move_pose", 0, target, 10),
+        ("move_pose", 0, target, 50.0),
+        ("move_poses", target, via, 25),
         ("move_linear", 1, start, target, 20),
         ("move_circular", 0, start, via, target, 30),
+        ("get_cartesian_motion_status", 10),
         ("cancel_cartesian_motion",),
     ]
 
@@ -511,10 +534,15 @@ def test_cartesian_sdk_exposes_no_python_path_or_interpolation_arguments(
 
     robot = ArxDCanDualArm(control_mode="pv")
     ptp = inspect.signature(robot.move_pose)
+    dual_ptp = inspect.signature(robot.move_poses)
     linear = inspect.signature(robot.move_linear)
     circular = inspect.signature(robot.move_circular)
 
     assert tuple(ptp.parameters) == ("side", "target_pose", "speed_percent")
+    assert ptp.parameters["speed_percent"].default == 50.0
+    assert tuple(dual_ptp.parameters) == (
+        "left_target_pose", "right_target_pose", "speed_percent",
+    )
     assert tuple(linear.parameters) == (
         "side", "start_pose", "end_pose", "speed_percent",
     )
@@ -525,6 +553,14 @@ def test_cartesian_sdk_exposes_no_python_path_or_interpolation_arguments(
 
 def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     calls: list[tuple] = []
+
+    def move_pose(_runtime, side, target, speed) -> int:
+        calls.append(("ptp", side, tuple(target), float(speed)))
+        return 0
+
+    def move_poses(_runtime, left, right, speed) -> int:
+        calls.append(("dual_ptp", tuple(left), tuple(right), float(speed)))
+        return 0
 
     def move_linear(_runtime, side, start, end, speed, output) -> int:
         calls.append((
@@ -547,6 +583,8 @@ def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     runtime._lock = RLock()
     runtime._ptr = 1
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_move_pose=move_pose,
+        articore_runtime_move_poses=move_poses,
         articore_runtime_move_linear_v2=move_linear,
         articore_runtime_move_circular=move_circular,
     ))
@@ -554,17 +592,26 @@ def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     via = (0.2, 0.3, 0.4, 0.1, 0.2, 0.3)
     end = (0.3, 0.4, 0.5, 0.2, 0.3, 0.4)
 
+    assert runtime.move_pose(0, end, 5) is None
+    assert runtime.move_poses(start, end, 7) is None
     assert runtime.move_linear(0, start, end, 10) == 21
     assert runtime.move_circular(1, start, via, end, 20) == 22
-    assert calls[0][:2] == ("linear", 0)
-    assert calls[0][2] == pytest.approx(start)
-    assert calls[0][3] == pytest.approx(end)
-    assert calls[0][4] == 10.0
-    assert calls[1][:2] == ("circular", 1)
-    assert calls[1][2] == pytest.approx(start)
-    assert calls[1][3] == pytest.approx(via)
-    assert calls[1][4] == pytest.approx(end)
-    assert calls[1][5] == 20.0
+    assert calls[0][:2] == ("ptp", 0)
+    assert calls[0][2] == pytest.approx(end)
+    assert calls[0][3] == 5.0
+    assert calls[1][0] == "dual_ptp"
+    assert calls[1][1] == pytest.approx(start)
+    assert calls[1][2] == pytest.approx(end)
+    assert calls[1][3] == 7.0
+    assert calls[2][:2] == ("linear", 0)
+    assert calls[2][2] == pytest.approx(start)
+    assert calls[2][3] == pytest.approx(end)
+    assert calls[2][4] == 10.0
+    assert calls[3][:2] == ("circular", 1)
+    assert calls[3][2] == pytest.approx(start)
+    assert calls[3][3] == pytest.approx(via)
+    assert calls[3][4] == pytest.approx(end)
+    assert calls[3][5] == 20.0
 
 
 def test_cartesian_motion_does_not_duplicate_native_mode_or_speed_checks(
@@ -617,6 +664,40 @@ def test_ctypes_cartesian_status_maps_all_native_fields() -> None:
     assert status.interpolation == "circular"
     assert status.target_pose == pytest.approx((0.1, 0.2, 0.3, 0.4, 0.5, 0.6))
     assert status.error == "waiting for physical settling"
+
+
+def test_ctypes_cartesian_status_queries_one_fifo_motion_id() -> None:
+    calls: list[int] = []
+
+    def get_status_v2(_pointer, motion_id, output) -> int:
+        calls.append(int(motion_id))
+        native = ctypes.cast(
+            output, ctypes.POINTER(CCartesianMotionStatus)
+        ).contents
+        native.state = 5
+        native.motion_id = int(motion_id)
+        native.side = 0
+        native.interpolation = 2
+        native.speed_percent = 10.0
+        native.duration_s = 3.0
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(
+        lib=SimpleNamespace(
+            articore_runtime_get_cartesian_motion_status_v2=get_status_v2
+        )
+    )
+
+    status = runtime.get_cartesian_motion_status(27)
+    assert calls == [27]
+    assert status.state is CartesianMotionState.QUEUED
+    assert status.interpolation is CartesianInterpolation.LINEAR
+    assert status.motion_id == 27
+    with pytest.raises(ValueError, match="motion_id"):
+        runtime.get_cartesian_motion_status(0)
 
 
 def test_gripperless_product_returns_arm_state_and_none_grippers(

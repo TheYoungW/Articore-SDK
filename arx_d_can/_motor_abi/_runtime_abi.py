@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x00030001
+MIN_RUNTIME_ABI_VERSION = 0x00030003
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1 << 50
@@ -316,7 +316,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI 3.1; "
+                "Articore-SDK requires Runtime ABI 3.3; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -461,9 +461,13 @@ class RuntimeAbi:
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
         lib.articore_runtime_move_pose.argtypes = [
-            c_void_p, c_uint32, float_pointer, c_float, POINTER(c_uint64),
+            c_void_p, c_uint32, float_pointer, c_float,
         ]
         lib.articore_runtime_move_pose.restype = c_int32
+        lib.articore_runtime_move_poses.argtypes = [
+            c_void_p, float_pointer, float_pointer, c_float,
+        ]
+        lib.articore_runtime_move_poses.restype = c_int32
         lib.articore_runtime_move_linear_v2.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer,
             c_float, POINTER(c_uint64),
@@ -478,6 +482,10 @@ class RuntimeAbi:
             c_void_p, POINTER(CCartesianMotionStatus),
         ]
         lib.articore_runtime_get_cartesian_motion_status.restype = c_int32
+        lib.articore_runtime_get_cartesian_motion_status_v2.argtypes = [
+            c_void_p, c_uint64, POINTER(CCartesianMotionStatus),
+        ]
+        lib.articore_runtime_get_cartesian_motion_status_v2.restype = c_int32
         lib.articore_runtime_cancel_cartesian_motion.argtypes = [c_void_p]
         lib.articore_runtime_cancel_cartesian_motion.restype = c_int32
         lib.articore_runtime_get_health_v2.argtypes = [c_void_p, POINTER(CSafetyHealthV2)]

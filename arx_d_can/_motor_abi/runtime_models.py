@@ -23,6 +23,7 @@ class RuntimeControlMode(IntEnum):
 
 class CartesianMotionState(str, Enum):
     IDLE = "idle"
+    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -30,7 +31,6 @@ class CartesianMotionState(str, Enum):
 
 
 class CartesianInterpolation(str, Enum):
-    POINT_TO_POINT = "point_to_point"
     LINEAR = "linear"
     CIRCULAR = "circular"
 
@@ -50,7 +50,7 @@ class RuntimeOperation(IntEnum):
     START_TRAJECTORY = 11
     CANCEL_TRAJECTORY = 12
     MOVE_POSE = 13
-    CANCEL_MOVE_POSE = 14
+    CANCEL_CARTESIAN_MOTION = 14
     MOVE_LINEAR = 15
     MOVE_CIRCULAR = 16
 

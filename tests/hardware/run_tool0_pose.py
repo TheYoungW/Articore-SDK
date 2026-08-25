@@ -118,9 +118,44 @@ def settle_pose(robot: ArxDCanDualArm, side: str, seconds: float = 2.0) -> list[
     return robot.get_pose(side)
 
 
+def wait_ptp_pose(
+    robot: ArxDCanDualArm,
+    side: str,
+    target: list[float],
+    timeout_s: float,
+) -> dict[str, object]:
+    """PTP has no motion status; verify pose and velocity feedback directly."""
+    deadline = time.monotonic() + timeout_s
+    stable_samples = 0
+    while time.monotonic() < deadline:
+        require_healthy(robot)
+        pose = robot.get_pose(side)
+        arm = getattr(robot.read_state(), side).arm
+        position_error = math.dist(pose[:3], target[:3])
+        orientation_error = math.dist(pose[3:], target[3:])
+        maximum_velocity = max(abs(value) for value in arm.velocities)
+        if (
+            position_error <= 0.006
+            and orientation_error <= 0.035
+            and maximum_velocity <= 0.05
+        ):
+            stable_samples += 1
+            if stable_samples >= 25:
+                return {
+                    "state": "feedback_settled",
+                    "position_error_m": position_error,
+                    "orientation_error_rad": orientation_error,
+                    "maximum_velocity_rad_s": maximum_velocity,
+                }
+        else:
+            stable_samples = 0
+        time.sleep(0.002)
+    raise TimeoutError(f"PTP did not settle within {timeout_s}s")
+
+
 def collect_hold(
     robot: ArxDCanDualArm,
-    motion_id: int,
+    motion_id: int | None,
     *,
     seconds: float = 5.0,
 ) -> dict[str, object]:
@@ -134,14 +169,16 @@ def collect_hold(
     deadline = started + seconds
     while time.monotonic() < deadline:
         require_healthy(robot)
-        status = robot.cartesian_motion_status
-        if status.motion_id != motion_id:
-            raise RuntimeError(
-                f"hold motion id changed: expected {motion_id}, got {status.motion_id}"
+        if motion_id is not None:
+            status = robot.cartesian_motion_status
+            if status.motion_id != motion_id:
+                raise RuntimeError(
+                    f"hold motion id changed: expected {motion_id}, "
+                    f"got {status.motion_id}"
+                )
+            status_counts[status.state.value] = (
+                status_counts.get(status.state.value, 0) + 1
             )
-        status_counts[status.state.value] = (
-            status_counts.get(status.state.value, 0) + 1
-        )
         state = robot.read_state()
         if state.sequence != last_sequence:
             last_sequence = state.sequence
@@ -164,8 +201,16 @@ def collect_hold(
         ],
         "velocity_absolute_peak_rad_s": velocity_peak,
         "status_counts": status_counts,
-        "final_status": robot.cartesian_motion_status.state.value,
-        "final_status_error": robot.cartesian_motion_status.error,
+        "final_status": (
+            "not_available_for_ptp"
+            if motion_id is None
+            else robot.cartesian_motion_status.state.value
+        ),
+        "final_status_error": (
+            None
+            if motion_id is None
+            else robot.cartesian_motion_status.error
+        ),
     }
 
 
@@ -256,13 +301,11 @@ def move_and_return(
         start = robot.get_pose(side)
         target = list(start)
         target[2] += distance_m
-        outbound_id = robot.move_pose(
+        robot.move_pose(
             side=side, target_pose=target, speed_percent=speed_percent
         )
-        outbound = wait_motion(robot, outbound_id, 15.0, allow_fault=True)
-        outbound_hold = collect_hold(
-            robot, outbound_id, seconds=hold_seconds
-        )
+        outbound = wait_ptp_pose(robot, side, target, 15.0)
+        outbound_hold = collect_hold(robot, None, seconds=hold_seconds)
         reached = robot.get_pose(side)
         return_id = robot.move_linear(
             side=side, start_pose=reached, end_pose=start,

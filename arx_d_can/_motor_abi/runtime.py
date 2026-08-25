@@ -472,7 +472,7 @@ class ArticoreRuntime:
                 raise RuntimeCallError(f"disconnect failed: {failure}")
 
     def set_max_speed(self, max_speed_percent: float) -> None:
-        """Set persistent PV reference speed; 0..100 maps to 0..3 rad/s."""
+        """Set persistent PV reference speed; 0..100 maps to 0..2 rad/s."""
         self._call(
             self._runtime_abi.lib.articore_runtime_set_max_speed,
             "set_max_speed", float(max_speed_percent),
@@ -620,17 +620,31 @@ class ArticoreRuntime:
         return list(self.get_pose_sample(side).values)
 
     def move_pose(
-        self, side: int, target_pose: Sequence[float], speed_percent: float
-    ) -> int:
-        """Submit one native PTP IK target for sampled PV execution."""
+        self, side: int, target_pose: Sequence[float], speed_percent: float = 50.0
+    ) -> None:
+        """Install one endpoint IK solution as an ordinary 500 Hz PV target."""
         target = _pose(target_pose)
-        motion_id = ctypes.c_uint64()
         self._call(
             self._runtime_abi.lib.articore_runtime_move_pose,
             "move_pose", int(side), target, float(speed_percent),
-            ctypes.byref(motion_id),
         )
-        return int(motion_id.value)
+
+    def move_poses(
+        self,
+        left_target_pose: Sequence[float],
+        right_target_pose: Sequence[float],
+        speed_percent: float = 50.0,
+    ) -> None:
+        """Atomically solve and install one ordinary dual-arm PV PTP."""
+        left_target = _pose(left_target_pose)
+        right_target = _pose(right_target_pose)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_move_poses,
+            "move_poses",
+            left_target,
+            right_target,
+            float(speed_percent),
+        )
 
     def move_linear(
         self,
@@ -639,7 +653,7 @@ class ArticoreRuntime:
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        """Submit an explicit start-to-end Cartesian line."""
+        """Submit one native approach-PTP plus start-to-end line task."""
         start = _pose(start_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
@@ -658,7 +672,7 @@ class ArticoreRuntime:
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        """Submit an explicit start/via/end circular and SLERP path."""
+        """Submit one native approach-PTP plus start/via/end circular task."""
         start = _pose(start_pose)
         via = _pose(via_pose)
         end = _pose(end_pose)
@@ -670,23 +684,37 @@ class ArticoreRuntime:
         )
         return int(motion_id.value)
 
-    @property
-    def cartesian_motion_status(self) -> CartesianMotionStatus:
+    def get_cartesian_motion_status(
+        self, motion_id: int | None = None
+    ) -> CartesianMotionStatus:
         native = CCartesianMotionStatus()
         native.struct_size = ctypes.sizeof(native)
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_cartesian_motion_status,
-            "get_cartesian_motion_status", ctypes.byref(native),
-        )
+        if motion_id is None:
+            self._call(
+                self._runtime_abi.lib.articore_runtime_get_cartesian_motion_status,
+                "get_cartesian_motion_status", ctypes.byref(native),
+            )
+        else:
+            if (
+                not isinstance(motion_id, int)
+                or isinstance(motion_id, bool)
+                or motion_id <= 0
+            ):
+                raise ValueError("motion_id must be a positive integer")
+            self._call(
+                self._runtime_abi.lib.articore_runtime_get_cartesian_motion_status_v2,
+                "get_cartesian_motion_status_v2", int(motion_id),
+                ctypes.byref(native),
+            )
         states = {
             0: CartesianMotionState.IDLE,
             1: CartesianMotionState.RUNNING,
             2: CartesianMotionState.COMPLETED,
             3: CartesianMotionState.CANCELLED,
             4: CartesianMotionState.FAULT,
+            5: CartesianMotionState.QUEUED,
         }
         interpolations = {
-            1: CartesianInterpolation.POINT_TO_POINT,
             2: CartesianInterpolation.LINEAR,
             3: CartesianInterpolation.CIRCULAR,
         }
@@ -718,6 +746,10 @@ class ArticoreRuntime:
             target_pose=values,  # type: ignore[arg-type]
             error=_optional_text(native.error),
         )
+
+    @property
+    def cartesian_motion_status(self) -> CartesianMotionStatus:
+        return self.get_cartesian_motion_status()
 
     def cancel_cartesian_motion(self) -> None:
         self._call(

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import time
 
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.common import joint_degrees, speed_percent
+
+
+DEFAULT_JOINT_TARGET_DEGREES = "0,0,0,90,0,0,0"
 
 
 def main(args: argparse.Namespace) -> None:
@@ -21,9 +23,9 @@ def main(args: argparse.Namespace) -> None:
             left=joint_degrees(args.left),
             right=joint_degrees(args.right),
         )
-        print("目标已提交，Runtime 正在平滑推进；按 Ctrl+C 失能并退出")
-        while True:
-            time.sleep(1.0)
+        input("目标已提交，确认双臂到位后按回车失能并退出...")
+        robot.disable()
+        print("双臂已失能")
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
@@ -33,13 +35,21 @@ def main(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--left", required=True, help="左臂 7 个关节角度，单位为度")
-    parser.add_argument("--right", required=True, help="右臂 7 个关节角度，单位为度")
+    parser.add_argument(
+        "--left",
+        default=DEFAULT_JOINT_TARGET_DEGREES,
+        help="左臂 7 个关节角度，单位为度；默认 J4=90，其余为 0",
+    )
+    parser.add_argument(
+        "--right",
+        default=DEFAULT_JOINT_TARGET_DEGREES,
+        help="右臂 7 个关节角度，单位为度；默认 J4=90，其余为 0",
+    )
     parser.add_argument(
         "--max-speed",
         type=speed_percent,
         default=50.0,
-        help="PV reference 速度百分比，0～100 对应 0～3 rad/s，默认 50（1.5 rad/s）",
+        help="PV reference 速度百分比，0～100 对应 0～2 rad/s，默认 50（1 rad/s）",
     )
     return parser
 

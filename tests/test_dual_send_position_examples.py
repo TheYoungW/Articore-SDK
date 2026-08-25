@@ -6,7 +6,7 @@ from arx_d_can.examples.control import example_03_send_position_pv as pv_example
 from arx_d_can.examples.control import example_04_send_position_mit as mit_example
 
 
-def test_pv_example_sets_one_persistent_max_speed_then_positions(monkeypatch) -> None:
+def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) -> None:
     captured = {"calls": []}
 
     class FakeRobot:
@@ -21,7 +21,9 @@ def test_pv_example_sets_one_persistent_max_speed_then_positions(monkeypatch) ->
 
         def set_joint_pv(self, **kwargs):
             captured.update(kwargs)
-            raise KeyboardInterrupt
+
+        def disable(self):
+            captured["calls"].append("disable")
 
         def disconnect(self):
             captured["calls"].append("disconnect")
@@ -31,22 +33,20 @@ def test_pv_example_sets_one_persistent_max_speed_then_positions(monkeypatch) ->
         return FakeRobot()
 
     monkeypatch.setattr(pv_example, "ArxDCanDualArm", fake_robot)
-    args = pv_example.build_parser().parse_args(
-        [
-            "--left", "0,10,20,30,40,50,60",
-            "--right", "0,-10,-20,-30,-40,-50,-60",
-            "--max-speed", "90",
-        ]
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: captured["calls"].append("input") or "",
     )
+    args = pv_example.build_parser().parse_args(["--max-speed", "90"])
     pv_example.main(args)
 
     assert captured["mode"] == "pv"
-    assert captured["calls"] == ["connect", "enable", "disconnect"]
+    assert captured["calls"] == ["connect", "enable", "input", "disable", "disconnect"]
     assert captured["left"] == pytest.approx(
-        tuple(math.radians(value) for value in (0, 10, 20, 30, 40, 50, 60))
+        tuple(math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0))
     )
     assert captured["right"] == pytest.approx(
-        tuple(math.radians(value) for value in (0, -10, -20, -30, -40, -50, -60))
+        tuple(math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0))
     )
     assert captured["max_speed"] == 90.0
     assert "velocity" not in captured
@@ -54,12 +54,14 @@ def test_pv_example_sets_one_persistent_max_speed_then_positions(monkeypatch) ->
 
 def test_pv_example_defaults_to_tuned_speed_and_validates_max_speed() -> None:
     parser = pv_example.build_parser()
-    base = ["--left", "0,0,0,0,0,0,0", "--right", "0,0,0,0,0,0,0"]
+    defaults = parser.parse_args([])
 
-    assert parser.parse_args(base).max_speed == pytest.approx(50.0)
-    assert parser.parse_args([*base, "--max-speed", "0"]).max_speed == 0.0
+    assert defaults.left == pv_example.DEFAULT_JOINT_TARGET_DEGREES
+    assert defaults.right == pv_example.DEFAULT_JOINT_TARGET_DEGREES
+    assert defaults.max_speed == pytest.approx(50.0)
+    assert parser.parse_args(["--max-speed", "0"]).max_speed == 0.0
     with pytest.raises(SystemExit):
-        parser.parse_args([*base, "--max-speed", "100.1"])
+        parser.parse_args(["--max-speed", "100.1"])
 
 
 def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:

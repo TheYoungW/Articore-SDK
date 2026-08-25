@@ -135,7 +135,7 @@ class ArxDCanDualArm:
         return self._runtime.get_fps()
 
     def set_max_speed(self, max_speed_percent: float) -> None:
-        """设置普通 PV reference 速度百分比；0～100 线性对应 0～3 rad/s。"""
+        """设置普通 PV reference 速度百分比；0～100 线性对应 0～2 rad/s。"""
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_max_speed() requires PV mode")
         self._runtime.set_max_speed(max_speed_percent)
@@ -254,10 +254,22 @@ class ArxDCanDualArm:
         return self._runtime.get_pose_sample(_side(side))
 
     def move_pose(
-        self, *, side: str, target_pose: Sequence[float], speed_percent: float
-    ) -> int:
-        """求最近种子 IK，并由 Runtime 使用普通 PV 参考异步执行 PTP。"""
-        return self._runtime.move_pose(_side(side), target_pose, speed_percent)
+        self, *, side: str, target_pose: Sequence[float], speed_percent: float = 50.0
+    ) -> None:
+        """提交普通 PV PTP 目标；无 motion ID、状态查询或取消接口。"""
+        self._runtime.move_pose(_side(side), target_pose, speed_percent)
+
+    def move_poses(
+        self,
+        *,
+        left_target_pose: Sequence[float],
+        right_target_pose: Sequence[float],
+        speed_percent: float = 50.0,
+    ) -> None:
+        """原子提交双臂 PTP；两侧 IK 全部成功后同步启动。"""
+        self._runtime.move_poses(
+            left_target_pose, right_target_pose, speed_percent
+        )
 
     def move_linear(
         self,
@@ -267,7 +279,7 @@ class ArxDCanDualArm:
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        """验证显式起点后，由 Runtime 执行 start_pose→end_pose 直线。"""
+        """提交 Runtime 复合任务：PTP 到 start_pose，再执行直线路径。"""
         return self._runtime.move_linear(
             _side(side), start_pose, end_pose, speed_percent
         )
@@ -281,18 +293,24 @@ class ArxDCanDualArm:
         end_pose: Sequence[float],
         speed_percent: float,
     ) -> int:
-        """验证显式起点后，执行 start_pose→via_pose→end_pose 圆弧。"""
+        """提交 Runtime 复合任务：PTP 到 start_pose，再执行圆弧路径。"""
         return self._runtime.move_circular(
             _side(side), start_pose, via_pose, end_pose, speed_percent
         )
 
     @property
     def cartesian_motion_status(self) -> CartesianMotionStatus:
-        """返回 Runtime 的原生运动状态；running 且进度为 1 仍未到位。"""
+        """返回最近提交的直线或圆弧运动状态。"""
         return self._runtime.cartesian_motion_status
 
+    def get_cartesian_motion_status(
+        self, motion_id: int
+    ) -> CartesianMotionStatus:
+        """按 Linear/Circular motion_id 查询队列、运行或完成状态。"""
+        return self._runtime.get_cartesian_motion_status(motion_id)
+
     def cancel_cartesian_motion(self) -> None:
-        """取消当前笛卡尔运动并保持最后 PV 参考位置，不自动失能。"""
+        """取消当前 Linear/Circular 和排队路径，并保持最后 PV 参考。"""
         self._runtime.cancel_cartesian_motion()
 
     def set_grippers(
