@@ -24,6 +24,7 @@ def test_product_examples_are_grouped_into_three_purpose_directories() -> None:
         "example_06_return_zero.py",
         "example_07_cartesian_circular.py",
         "example_07_cartesian_linear.py",
+        "example_07_cartesian_orientation_ptp.py",
         "example_07_cartesian_ptp.py",
         "example_08_gravity_compensation.py",
         "example_09_record_gravity_trajectory.py",

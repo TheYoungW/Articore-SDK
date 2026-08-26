@@ -11,23 +11,23 @@ conda activate at
 pip install -e .
 ```
 
-当前版本只依赖 `motor-drive-layer==0.12.8`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.6，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+当前版本只依赖 `motor-drive-layer==0.13.1`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 要求 Runtime ABI 不低于 4.1，并检查 C++ 直连 Motor 核心、单次 PV 命令速度、独立全局 PV 速度上限、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
 ```python
 from arx_d_can import ArxDCanDualArm
 
-robot = ArxDCanDualArm(control_mode="mit", with_grippers=True)
+robot = ArxDCanDualArm(control_mode="pv", with_grippers=True)
 try:
     robot.connect()
     robot.enable()
 
     robot.set_max_speed(70)
-    robot.set_joint_mit(
+    robot.set_joint_pv(
         left=[0.0] * 7,
         right=[0.0] * 7,
-        velocity=30,
+        velocity=50,
     )
     robot.set_grippers(left=1000, right=1000, gripper_level=5)
 
@@ -53,10 +53,12 @@ Python 不公开单独的 `close()` 或 `free()`。
 
 ## 控制接口
 
-- 普通 PV 位置：先按需调用 `set_max_speed(0..100)`，再调用不带速度参数的
-  `set_joint_pv(left=..., right=...)`。0～100 线性对应 0～2 rad/s reference
-  slew；产品默认值为 50，对应 1 rad/s 和 500 Hz 下每周期 0.002 rad；
-  100 对应 2 rad/s 和每周期 0.004 rad。达妙 POS_VEL 的 `V` 始终固定为
+- 普通 PV 位置：调用
+  `set_joint_pv(left=..., right=..., velocity=0..100)` 设置本次命令速度；默认值为
+  50。`set_max_speed(0..100)` 是独立、持续生效的全局 PV 速度上限，最终采用两者
+  的较小值。有效的 0～100 线性对应 0～2 rad/s reference slew；50 对应 1 rad/s
+  和 500 Hz 下每周期 0.002 rad，100 对应 2 rad/s 和每周期 0.004 rad。
+  达妙 POS_VEL 的 `V` 始终固定为
   3 rad/s，不随百分比缩放，为电机追赶 reference 保留余量。
   SDK 不再提供每条 PV 位置命令的速度参数，也不公开 Raw PV 直发。
 - 普通 MIT 位置继续使用 `set_joint_mit()` 的显式 `velocity`；Raw MIT 保留给明确需要
@@ -71,6 +73,10 @@ Python 不公开单独的 `close()` 或 `free()`。
   `tuple[bool | None, ...]`；夹爪的 `enabled` 使用相同语义。数据直接来自底层新鲜反馈缓存，
   `None` 表示缺失、过期或无法确认。
 - 健康：`get_health()`、`get_fps()`。
+- 产品关节限位：`get_joint_limits()` 无需连接或使能，也不会发送 CAN 请求。返回字典固定按
+  `l-joint1..7`、`r-joint1..7` 排列，值包含 `min_angle_rad`、
+  `max_angle_rad` 和 `max_velocity_rad_s`。这些值直接来自 C++ Runtime 实际用于
+  PV、轨迹和笛卡尔校验的同一份产品配置，不从 URDF 或 Python 常量复制。
 - 位姿：`get_pose("left" | "right")`。
 - PV 笛卡尔 PTP 可用 `move_pose()` 控制单侧，也可用 `move_poses()` 一次原子提交
   左右两侧；两侧 IK 都成功后，Runtime 才安装一份普通 PV 的 14 关节目标。PTP 返回

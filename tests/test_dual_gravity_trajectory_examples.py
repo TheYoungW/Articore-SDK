@@ -108,4 +108,6 @@ def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
 
     assert now >= 0.5
     assert robot.max_speeds == [70.0]
-    assert robot.position_commands == [{"left": (0.0,), "right": (0.0,)}]
+    assert robot.position_commands == [
+        {"left": (0.0,), "right": (0.0,), "velocity": 70.0}
+    ]

@@ -37,7 +37,9 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         "builtins.input",
         lambda prompt: captured["calls"].append("input") or "",
     )
-    args = pv_example.build_parser().parse_args(["--max-speed", "90"])
+    args = pv_example.build_parser().parse_args([
+        "--velocity", "70", "--max-speed", "90",
+    ])
     pv_example.main(args)
 
     assert captured["mode"] == "pv"
@@ -49,7 +51,7 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         tuple(math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0))
     )
     assert captured["max_speed"] == 90.0
-    assert "velocity" not in captured
+    assert captured["velocity"] == 70.0
 
 
 def test_pv_example_defaults_to_tuned_speed_and_validates_max_speed() -> None:
@@ -59,9 +61,13 @@ def test_pv_example_defaults_to_tuned_speed_and_validates_max_speed() -> None:
     assert defaults.left == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert defaults.right == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert defaults.max_speed == pytest.approx(50.0)
+    assert defaults.velocity == pytest.approx(50.0)
     assert parser.parse_args(["--max-speed", "0"]).max_speed == 0.0
+    assert parser.parse_args(["--velocity", "100"]).velocity == 100.0
     with pytest.raises(SystemExit):
         parser.parse_args(["--max-speed", "100.1"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--velocity", "-0.1"])
 
 
 def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:

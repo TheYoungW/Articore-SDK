@@ -25,6 +25,7 @@ from .sdk import (
     ArxDCanState,
     DualArmGripperState,
     JointState,
+    JointLimit,
 )
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "BimanualFollowStatus",
     "GripperHealth",
     "JointState",
+    "JointLimit",
     "ProductPose",
     "RuntimeCallError",
     "RuntimeTransactionError",

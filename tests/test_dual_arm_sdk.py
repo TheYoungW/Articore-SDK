@@ -10,6 +10,7 @@ from arx_d_can._motor_abi import (
     CartesianInterpolation,
     CartesianMotionState,
     CartesianMotionStatus,
+    JointLimit,
     OperationError,
     ProductArmState,
     ProductGripperState,
@@ -125,6 +126,10 @@ class FakeRuntime:
         )
         self.fps = 8120.0
         self.max_speed = 50.0
+        self.joint_limits = tuple(
+            JointLimit(-float(index + 1), float(index + 1), 5.0)
+            for index in range(14)
+        )
         self._trajectory_status = TrajectoryStatus(
             state=TrajectoryState.RUNNING,
             trajectory_id=31,
@@ -187,11 +192,15 @@ class FakeRuntime:
         self.calls.append(("get_max_speed",))
         return self.max_speed
 
-    def set_joint_positions(self, positions, velocity=None) -> None:
-        if velocity is None:
-            self.calls.append(("positions", tuple(positions)))
-        else:
-            self.calls.append(("positions", tuple(positions), velocity))
+    def get_joint_limits(self) -> tuple[JointLimit, ...]:
+        self.calls.append(("get_joint_limits",))
+        return self.joint_limits
+
+    def set_joint_pv(self, positions, velocity) -> None:
+        self.calls.append(("pv", tuple(positions), velocity))
+
+    def set_joint_mit(self, positions, velocity) -> None:
+        self.calls.append(("mit-position", tuple(positions), velocity))
 
     def submit_mit_frame(self, *values) -> None:
         self.calls.append(("mit", *values))
@@ -420,33 +429,80 @@ def test_max_speed_does_not_apply_to_mit(product_factory) -> None:
     assert robot._runtime.calls == []
 
 
+def test_joint_limits_use_fixed_product_names_and_native_values(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm(control_mode="mit", with_grippers=True)
+
+    limits = robot.get_joint_limits()
+
+    assert tuple(limits) == tuple(
+        [f"l-joint{index}" for index in range(1, 8)]
+        + [f"r-joint{index}" for index in range(1, 8)]
+    )
+    assert limits["l-joint1"] is robot._runtime.joint_limits[0]
+    assert limits["r-joint7"] is robot._runtime.joint_limits[13]
+    assert limits["l-joint1"].min_angle_rad == -1.0
+    assert limits["r-joint7"].max_angle_rad == 14.0
+    assert limits["r-joint7"].max_velocity_rad_s == 5.0
+    assert robot._runtime.calls == [("get_joint_limits",)]
+
+
 def test_ordinary_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
     robot.set_joint_mit(left=range(7), right=range(7, 14), velocity=50)
     assert robot._runtime.calls == [
-        ("positions", tuple(float(i) for i in range(14)), 50)
+        ("mit-position", tuple(float(i) for i in range(14)), 50)
     ]
 
 
 def test_ordinary_position_default_is_selected_by_native_product(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
     robot.set_joint_mit(left=(0,) * 7, right=(0,) * 7)
-    assert robot._runtime.calls == [("positions", (0.0,) * 14, 100.0)]
+    assert robot._runtime.calls == [("mit-position", (0.0,) * 14, 100.0)]
 
 
-def test_pv_position_uses_only_the_persistent_native_max_speed(product_factory) -> None:
+def test_pv_position_forwards_per_command_speed(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
     robot.set_joint_pv(left=(0,) * 7, right=(1,) * 7)
     assert robot._runtime.calls == [
-        ("positions", (0.0,) * 7 + (1.0,) * 7)
+        ("pv", (0.0,) * 7 + (1.0,) * 7, 50.0)
     ]
     assert not hasattr(robot, "submit_raw_pv")
-    with pytest.raises(TypeError, match="velocity"):
-        robot.set_joint_pv(
-            left=(0,) * 7,
-            right=(1,) * 7,
-            velocity=50,
-        )
+    robot.set_joint_pv(
+        left=(0,) * 7,
+        right=(1,) * 7,
+        velocity=80,
+    )
+    assert robot._runtime.calls[-1] == (
+        "pv", (0.0,) * 7 + (1.0,) * 7, 80,
+    )
+
+
+def test_ctypes_ordinary_position_uses_explicit_pv_and_mit_symbols() -> None:
+    calls: list[tuple] = []
+
+    def set_joint_pv(_runtime, positions, count, speed) -> int:
+        calls.append(("pv", tuple(positions[:count]), float(speed)))
+        return 0
+
+    def set_joint_mit(_runtime, positions, count, speed) -> int:
+        calls.append(("mit", tuple(positions[:count]), float(speed)))
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_set_joint_pv=set_joint_pv,
+        articore_runtime_set_joint_mit=set_joint_mit,
+    ))
+
+    runtime.set_joint_pv(range(14), 37)
+    runtime.set_joint_mit(range(14), 62)
+
+    expected = tuple(float(value) for value in range(14))
+    assert calls == [("pv", expected, 37.0), ("mit", expected, 62.0)]
 
 
 def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) -> None:
@@ -688,6 +744,10 @@ def test_cartesian_sdk_exposes_no_python_path_or_interpolation_arguments(
     dual_ptp = inspect.signature(robot.move_poses)
     linear = inspect.signature(robot.move_linear)
     circular = inspect.signature(robot.move_circular)
+    joint_pv = inspect.signature(robot.set_joint_pv)
+
+    assert tuple(joint_pv.parameters) == ("left", "right", "velocity")
+    assert joint_pv.parameters["velocity"].default == 50.0
 
     assert tuple(ptp.parameters) == ("side", "target_pose", "speed_percent")
     assert ptp.parameters["speed_percent"].default == 50.0

@@ -24,7 +24,7 @@ def _send(
     left = leader_target if leader == "left" else SAFE_POSE
     right = leader_target if leader == "right" else SAFE_POSE
     if mode == "pv":
-        robot.set_joint_pv(left=left, right=right)
+        robot.set_joint_pv(left=left, right=right, velocity=speed)
     else:
         robot.set_joint_mit(left=left, right=right, velocity=speed)
 
@@ -72,7 +72,9 @@ def main(args: argparse.Namespace) -> None:
             robot.set_max_speed(args.speed)
 
         if args.mode == "pv":
-            robot.set_joint_pv(left=SAFE_POSE, right=SAFE_POSE)
+            robot.set_joint_pv(
+                left=SAFE_POSE, right=SAFE_POSE, velocity=args.speed
+            )
         else:
             robot.set_joint_mit(
                 left=SAFE_POSE, right=SAFE_POSE, velocity=args.speed

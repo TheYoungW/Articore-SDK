@@ -8,6 +8,7 @@ import pytest
 from arx_d_can import CartesianMotionState
 from arx_d_can.examples.control import example_07_cartesian_circular as circular
 from arx_d_can.examples.control import example_07_cartesian_linear as linear
+from arx_d_can.examples.control import example_07_cartesian_orientation_ptp as orientation
 from arx_d_can.examples.control import example_07_cartesian_ptp as ptp
 
 
@@ -73,6 +74,67 @@ def test_ptp_example_defaults_to_fifty_and_accepts_zero_speed() -> None:
     assert parser.parse_args(["--speed", "0"]).speed == pytest.approx(0.0)
     with pytest.raises(SystemExit):
         parser.parse_args(["--speed", "100.1"])
+
+
+def test_orientation_ptp_example_sweeps_both_arms_and_all_axes(monkeypatch) -> None:
+    calls: list[tuple] = []
+
+    class FakeRobot:
+        def __init__(self, *, control_mode: str) -> None:
+            calls.append(("create", control_mode))
+
+        def connect(self) -> None:
+            calls.append(("connect",))
+
+        def enable(self) -> None:
+            calls.append(("enable",))
+
+        def disable(self) -> None:
+            calls.append(("disable",))
+
+        def disconnect(self) -> None:
+            calls.append(("disconnect",))
+
+    def record_move(_robot, **kwargs) -> None:
+        calls.append(("move", kwargs))
+
+    monkeypatch.setattr(orientation, "ArxDCanDualArm", FakeRobot)
+    monkeypatch.setattr(orientation, "_move_and_wait", record_move)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    orientation.main(orientation.build_parser().parse_args([]))
+
+    move_calls = [call[1] for call in calls if call[0] == "move"]
+    assert len(move_calls) == 10
+    assert move_calls[0]["left"] == orientation.BASE_LEFT_POSE
+    assert move_calls[0]["right"] == orientation.BASE_RIGHT_POSE
+    assert [move_calls[index]["label"] for index in (1, 4, 7)] == [
+        "Pitch 负方向端点",
+        "Roll 负方向端点",
+        "Yaw 负方向端点",
+    ]
+    assert all(call["speed"] == 20.0 for call in move_calls)
+    assert calls[-2:] == [("disable",), ("disconnect",)]
+    for call in move_calls:
+        assert call["left"][1] > 0.0
+        assert call["right"][1] < 0.0
+
+
+def test_orientation_error_handles_equivalent_rpy_at_singularity() -> None:
+    first = (0.0, 0.0, 0.0, 0.0, -math.pi / 2.0, 0.0)
+    equivalent = (
+        0.0,
+        0.0,
+        0.0,
+        math.pi,
+        -math.pi / 2.0,
+        math.pi,
+    )
+
+    assert orientation._orientation_error(first, equivalent) == pytest.approx(0.0)
+    assert orientation.build_parser().parse_args([]).speed == pytest.approx(20.0)
+    with pytest.raises(SystemExit):
+        orientation.build_parser().parse_args(["--speed", "0"])
 
 
 @pytest.mark.parametrize(

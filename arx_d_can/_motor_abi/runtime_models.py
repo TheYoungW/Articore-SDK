@@ -141,6 +141,13 @@ class ProductState:
 
 
 @dataclass(frozen=True)
+class JointLimit:
+    min_angle_rad: float
+    max_angle_rad: float
+    max_velocity_rad_s: float
+
+
+@dataclass(frozen=True)
 class ProductPose:
     side: int
     values: tuple[float, float, float, float, float, float]

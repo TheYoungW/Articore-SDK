@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x00030006
+MIN_RUNTIME_ABI_VERSION = 0x00040001
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
 ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY = 1 << 47
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
@@ -31,9 +31,10 @@ ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1 << 51
 ARTICORE_CAP_PRODUCT_CARTESIAN_POINT_TO_POINT = 1 << 52
 ARTICORE_CAP_PRODUCT_CARTESIAN_LINEAR = 1 << 53
 ARTICORE_CAP_PRODUCT_CARTESIAN_CIRCULAR = 1 << 54
+ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS = 1 << 58
+ARTICORE_CAP_PRODUCT_PV_COMMAND_SPEED = 1 << 59
 ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING = 1 << 60
 ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE = 1 << 61
-ARTICORE_CAP_PV_MAX_SPEED_ONLY = 1 << 62
 ARTICORE_CAP_DIRECT_CPP_MOTOR_CORE = 1 << 63
 
 
@@ -274,6 +275,16 @@ class CProductStateV2(Structure):
     ]
 
 
+class CProductJointAngleVelLimits(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("joint_count", c_uint32),
+        ("lower_angles", c_float * 14),
+        ("upper_angles", c_float * 14),
+        ("velocity_limits", c_float * 14),
+    ]
+
+
 class CProductPose(Structure):
     _fields_ = [
         ("struct_size", c_uint32), ("side", c_uint32),
@@ -374,9 +385,9 @@ class RuntimeAbi:
         self.lib.articore_runtime_abi_version.argtypes = []
         self.lib.articore_runtime_abi_version.restype = c_uint32
         version = int(self.lib.articore_runtime_abi_version())
-        if version != MIN_RUNTIME_ABI_VERSION:
+        if version < MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI 3.6; "
+                "Articore-SDK requires Runtime ABI >= 4.1; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
@@ -437,11 +448,17 @@ class RuntimeAbi:
                 "pose; the loaded Runtime does not advertise "
                 "ARTICORE_CAP_PRODUCT_TOOL_CENTER_POSE"
             )
-        if not capabilities & ARTICORE_CAP_PV_MAX_SPEED_ONLY:
+        if not capabilities & ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS:
             raise AbiLoadError(
-                "Articore-SDK requires persistent max-speed-only PV control; "
+                "Articore-SDK requires native Yunyi product joint-limit "
+                "metadata; the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PRODUCT_JOINT_ANGLE_VEL_LIMITS"
+            )
+        if not capabilities & ARTICORE_CAP_PRODUCT_PV_COMMAND_SPEED:
+            raise AbiLoadError(
+                "Articore-SDK requires per-command product PV speed; "
                 "the loaded Runtime does not advertise "
-                "ARTICORE_CAP_PV_MAX_SPEED_ONLY"
+                "ARTICORE_CAP_PRODUCT_PV_COMMAND_SPEED"
             )
         if not capabilities & ARTICORE_CAP_PRODUCT_MAX_SPEED_SETTING:
             raise AbiLoadError(
@@ -498,14 +515,14 @@ class RuntimeAbi:
             c_void_p, POINTER(c_float),
         ]
         lib.articore_runtime_get_max_speed.restype = c_int32
-        lib.articore_runtime_set_joint_positions.argtypes = [
+        lib.articore_runtime_set_joint_pv.argtypes = [
             c_void_p, float_pointer, c_uint32, c_float,
         ]
-        lib.articore_runtime_set_joint_positions.restype = c_int32
-        lib.articore_runtime_set_joint_positions_v2.argtypes = [
-            c_void_p, float_pointer, c_uint32,
+        lib.articore_runtime_set_joint_pv.restype = c_int32
+        lib.articore_runtime_set_joint_mit.argtypes = [
+            c_void_p, float_pointer, c_uint32, c_float,
         ]
-        lib.articore_runtime_set_joint_positions_v2.restype = c_int32
+        lib.articore_runtime_set_joint_mit.restype = c_int32
         lib.articore_runtime_submit_mit_frame.argtypes = [
             c_void_p, float_pointer, float_pointer, float_pointer,
             float_pointer, float_pointer, c_uint32,
@@ -537,6 +554,10 @@ class RuntimeAbi:
             c_void_p, POINTER(CProductStateV2),
         ]
         lib.articore_runtime_get_state_v2.restype = c_int32
+        lib.articore_runtime_get_joint_angle_vel_limits.argtypes = [
+            c_void_p, POINTER(CProductJointAngleVelLimits),
+        ]
+        lib.articore_runtime_get_joint_angle_vel_limits.restype = c_int32
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
         lib.articore_runtime_set_tcp_offset.argtypes = [

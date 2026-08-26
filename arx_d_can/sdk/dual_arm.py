@@ -9,6 +9,7 @@ from arx_d_can._motor_abi import (
     ArticoreRuntime,
     CartesianMotionStatus,
     GravityCompensationStatus,
+    JointLimit,
     BimanualFollowStatus,
     RuntimeControlMode,
     SafetyHealth,
@@ -159,6 +160,16 @@ class ArxDCanDualArm:
             raise RuntimeError("get_max_speed() requires PV mode")
         return self._runtime.get_max_speed()
 
+    def get_joint_limits(self) -> dict[str, JointLimit]:
+        """返回 Runtime 实际使用的14关节产品逻辑限位。"""
+        limits = self._runtime.get_joint_limits()
+        names = _LEFT_NAMES + _RIGHT_NAMES
+        if len(limits) != len(names):
+            raise RuntimeError(
+                f"Runtime returned {len(limits)} joint limits; expected 14"
+            )
+        return dict(zip(names, limits, strict=True))
+
     @property
     def gravity_compensation_status(self) -> GravityCompensationStatus:
         return self._runtime.gravity_compensation_status
@@ -193,17 +204,18 @@ class ArxDCanDualArm:
     ) -> None:
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
             raise RuntimeError("set_joint_mit() requires MIT mode")
-        self._runtime.set_joint_positions(_frame(left, right), velocity)
+        self._runtime.set_joint_mit(_frame(left, right), velocity)
 
     def set_joint_pv(
         self,
         *,
         left: Sequence[float],
         right: Sequence[float],
+        velocity: float = 50.0,
     ) -> None:
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_joint_pv() requires PV mode")
-        self._runtime.set_joint_positions(_frame(left, right))
+        self._runtime.set_joint_pv(_frame(left, right), velocity)
 
     def submit_raw_mit(
         self,

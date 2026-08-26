@@ -44,6 +44,7 @@ def _move_to_start(
         robot.set_joint_pv(
             left=target.left_positions,
             right=target.right_positions,
+            velocity=max_speed_percent,
         )
     else:
         largest_move = max(

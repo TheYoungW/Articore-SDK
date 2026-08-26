@@ -17,6 +17,7 @@ python -m arx_d_can.examples.control.example_01_switch_control_mode --mode mit
 python -m arx_d_can.examples.control.example_02_enable_disable
 
 python -m arx_d_can.examples.control.example_03_send_position_pv \
+  --velocity 50 \
   --max-speed 50
 
 python -m arx_d_can.examples.control.example_04_send_position_mit \
@@ -32,6 +33,8 @@ python -m arx_d_can.examples.control.example_05_set_gripper_openings \
 
 python -m arx_d_can.examples.control.example_06_return_zero --velocity 20
 python -m arx_d_can.examples.control.example_07_cartesian_ptp
+python -m arx_d_can.examples.control.example_07_cartesian_orientation_ptp \
+  --speed 20
 python -m arx_d_can.examples.control.example_07_cartesian_linear \
   --side left --speed 20
 python -m arx_d_can.examples.control.example_07_cartesian_linear \
@@ -98,15 +101,28 @@ python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 python -m arx_d_can.examples.maintenance.example_03_set_zero_current_position
 ```
 
-PV 单点控制只使用 `set_max_speed(0..100)` 和不带速度参数的 `set_joint_pv()`；0～100 线性对应 0～2 rad/s reference slew，产品默认值为 50，对应 1 rad/s 和 500 Hz 下每周期 0.002 rad，100 对应每周期 0.004 rad。达妙 POS_VEL 的 `V` 始终固定为 3 rad/s，不随百分比缩放。SDK 不再公开 Raw PV。MIT 仍可通过 `set_joint_mit()` 的显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗及安全状态仍由 C++ Runtime 负责。
+PV 单点控制使用带单次 `velocity=0..100` 的 `set_joint_pv()`；默认单次速度为 50。
+`set_max_speed(0..100)` 是独立的持久全局上限，实际速度百分比取单次速度与全局上限
+的较小值。有效的 0～100 线性对应 0～2 rad/s reference slew；50 对应 1 rad/s 和
+500 Hz 下每周期 0.002 rad，100 对应每周期 0.004 rad。达妙 POS_VEL 的 `V` 始终固定
+为 3 rad/s，不随百分比缩放。SDK 不公开 Raw PV。MIT 仍可通过 `set_joint_mit()` 的
+显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗及安全状态仍由
+C++ Runtime 负责。
 
-笛卡尔控制拆分为三个 PV 示例：`example_07_cartesian_ptp`、
-`example_07_cartesian_linear` 和 `example_07_cartesian_circular`。PTP 通过一次原子
+笛卡尔控制包含四个 PV 示例：`example_07_cartesian_ptp`、
+`example_07_cartesian_orientation_ptp`、`example_07_cartesian_linear` 和
+`example_07_cartesian_circular`。基础 PTP 通过一次原子
 双臂调用提交左右镜像的 tool0 目标，使双臂到达 `J4=90°、其余关节=0°` 对应位姿；
 Runtime 先完成两侧 IK，再一次安装普通 PV 的 14 关节目标。PTP 返回 `None`，没有 motion ID、状态或取消
 接口，默认速度为 50。Linear 根据 `--side` 选择镜像路径，以原默认起点作为中心，
 通过三个进入 Runtime FIFO 的直线任务画边长 7 cm 的左右镜像等边三角形。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
-通过两个进入 Runtime FIFO 的半圆任务执行半径 8 cm 的完整圆并返回起点。三个示例均可用命令行参数覆盖默认位姿。
+通过两个进入 Runtime FIFO 的半圆任务执行半径 8 cm 的完整圆并返回起点。基础 PTP、
+Linear 和 Circular 均可用命令行参数覆盖默认位姿。
+`example_07_cartesian_orientation_ptp` 在相同双臂基准姿态上，用普通双臂 PTP
+依次演示 Pitch、Roll、Yaw 约 90° 的双向摆动。基准姿态的 `pitch=-90°` 是 RPY
+奇异点，因此示例按真实旋转矩阵定义三个 base_link 旋转轴，而不是直接对奇异点处的
+欧拉角做加减。Pitch 端点会同步改变位置以满足 J6 产品限位；每一步均通过真实位姿与
+关节速度反馈确认到位，并在开始各轴演示前等待用户确认。
 Runtime 将 Linear/Circular 作为复合 FIFO 任务：如果当前规划参考不在显式起点，先用
 普通 PV PTP 接近，再由真实反馈按 5 mm / 0.035 rad 和稳定速度确认起点，最后执行声明的
 直线或圆弧；全部阶段共用一个 motion ID。位姿单位为米和弧度。Linear 和 Circular

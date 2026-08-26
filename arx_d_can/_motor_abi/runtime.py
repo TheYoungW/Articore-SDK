@@ -14,6 +14,7 @@ from ._runtime_abi import (
     CGravityCompensationStatus,
     CBimanualFollowStatus,
     CMotorPowerReport,
+    CProductJointAngleVelLimits,
     CProductPose,
     CProductStateV2,
     CRuntimeTransportHealth,
@@ -45,6 +46,7 @@ from .runtime_models import (
     BimanualFollowStatus,
     MotorPowerReport,
     MotorPowerResult,
+    JointLimit,
     RuntimeControlMode,
     RuntimeOperation,
     OperationError,
@@ -537,27 +539,50 @@ class ArticoreRuntime:
         )
         return float(value.value)
 
-    def set_joint_positions(
+    def get_joint_limits(self) -> tuple[JointLimit, ...]:
+        """Return the fixed 14-joint logical product limit table."""
+        native = CProductJointAngleVelLimits()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_joint_angle_vel_limits,
+            "get_joint_angle_vel_limits", ctypes.byref(native),
+        )
+        if int(native.joint_count) != 14:
+            raise RuntimeCallError(
+                "get_joint_angle_vel_limits returned "
+                f"joint_count={int(native.joint_count)}, expected 14"
+            )
+        return tuple(
+            JointLimit(
+                min_angle_rad=float(native.lower_angles[index]),
+                max_angle_rad=float(native.upper_angles[index]),
+                max_velocity_rad_s=float(native.velocity_limits[index]),
+            )
+            for index in range(14)
+        )
+
+    def set_joint_pv(
         self,
         positions: Sequence[float],
-        speed_percent: float | None = None,
+        speed_percent: float = 50.0,
     ) -> None:
         values = tuple(float(value) for value in positions)
         native = (ctypes.c_float * len(values))(*values)
-        if self.control_mode is RuntimeControlMode.PV:
-            if speed_percent is not None:
-                raise ValueError(
-                    "PV position commands use the persistent max speed"
-                )
-            self._call(
-                self._runtime_abi.lib.articore_runtime_set_joint_positions_v2,
-                "set_joint_positions_v2", native, len(values),
-            )
-            return
         self._call(
-            self._runtime_abi.lib.articore_runtime_set_joint_positions,
-            "set_joint_positions", native, len(values),
-            100.0 if speed_percent is None else float(speed_percent),
+            self._runtime_abi.lib.articore_runtime_set_joint_pv,
+            "set_joint_pv", native, len(values), float(speed_percent),
+        )
+
+    def set_joint_mit(
+        self,
+        positions: Sequence[float],
+        speed_percent: float = 100.0,
+    ) -> None:
+        values = tuple(float(value) for value in positions)
+        native = (ctypes.c_float * len(values))(*values)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_joint_mit,
+            "set_joint_mit", native, len(values), float(speed_percent),
         )
 
     def submit_mit_frame(
