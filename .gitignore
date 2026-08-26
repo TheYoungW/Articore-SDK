@@ -22,3 +22,7 @@ arx_d_can/_articore_runtime_native*.pyd
 
 # Local hardware diagnostic captures can be hundreds of megabytes.
 /artifacts/
+
+# Local SDK build outputs and recorded trajectory workspaces.
+/builds/
+/trajectories1/
