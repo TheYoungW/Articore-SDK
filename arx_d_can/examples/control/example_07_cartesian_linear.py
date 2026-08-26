@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""控制示例 07-2（PV）：指定手臂沿 base_link 横向向外直线移动 10 cm。"""
+"""控制示例 07-2（PV）：指定手臂用三段 Linear 画边长 7 cm 的等边三角形。"""
 from __future__ import annotations
 
 import argparse
+import math
 import time
 
 from arx_d_can import ArxDCanDualArm, CartesianMotionState
 from arx_d_can.examples.common import pose_values, positive_speed_percent
 
 
-DEFAULT_LEFT_START_POSE = (
+TRIANGLE_SIDE_M = 0.07
+
+DEFAULT_LEFT_CENTER_POSE = (
     0.403537,
     0.231892,
     0.381638,
@@ -17,15 +20,7 @@ DEFAULT_LEFT_START_POSE = (
     -1.570796,
     0.0,
 )
-DEFAULT_LEFT_END_POSE = (
-    0.403537,
-    0.331892,
-    0.381638,
-    0.0,
-    -1.570796,
-    0.0,
-)
-DEFAULT_RIGHT_START_POSE = (
+DEFAULT_RIGHT_CENTER_POSE = (
     0.403537,
     -0.231889,
     0.381639,
@@ -33,67 +28,103 @@ DEFAULT_RIGHT_START_POSE = (
     -1.570796,
     0.0,
 )
-DEFAULT_RIGHT_END_POSE = (
-    0.403537,
-    -0.331889,
-    0.381639,
-    0.0,
-    -1.570796,
-    0.0,
-)
 
 
-def _apply_default_poses(args: argparse.Namespace) -> None:
-    if (args.start is None) != (args.end is None):
-        raise ValueError("自定义直线路径时必须同时提供 --start 与 --end")
-    if args.start is not None:
-        return
-    if args.side == "left":
-        args.start = DEFAULT_LEFT_START_POSE
-        args.end = DEFAULT_LEFT_END_POSE
-    else:
-        args.start = DEFAULT_RIGHT_START_POSE
-        args.end = DEFAULT_RIGHT_END_POSE
+def _apply_default_center(args: argparse.Namespace) -> None:
+    if args.center is None:
+        args.center = (
+            DEFAULT_LEFT_CENTER_POSE
+            if args.side == "left"
+            else DEFAULT_RIGHT_CENTER_POSE
+        )
+
+
+def _triangle_vertices(
+    center: tuple[float, ...], side: str
+) -> tuple[tuple[float, ...], ...]:
+    x, y, z, roll, pitch, yaw = center
+    outward_sign = 1.0 if side == "left" else -1.0
+    circumradius = TRIANGLE_SIDE_M / math.sqrt(3.0)
+    inner_y = y - outward_sign * circumradius / 2.0
+    orientation = (roll, pitch, yaw)
+    return (
+        (x, y + outward_sign * circumradius, z, *orientation),
+        (x, inner_y, z + TRIANGLE_SIDE_M / 2.0, *orientation),
+        (x, inner_y, z - TRIANGLE_SIDE_M / 2.0, *orientation),
+    )
 
 
 def main(args: argparse.Namespace) -> None:
-    _apply_default_poses(args)
+    _apply_default_center(args)
+    vertices = _triangle_vertices(args.center, args.side)
+    edges = tuple(zip(vertices, vertices[1:] + vertices[:1]))
     robot = ArxDCanDualArm(control_mode="pv")
     submitted = False
     try:
         robot.connect()
         robot.enable()
-        motion_id = robot.move_linear(
-            side=args.side,
-            start_pose=args.start,
-            end_pose=args.end,
-            speed_percent=args.speed,
+        motion_ids: list[int] = []
+        try:
+            for start_pose, end_pose in edges:
+                motion_ids.append(
+                    robot.move_linear(
+                        side=args.side,
+                        start_pose=start_pose,
+                        end_pose=end_pose,
+                        speed_percent=args.speed,
+                    )
+                )
+                submitted = True
+        except Exception:
+            if submitted:
+                robot.cancel_cartesian_motion()
+            raise
+        print(
+            f"{args.side} 等边三角形已提交：motion_ids={motion_ids}，"
+            f"边长={TRIANGLE_SIDE_M * 100:.1f} cm"
         )
-        submitted = True
-        print(f"{args.side} 直线运动已提交：motion_id={motion_id}")
         while True:
-            status = robot.cartesian_motion_status
+            statuses = [
+                robot.get_cartesian_motion_status(motion_id)
+                for motion_id in motion_ids
+            ]
+            progress = sum(status.progress for status in statuses) / len(statuses)
             print(
-                f"\rstate={status.state.value} progress={status.progress:.1%}",
+                f"\rstate={[status.state.value for status in statuses]} "
+                f"progress={progress:.1%}",
                 end="",
                 flush=True,
             )
-            if status.state is CartesianMotionState.COMPLETED:
-                print("\n机械臂已真实到位")
+            if all(
+                status.state is CartesianMotionState.COMPLETED
+                for status in statuses
+            ):
+                print("\n三角形执行完成，机械臂已回到第一个顶点")
                 return
-            if status.state is CartesianMotionState.CANCELLED:
+            if any(
+                status.state is CartesianMotionState.CANCELLED
+                for status in statuses
+            ):
                 print("\n运动已取消")
                 return
-            if status.state is CartesianMotionState.FAULT:
+            fault_status = next(
+                (
+                    status
+                    for status in statuses
+                    if status.state is CartesianMotionState.FAULT
+                ),
+                None,
+            )
+            if fault_status is not None:
                 health = robot.get_health()
                 detail = (
                     health.last_operation_error
                     or health.safety_reason
                     or health.fault_reason
-                    or status.error
+                    or fault_status.error
                     or "未知错误"
                 )
-                raise RuntimeError(f"直线运动失败：{detail}")
+                raise RuntimeError(f"三角形运动失败：{detail}")
             time.sleep(0.05)
     except KeyboardInterrupt:
         if submitted:
@@ -109,16 +140,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--side", choices=("left", "right"), required=True)
     parser.add_argument(
-        "--start",
+        "--center",
         type=pose_values,
         default=None,
-        help="显式起点 x,y,z,roll,pitch,yaw（米、弧度）",
-    )
-    parser.add_argument(
-        "--end",
-        type=pose_values,
-        default=None,
-        help="终点 x,y,z,roll,pitch,yaw（米、弧度）",
+        help="三角形中心 x,y,z,roll,pitch,yaw（米、弧度）",
     )
     parser.add_argument(
         "--speed",

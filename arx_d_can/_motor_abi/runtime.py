@@ -12,11 +12,16 @@ from ._runtime_abi import (
     CEnableReport,
     CGravityCompensationConfig,
     CGravityCompensationStatus,
+    CBimanualFollowStatus,
     CMotorPowerReport,
     CProductPose,
     CProductStateV2,
     CRuntimeTransportHealth,
     CSafetyHealthV2,
+    CTrajectoryConfig,
+    CTrajectoryStatus,
+    CTrajectoryWaypoint,
+    CTcpOffset,
     get_runtime_abi,
 )
 from .errors import RuntimeCallError, RuntimeTransactionError
@@ -36,6 +41,8 @@ from .runtime_models import (
     GripperHealth,
     GravityCompensationPhase,
     GravityCompensationStatus,
+    BimanualFollowPhase,
+    BimanualFollowStatus,
     MotorPowerReport,
     MotorPowerResult,
     RuntimeControlMode,
@@ -48,6 +55,8 @@ from .runtime_models import (
     RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
+    TrajectoryState,
+    TrajectoryStatus,
 )
 
 _UINT64_MAX = (1 << 64) - 1
@@ -247,6 +256,47 @@ class ArticoreRuntime:
                 float(native.gravity_feedforward_torque[index])
                 for index in range(count)
             ),
+        )
+
+    def start_bimanual_follow(self, leader_side: int) -> None:
+        if leader_side not in (0, 1):
+            raise ValueError("leader_side must be 0 (left) or 1 (right)")
+        self._call(
+            self._runtime_abi.lib.articore_runtime_start_bimanual_follow,
+            "start_bimanual_follow", leader_side,
+        )
+
+    def stop_bimanual_follow(self) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_stop_bimanual_follow,
+            "stop_bimanual_follow",
+        )
+
+    @property
+    def bimanual_follow_status(self) -> BimanualFollowStatus:
+        native = CBimanualFollowStatus()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_bimanual_follow_status,
+            "get_bimanual_follow_status", ctypes.byref(native),
+        )
+        sides = ("left", "right")
+        error = bytes(native.error).split(b"\0", 1)[0].decode(
+            "utf-8", errors="replace",
+        )
+        return BimanualFollowStatus(
+            phase=BimanualFollowPhase(native.phase),
+            active=bool(native.active),
+            leader=sides[native.leader_side],
+            follower=sides[native.follower_side],
+            transition_progress=float(native.transition_progress),
+            control_cycles=int(native.control_cycles),
+            leader_positions=tuple(float(value) for value in native.leader_positions),
+            follower_target_positions=tuple(
+                float(value) for value in native.follower_target_positions
+            ),
+            max_tracking_error=float(native.max_tracking_error),
+            error=error or None,
         )
 
     def connect(self) -> ConnectReport:
@@ -531,6 +581,146 @@ class ArticoreRuntime:
             optional(feedforward_torques), optional(kp), optional(kd), len(q),
         )
 
+    def start_trajectory(
+        self,
+        *,
+        timestamps: Sequence[float],
+        left_positions: Sequence[Sequence[float]],
+        right_positions: Sequence[Sequence[float]],
+        left_velocities: Sequence[Sequence[float]] | None = None,
+        right_velocities: Sequence[Sequence[float]] | None = None,
+        left_accelerations: Sequence[Sequence[float]] | None = None,
+        right_accelerations: Sequence[Sequence[float]] | None = None,
+        mit_kp: Sequence[float] | None = None,
+        mit_kd: Sequence[float] | None = None,
+        mit_feedforward_torques: Sequence[float] | None = None,
+        pv_velocity_limits: Sequence[float] | None = None,
+    ) -> int:
+        """Copy a complete 14-joint trajectory into the native 500 Hz worker."""
+        times = tuple(float(value) for value in timestamps)
+        left_q = tuple(tuple(float(value) for value in row) for row in left_positions)
+        right_q = tuple(tuple(float(value) for value in row) for row in right_positions)
+        count = len(times)
+        if count < 2 or len(left_q) != count or len(right_q) != count:
+            raise ValueError(
+                "trajectory timestamps and both position arrays must contain "
+                "the same 2..10000 waypoint count"
+            )
+        if count > 10_000:
+            raise ValueError("trajectory supports at most 10000 waypoints")
+
+        def rows(
+            name: str,
+            source: Sequence[Sequence[float]] | None,
+        ) -> tuple[tuple[float, ...], ...] | None:
+            if source is None:
+                return None
+            values = tuple(tuple(float(value) for value in row) for row in source)
+            if len(values) != count or any(len(row) != 7 for row in values):
+                raise ValueError(f"{name} must contain {count} rows of 7 values")
+            return values
+
+        if any(len(row) != 7 for row in (*left_q, *right_q)):
+            raise ValueError("each trajectory arm position must contain 7 values")
+        left_dq = rows("left_velocities", left_velocities)
+        right_dq = rows("right_velocities", right_velocities)
+        left_ddq = rows("left_accelerations", left_accelerations)
+        right_ddq = rows("right_accelerations", right_accelerations)
+        if (left_dq is None) != (right_dq is None):
+            raise ValueError("left and right trajectory velocities must be supplied together")
+        if (left_ddq is None) != (right_ddq is None):
+            raise ValueError(
+                "left and right trajectory accelerations must be supplied together"
+            )
+
+        native_waypoints = (CTrajectoryWaypoint * count)()
+        for index, waypoint in enumerate(native_waypoints):
+            waypoint.struct_size = ctypes.sizeof(CTrajectoryWaypoint)
+            waypoint.time_s = times[index]
+            waypoint.left_positions[:] = left_q[index]
+            waypoint.right_positions[:] = right_q[index]
+            if left_dq is not None and right_dq is not None:
+                waypoint.left_velocities[:] = left_dq[index]
+                waypoint.right_velocities[:] = right_dq[index]
+                waypoint.velocity_valid_mask = 0x3FFF
+            if left_ddq is not None and right_ddq is not None:
+                waypoint.left_accelerations[:] = left_ddq[index]
+                waypoint.right_accelerations[:] = right_ddq[index]
+                waypoint.acceleration_valid_mask = 0x3FFF
+
+        def vector(name: str, source: Sequence[float] | None) -> tuple[float, ...]:
+            if source is None:
+                return (0.0,) * 14
+            values = tuple(float(value) for value in source)
+            if len(values) != 14:
+                raise ValueError(f"{name} must contain 14 values")
+            return values
+
+        native_config = CTrajectoryConfig()
+        native_config.struct_size = ctypes.sizeof(CTrajectoryConfig)
+        native_config.interpolation = 1
+        native_config.control_mode = int(self._control_mode)
+        native_config.mit_kp[:] = vector("mit_kp", mit_kp)
+        native_config.mit_kd[:] = vector("mit_kd", mit_kd)
+        native_config.mit_feedforward_torque[:] = vector(
+            "mit_feedforward_torques", mit_feedforward_torques
+        )
+        native_config.pv_velocity_limits[:] = vector(
+            "pv_velocity_limits", pv_velocity_limits
+        )
+        # The current C ABI returns the id through the status snapshot. Keep
+        # submission and that snapshot under one binding lock so another SDK
+        # thread cannot install a different trajectory between the two calls.
+        with self._lock:
+            self._call(
+                self._runtime_abi.lib.articore_runtime_start_trajectory,
+                "start_trajectory",
+                native_waypoints,
+                count,
+                ctypes.byref(native_config),
+            )
+            return self.trajectory_status.trajectory_id
+
+    @property
+    def trajectory_status(self) -> TrajectoryStatus:
+        native = CTrajectoryStatus()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_trajectory_status,
+            "get_trajectory_status",
+            ctypes.byref(native),
+        )
+        states = {
+            0: TrajectoryState.IDLE,
+            1: TrajectoryState.RUNNING,
+            2: TrajectoryState.COMPLETED,
+            3: TrajectoryState.CANCELLED,
+            4: TrajectoryState.FAULT,
+            5: TrajectoryState.QUEUED,
+        }
+        try:
+            state = states[int(native.state)]
+        except KeyError as exc:
+            raise RuntimeCallError(
+                f"get_trajectory_status returned unknown state {int(native.state)}"
+            ) from exc
+        return TrajectoryStatus(
+            state=state,
+            trajectory_id=int(native.trajectory_id),
+            active_segment=int(native.active_segment),
+            waypoint_count=int(native.waypoint_count),
+            elapsed_s=float(native.elapsed_s),
+            duration_s=float(native.duration_s),
+            progress=float(native.progress),
+            error=_optional_text(native.error),
+        )
+
+    def cancel_trajectory(self) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_cancel_trajectory,
+            "cancel_trajectory",
+        )
+
     def set_product_grippers(
         self, *, left: float, right: float, gripper_level: int, mode: int
     ) -> None:
@@ -616,8 +806,43 @@ class ArticoreRuntime:
         )
 
     def get_pose(self, side: int) -> list[float]:
-        """Return the cached product-control pose as [x, y, z, roll, pitch, yaw]."""
+        """Return the cached active-TCP pose as [x, y, z, roll, pitch, yaw]."""
         return list(self.get_pose_sample(side).values)
+
+    def set_tcp_offset(self, side: int, offset: Sequence[float]) -> None:
+        """Set the native flange-to-TCP transform for one arm."""
+        if side not in (0, 1):
+            raise ValueError("side must be 0 (left) or 1 (right)")
+        values = _pose(offset)
+        native = CTcpOffset()
+        native.struct_size = ctypes.sizeof(native)
+        native.side = int(side)
+        native.values[:] = values[:]
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_tcp_offset,
+            "set_tcp_offset", ctypes.byref(native),
+        )
+
+    def get_tcp_offset(self, side: int) -> list[float]:
+        """Return the native flange-to-active-TCP transform."""
+        if side not in (0, 1):
+            raise ValueError("side must be 0 (left) or 1 (right)")
+        native = CTcpOffset()
+        native.struct_size = ctypes.sizeof(native)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_tcp_offset,
+            "get_tcp_offset", int(side), ctypes.byref(native),
+        )
+        return [float(value) for value in native.values]
+
+    def reset_tcp_offset(self, side: int) -> None:
+        """Restore tool0 with grippers or link7 without grippers."""
+        if side not in (0, 1):
+            raise ValueError("side must be 0 (left) or 1 (right)")
+        self._call(
+            self._runtime_abi.lib.articore_runtime_reset_tcp_offset,
+            "reset_tcp_offset", int(side),
+        )
 
     def move_pose(
         self, side: int, target_pose: Sequence[float], speed_percent: float = 50.0

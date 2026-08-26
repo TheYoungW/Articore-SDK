@@ -10,7 +10,6 @@ import time
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.common import (
     joint_values,
-    joint_velocity_degrees,
     positive_velocity_degrees,
     speed_percent,
 )
@@ -18,11 +17,7 @@ from arx_d_can.service_tools.dual_trajectory_recording import (
     DEFAULT_MIT_FEEDFORWARD_TORQUES,
     DEFAULT_MIT_KD,
     DEFAULT_MIT_KP,
-    DEFAULT_MIT_TARGET_VELOCITIES,
     DualArmTrajectorySample,
-    REPLAY_HZ,
-    _submit_positions,
-    interpolate_sample,
     load_trajectory,
     replay,
 )
@@ -37,18 +32,13 @@ def _move_to_start(
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
-    mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
     mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
     mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
     mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
     state = robot.read_cached_state()
-    current = DualArmTrajectorySample(
-        left_positions=state.left.arm.positions,
-        right_positions=state.right.arm.positions,
-        left_gripper=target.left_gripper,
-        right_gripper=target.right_gripper,
-    )
+    current_left = tuple(state.left.arm.positions)
+    current_right = tuple(state.right.arm.positions)
     if robot.control_mode == "pv":
         robot.set_max_speed(max_speed_percent)
         robot.set_joint_pv(
@@ -57,65 +47,23 @@ def _move_to_start(
         )
     else:
         largest_move = max(
-            *(
-                abs(end - start)
-                for start, end in zip(
-                    current.left_positions,
-                    target.left_positions,
-                )
-            ),
-            *(
-                abs(end - start)
-                for start, end in zip(
-                    current.right_positions,
-                    target.right_positions,
-                )
-            ),
+            *(abs(end - start) for start, end in zip(current_left, target.left_positions)),
+            *(abs(end - start) for start, end in zip(current_right, target.right_positions)),
         )
-        duration = 1.875 * largest_move / start_velocity
-        started = time.perf_counter()
-        tick = 0
-        while True:
-            elapsed = min(tick / REPLAY_HZ, duration)
-            progress = 1.0 if duration == 0.0 else elapsed / duration
-            sample = interpolate_sample(
-                current,
-                target,
-                progress=progress,
-                mode="quintic",
-            )
-            remaining = started + elapsed - time.perf_counter()
-            if remaining > 0.0:
-                time.sleep(remaining)
-            _submit_positions(
-                robot,
-                sample,
-                mit_target_velocities=mit_target_velocities,
-                mit_kp=mit_kp,
-                mit_kd=mit_kd,
-                mit_feedforward_torques=mit_feedforward_torques,
-            )
-            if elapsed >= duration:
-                break
-            captured_at = time.perf_counter()
-            tick = max(
-                tick + 1,
-                math.floor((captured_at - started) * REPLAY_HZ) + 1,
-            )
+        duration = max(0.5, 1.875 * largest_move / start_velocity)
+        robot.start_trajectory(
+            timestamps=[0.0, duration],
+            left_positions=[current_left, target.left_positions],
+            right_positions=[current_right, target.right_positions],
+            kp=mit_kp,
+            kd=mit_kd,
+            feedforward_torque=mit_feedforward_torques,
+        )
 
     deadline = time.monotonic() + timeout
     stable_since = None
     next_tick = time.perf_counter()
     while time.monotonic() < deadline:
-        if robot.control_mode == "mit":
-            _submit_positions(
-                robot,
-                target,
-                mit_target_velocities=mit_target_velocities,
-                mit_kp=mit_kp,
-                mit_kd=mit_kd,
-                mit_feedforward_torques=mit_feedforward_torques,
-            )
         state = robot.read_cached_state()
         position_error = max(
             *(
@@ -146,7 +94,7 @@ def _move_to_start(
                 return
         else:
             stable_since = None
-        next_tick += 1.0 / REPLAY_HZ
+        next_tick += 0.02
         remaining = next_tick - time.perf_counter()
         if remaining > 0.0:
             time.sleep(remaining)
@@ -183,7 +131,6 @@ def main(args: argparse.Namespace) -> None:
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
-            mit_target_velocities=args.mit_target_velocity,
             mit_kp=args.mit_kp,
             mit_kd=args.mit_kd,
             mit_feedforward_torques=args.mit_feedforward_torque,
@@ -197,9 +144,7 @@ def main(args: argparse.Namespace) -> None:
             robot,
             timestamps=timestamps,
             samples=samples,
-            interpolation=args.interpolation,
-            max_speed_percent=args.max_speed,
-            mit_target_velocities=args.mit_target_velocity,
+            interpolation="quintic",
             mit_kp=args.mit_kp,
             mit_kd=args.mit_kd,
             mit_feedforward_torques=args.mit_feedforward_torque,
@@ -235,15 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--interpolation",
-        choices=("none", "linear", "quintic"),
+        choices=("quintic",),
         default="quintic",
-        help="回放插值：none=零阶保持，linear=线性，quintic=五次 S 曲线",
-    )
-    parser.add_argument(
-        "--mit-target-velocity",
-        type=joint_velocity_degrees,
-        default=DEFAULT_MIT_TARGET_VELOCITIES,
-        help="MIT 7 轴目标速度，单位为度/秒；默认全部为 0",
+        help="原生轨迹固定使用五次多项式插值",
     )
     parser.add_argument(
         "--mit-kp",

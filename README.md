@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-当前版本只依赖 `motor-drive-layer==0.12.7`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.3，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
+当前版本只依赖 `motor-drive-layer==0.12.8`，x86_64 与 ARM64 由 pip 自动选择对应 wheel，不需要安装其他 Motor、Runtime 或 SocketCAN 包。SDK 严格要求 Runtime ABI 3.6，并检查 C++ 直连 Motor 核心、最大速度唯一 PV 路径、原生笛卡尔运动和产品控制点能力。Runtime 只通过三参数 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建，不再包含旧工厂兼容分支。PV 参数、500 Hz 控制周期、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理，SDK 不公开控制频率或 Python 调参接口。URDF 继续随 SDK 分发，用于展示、仿真和外部工具；控制参数不从 Python YAML 读取。
 
 ## 最小用法
 
@@ -78,12 +78,19 @@ Python 不公开单独的 `close()` 或 `free()`。
   motion ID 并进入原生 FIFO；`cartesian_motion_status` 返回最近提交的路径任务，
   `get_cartesian_motion_status(motion_id)` 查询指定路径，`cancel_cartesian_motion()`
   取消当前 Linear/Circular 并清空路径队列。
+- 双臂关节轨迹使用 `start_trajectory()` 一次提交全部时间戳和 14 关节路点；
+  `trajectory_status` 查询原生执行状态，`cancel_trajectory()` 取消。五次多项式生成、
+  校验和 500 Hz 执行全部位于 C++ Runtime，Python 不做 100 Hz 重采样或逐帧发送。
 - 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。
 - 急停：调用无参数 `estop()` 后底层立即停止控制并失能整机；固定原因从
   `get_health().fault_reason` 读取，且只能通过 `recover()` 解除锁存。
 - 恢复：`recover()` 由 C++ Runtime 完成整机清错、双臂健康验证、低速回到已标定零位，
   最后保持整机失能；任一步骤失败都会再次尝试失能并把具体阶段写入 `get_health()` 返回值。
 - 重力补偿：`start_gravity_compensation()`、`stop_gravity_compensation()`。
+- 双臂协同：PV 或 MIT 模式下调用 `start_bimanual_follow(leader="left")`，底层记录
+  启动瞬间的七关节相对位置；随后继续用普通 `set_joint_pv()` 或 `set_joint_mit()` 控制
+  主臂，另一侧由 C++ Runtime 自动跟随。普通接口中的从臂数组不会成为从臂目标；实际
+  从臂目标由底层相对关系生成。`stop_bimanual_follow()` 会立即在当前模式保持退出位置。
 
 所有关节数量、有限值、URDF 限位、速度和安全检查由 C++ Runtime 统一验证。Python 不重复维护一份产品配置。
 
@@ -110,6 +117,25 @@ Python 不公开单独的 `close()` 或 `free()`。
 该位置，Runtime 会把普通 PV PTP 接近、真实反馈稳定确认和后续路径作为同一个 motion ID
 与 FIFO 项执行。起点确认阈值为 5 mm / 0.035 rad。Runtime 在运动前校验完整接近与路径；
 规划期间队尾发生变化或任一路径校验失败时，新任务不会入队，当前任务和已有队列保持不变。
+
+运动术语必须严格区分：笛卡尔 PTP 只对终点求一次 IK，得到关节角后执行普通 PV
+reference 步进；它不是关节轨迹规划。只有 `start_trajectory()` 才表示带时间戳的 14 关节
+五次轨迹。关节轨迹的速度由时间戳决定，`pv_velocity_limits` 只是每轴安全上限，不能用
+普通 PV 的 `speed_percent` 替代。
+
+```python
+trajectory_id = robot.start_trajectory(
+    timestamps=[0.0, 2.0],
+    left_positions=[[0, 0, 0, 1.5708, 0, 0, 0]] * 2,
+    right_positions=[
+        [0, 0, 0, 1.5708, 0, 0, 0],
+        [-0.7854, -0.7854, 0, 1.5708, 0, 0, 0],
+    ],
+    pv_velocity_limits=2.5,
+)
+status = robot.trajectory_status
+robot.cancel_trajectory()
+```
 
 夹爪默认使用保护模式。只有明确需要持续追踪开合度时才使用直驱：
 

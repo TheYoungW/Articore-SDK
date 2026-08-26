@@ -30,6 +30,15 @@ class CartesianMotionState(str, Enum):
     FAULT = "fault"
 
 
+class TrajectoryState(str, Enum):
+    IDLE = "idle"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAULT = "fault"
+
+
 class CartesianInterpolation(str, Enum):
     LINEAR = "linear"
     CIRCULAR = "circular"
@@ -53,6 +62,9 @@ class RuntimeOperation(IntEnum):
     CANCEL_CARTESIAN_MOTION = 14
     MOVE_LINEAR = 15
     MOVE_CIRCULAR = 16
+    START_BIMANUAL_FOLLOW = 17
+    STOP_BIMANUAL_FOLLOW = 18
+    SET_TCP_OFFSET = 19
 
 
 class OperationError(IntEnum):
@@ -69,6 +81,13 @@ class OperationError(IntEnum):
 
 
 class GravityCompensationPhase(IntEnum):
+    INACTIVE = 0
+    ENTERING = 1
+    ACTIVE = 2
+    EXITING = 3
+
+
+class BimanualFollowPhase(IntEnum):
     INACTIVE = 0
     ENTERING = 1
     ACTIVE = 2
@@ -169,6 +188,18 @@ class CartesianMotionStatus:
 
 
 @dataclass(frozen=True)
+class TrajectoryStatus:
+    state: TrajectoryState
+    trajectory_id: int
+    active_segment: int
+    waypoint_count: int
+    elapsed_s: float
+    duration_s: float
+    progress: float
+    error: str | None
+
+
+@dataclass(frozen=True)
 class GravityCompensationStatus:
     phase: GravityCompensationPhase
     active: bool
@@ -176,6 +207,20 @@ class GravityCompensationStatus:
     control_cycles: int
     joints: tuple[str, ...]
     gravity_feedforward_torque: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class BimanualFollowStatus:
+    phase: BimanualFollowPhase
+    active: bool
+    leader: str
+    follower: str
+    transition_progress: float
+    control_cycles: int
+    leader_positions: tuple[float, ...]
+    follower_target_positions: tuple[float, ...]
+    max_tracking_error: float
+    error: str | None
 
 
 @dataclass(frozen=True)

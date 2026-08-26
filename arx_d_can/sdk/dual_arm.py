@@ -9,9 +9,11 @@ from arx_d_can._motor_abi import (
     ArticoreRuntime,
     CartesianMotionStatus,
     GravityCompensationStatus,
+    BimanualFollowStatus,
     RuntimeControlMode,
     SafetyHealth,
     SafetyState,
+    TrajectoryStatus,
     ProductPose,
 )
 
@@ -76,6 +78,17 @@ def _optional_frame(
 
 
 def _gain_frame(value: float | Sequence[float] | None) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, Real):
+        return (float(value),) * 14
+    values = tuple(float(item) for item in value)
+    return values * 2 if len(values) == 7 else values
+
+
+def _trajectory_frame(
+    value: float | Sequence[float] | None,
+) -> tuple[float, ...] | None:
     if value is None:
         return None
     if isinstance(value, Real):
@@ -150,6 +163,10 @@ class ArxDCanDualArm:
     def gravity_compensation_status(self) -> GravityCompensationStatus:
         return self._runtime.gravity_compensation_status
 
+    @property
+    def bimanual_follow_status(self) -> BimanualFollowStatus:
+        return self._runtime.bimanual_follow_status
+
     def connect(self) -> None:
         self._runtime.connect()
 
@@ -210,6 +227,55 @@ class ArxDCanDualArm:
             _gain_frame(kd),
         )
 
+    def start_trajectory(
+        self,
+        *,
+        timestamps: Sequence[float],
+        left_positions: Sequence[Sequence[float]],
+        right_positions: Sequence[Sequence[float]],
+        interpolation: str = "quintic",
+        left_velocities: Sequence[Sequence[float]] | None = None,
+        right_velocities: Sequence[Sequence[float]] | None = None,
+        left_accelerations: Sequence[Sequence[float]] | None = None,
+        right_accelerations: Sequence[Sequence[float]] | None = None,
+        kp: float | Sequence[float] | None = None,
+        kd: float | Sequence[float] | None = None,
+        feedforward_torque: float | Sequence[float] | None = None,
+        pv_velocity_limits: float | Sequence[float] = 2.5,
+    ) -> int:
+        """一次性提交完整双臂关节轨迹，由 C++ Runtime 在 500 Hz 执行。"""
+        if str(interpolation).strip().lower() != "quintic":
+            raise ValueError("native joint trajectories only support 'quintic'")
+        mode = self._runtime.control_mode
+        if mode is RuntimeControlMode.MIT and (kp is None or kd is None):
+            raise ValueError("MIT trajectories require explicit kp and kd")
+        return self._runtime.start_trajectory(
+            timestamps=timestamps,
+            left_positions=left_positions,
+            right_positions=right_positions,
+            left_velocities=left_velocities,
+            right_velocities=right_velocities,
+            left_accelerations=left_accelerations,
+            right_accelerations=right_accelerations,
+            mit_kp=_trajectory_frame(kp),
+            mit_kd=_trajectory_frame(kd),
+            mit_feedforward_torques=_trajectory_frame(feedforward_torque),
+            pv_velocity_limits=(
+                _trajectory_frame(pv_velocity_limits)
+                if mode is RuntimeControlMode.PV
+                else None
+            ),
+        )
+
+    @property
+    def trajectory_status(self) -> TrajectoryStatus:
+        """返回原生 14 关节轨迹的最新状态快照。"""
+        return self._runtime.trajectory_status
+
+    def cancel_trajectory(self) -> None:
+        """幂等取消原生关节轨迹；不用于笛卡尔 Linear/Circular。"""
+        self._runtime.cancel_trajectory()
+
     def read_state(self) -> ArxDCanDualArmState:
         value = self._runtime.state
 
@@ -246,12 +312,24 @@ class ArxDCanDualArm:
         return self.read_state()
 
     def get_pose(self, side: str) -> list[float]:
-        """返回指定手臂当前产品控制点位姿 [x, y, z, roll, pitch, yaw]。"""
+        """返回指定手臂当前活动 TCP 位姿 [x, y, z, roll, pitch, yaw]。"""
         return self._runtime.get_pose(_side(side))
 
     def get_pose_sample(self, side: str) -> ProductPose:
         """返回位姿及其底层反馈时间戳和序列号。"""
         return self._runtime.get_pose_sample(_side(side))
+
+    def set_tcp_offset(self, *, side: str, offset: Sequence[float]) -> None:
+        """设置法兰 link7 到活动 TCP 的 [x,y,z,roll,pitch,yaw] 偏移。"""
+        self._runtime.set_tcp_offset(_side(side), offset)
+
+    def get_tcp_offset(self, *, side: str) -> list[float]:
+        """读取法兰 link7 到当前活动 TCP 的偏移。"""
+        return self._runtime.get_tcp_offset(_side(side))
+
+    def reset_tcp_offset(self, *, side: str) -> None:
+        """恢复产品默认 TCP：有夹爪为 tool0，无夹爪为 link7。"""
+        self._runtime.reset_tcp_offset(_side(side))
 
     def move_pose(
         self, *, side: str, target_pose: Sequence[float], speed_percent: float = 50.0
@@ -333,6 +411,17 @@ class ArxDCanDualArm:
 
     def stop_gravity_compensation(self) -> None:
         self._runtime.stop_gravity_compensation()
+
+    def start_bimanual_follow(self, *, leader: str = "left") -> None:
+        """记录当前相对关节位置；普通 PV/MIT 控制主臂时从臂同步跟随。"""
+        normalized = leader.strip().lower()
+        if normalized not in {"left", "right"}:
+            raise ValueError("leader must be 'left' or 'right'")
+        self._runtime.start_bimanual_follow(0 if normalized == "left" else 1)
+
+    def stop_bimanual_follow(self) -> None:
+        """退出双臂跟随并让双臂保持退出瞬间的位置。"""
+        self._runtime.stop_bimanual_follow()
 
     def estop(self) -> None:
         """急停：立即停止所有控制、失能整机并锁存急停状态。

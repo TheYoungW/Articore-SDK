@@ -8,17 +8,18 @@ from pathlib import Path
 import time
 from typing import Literal, TYPE_CHECKING
 
+from .._motor_abi import TrajectoryState, TrajectoryStatus
+
 if TYPE_CHECKING:
     from ..sdk.dual_arm import ArxDCanDualArm
 
 
 FORMAT_VERSION = 1
-InterpolationMode = Literal["none", "linear", "quintic"]
-REPLAY_HZ = 100.0
-DEFAULT_MIT_TARGET_VELOCITIES = (0.0,) * 7
+InterpolationMode = Literal["quintic"]
 DEFAULT_MIT_KP = (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
 DEFAULT_MIT_KD = (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
 DEFAULT_MIT_FEEDFORWARD_TORQUES = (0.0,) * 7
+DEFAULT_PV_VELOCITY_LIMITS = (2.5,) * 7
 
 
 @dataclass(slots=True, frozen=True)
@@ -199,159 +200,79 @@ def replay(
     timestamps: list[float],
     samples: list[DualArmTrajectorySample],
     interpolation: InterpolationMode = "quintic",
-    max_speed_percent: float = 50.0,
-    mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
     mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
     mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
     mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
-) -> None:
-    """按应用层频率重采样；PV走步进位置路径，MIT保留raw参数。"""
+    pv_velocity_limits: tuple[float, ...] = DEFAULT_PV_VELOCITY_LIMITS,
+    gripper_level: int = 5,
+    timeout: float | None = None,
+) -> TrajectoryStatus:
+    """一次性提交原生轨迹，并仅轮询状态等待 C++ 500 Hz 执行完成。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
-    if interpolation not in {"none", "linear", "quintic"}:
-        raise ValueError("interpolation must be none, linear, or quintic")
+    if interpolation != "quintic":
+        raise ValueError("native trajectory replay only supports quintic interpolation")
     if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
         raise ValueError("timestamps must be strictly increasing")
-    if any(
-        sample.left_gripper is not None or sample.right_gripper is not None
-        for sample in samples
-    ) and not robot.has_grippers:
-        raise RuntimeError("trajectory requires the dual-arm gripper pair")
-    if robot.control_mode == "pv":
-        if (
-            not math.isfinite(max_speed_percent)
-            or not 0.0 <= max_speed_percent <= 100.0
-        ):
-            raise ValueError("max_speed_percent must be in 0..100")
-        robot.set_max_speed(max_speed_percent)
-    replay_hz = REPLAY_HZ
-
-    started = time.perf_counter()
-    first_timestamp = timestamps[0]
-    relative_timestamps = [value - first_timestamp for value in timestamps]
-    duration = relative_timestamps[-1]
-    tick = 0
-    segment = 0
-    while True:
-        elapsed = min(tick / replay_hz, duration)
-        while (
-            segment + 1 < len(samples)
-            and relative_timestamps[segment + 1] <= elapsed
-        ):
-            segment += 1
-        if segment + 1 >= len(samples):
-            sample = samples[-1]
-        else:
-            segment_duration = (
-                relative_timestamps[segment + 1] - relative_timestamps[segment]
+    gripper_pairs = {
+        (sample.left_gripper, sample.right_gripper) for sample in samples
+        if sample.left_gripper is not None or sample.right_gripper is not None
+    }
+    if gripper_pairs:
+        if not robot.has_grippers:
+            raise RuntimeError("trajectory requires the dual-arm gripper pair")
+        if len(gripper_pairs) != 1:
+            raise ValueError(
+                "native arm trajectories do not support time-varying gripper commands"
             )
-            progress = (elapsed - relative_timestamps[segment]) / segment_duration
-            sample = interpolate_sample(
-                samples[segment],
-                samples[segment + 1],
-                progress=progress,
-                mode=interpolation,
-            )
-
-        remaining = started + elapsed - time.perf_counter()
-        if remaining > 0.0:
-            time.sleep(remaining)
-        _submit_positions(
-            robot,
-            sample,
-            mit_target_velocities=mit_target_velocities,
-            mit_kp=mit_kp,
-            mit_kd=mit_kd,
-            mit_feedforward_torques=mit_feedforward_torques,
-        )
-        if sample.left_gripper is not None or sample.right_gripper is not None:
-            robot.set_grippers(
-                left=0.0 if sample.left_gripper is None else sample.left_gripper,
-                right=0.0 if sample.right_gripper is None else sample.right_gripper,
-                gripper_level=5,
-            )
-        if elapsed >= duration:
-            return
-        captured_at = time.perf_counter()
-        tick = max(tick + 1, math.floor((captured_at - started) * replay_hz) + 1)
-
-
-def _submit_positions(
-    robot: ArxDCanDualArm,
-    sample: DualArmTrajectorySample,
-    *,
-    mit_target_velocities: tuple[float, ...] = DEFAULT_MIT_TARGET_VELOCITIES,
-    mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
-    mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
-    mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
-) -> None:
-    """PV提交步进位置目标；MIT提交一帧显式动态参数。"""
-    mode = robot.control_mode
-    if mode == "pv":
-        robot.set_joint_pv(
-            left=sample.left_positions,
-            right=sample.right_positions,
-        )
-    elif mode == "mit":
-        robot.submit_raw_mit(
-            left_positions=sample.left_positions,
-            right_positions=sample.right_positions,
-            left_velocities=mit_target_velocities,
-            right_velocities=mit_target_velocities,
-            kp=mit_kp,
-            kd=mit_kd,
-            left_feedforward_torques=mit_feedforward_torques,
-            right_feedforward_torques=mit_feedforward_torques,
-        )
-    else:
-        raise RuntimeError("trajectory replay requires PV or MIT mode")
-
-
-def interpolate_sample(
-    start: DualArmTrajectorySample,
-    end: DualArmTrajectorySample,
-    *,
-    progress: float,
-    mode: InterpolationMode,
-) -> DualArmTrajectorySample:
-    """在两条录制样本之间执行零阶、线性或五次 S 曲线插值。"""
-    u = max(0.0, min(1.0, float(progress)))
-    if mode == "none":
-        alpha = 0.0 if u < 1.0 else 1.0
-    elif mode == "linear":
-        alpha = u
-    elif mode == "quintic":
-        alpha = 10.0 * u**3 - 15.0 * u**4 + 6.0 * u**5
-    else:
-        raise ValueError("mode must be none, linear, or quintic")
-
-    def vector(first, second) -> tuple[float, ...]:
-        return tuple(
-            float(left + (right - left) * alpha)
-            for left, right in zip(first, second)
+        left_gripper, right_gripper = next(iter(gripper_pairs))
+        if left_gripper is None or right_gripper is None:
+            raise ValueError("native trajectory gripper commands require both sides")
+        robot.set_grippers(
+            left=left_gripper,
+            right=right_gripper,
+            gripper_level=gripper_level,
         )
 
-    def optional(first: float | None, second: float | None) -> float | None:
-        if first is None or second is None:
-            return first if u < 1.0 else second
-        return float(first + (second - first) * alpha)
-
-    return DualArmTrajectorySample(
-        left_positions=vector(start.left_positions, end.left_positions),
-        right_positions=vector(start.right_positions, end.right_positions),
-        left_gripper=optional(start.left_gripper, end.left_gripper),
-        right_gripper=optional(start.right_gripper, end.right_gripper),
+    relative_timestamps = [value - timestamps[0] for value in timestamps]
+    robot.start_trajectory(
+        timestamps=relative_timestamps,
+        left_positions=[sample.left_positions for sample in samples],
+        right_positions=[sample.right_positions for sample in samples],
+        interpolation="quintic",
+        kp=mit_kp if robot.control_mode == "mit" else None,
+        kd=mit_kd if robot.control_mode == "mit" else None,
+        feedforward_torque=(
+            mit_feedforward_torques if robot.control_mode == "mit" else None
+        ),
+        pv_velocity_limits=(
+            pv_velocity_limits if robot.control_mode == "pv" else 2.5
+        ),
     )
+    deadline = (
+        time.monotonic() + timeout
+        if timeout is not None
+        else time.monotonic() + relative_timestamps[-1] + 30.0
+    )
+    while True:
+        status = robot.trajectory_status
+        if status.state is TrajectoryState.COMPLETED:
+            return status
+        if status.state in {TrajectoryState.CANCELLED, TrajectoryState.FAULT}:
+            raise RuntimeError(status.error or f"trajectory {status.state.value}")
+        if time.monotonic() >= deadline:
+            robot.cancel_trajectory()
+            raise TimeoutError("native trajectory did not complete before timeout")
+        time.sleep(0.02)
 
 
 __all__ = [
     "DEFAULT_MIT_FEEDFORWARD_TORQUES",
     "DEFAULT_MIT_KD",
     "DEFAULT_MIT_KP",
-    "DEFAULT_MIT_TARGET_VELOCITIES",
+    "DEFAULT_PV_VELOCITY_LIMITS",
     "DualArmTrajectorySample",
     "InterpolationMode",
-    "interpolate_sample",
     "load_trajectory",
     "record",
     "replay",

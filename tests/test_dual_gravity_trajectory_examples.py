@@ -48,7 +48,6 @@ def test_replay_parser_defaults_to_safe_atomic_start() -> None:
     assert args.max_speed == pytest.approx(50.0)
     assert args.mode == "pv"
     assert args.interpolation == "quintic"
-    assert args.mit_target_velocity == (0.0,) * 7
     assert args.mit_kp == (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
     assert args.mit_kd == (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
     assert args.mit_feedforward_torque == (0.0,) * 7
@@ -61,6 +60,9 @@ def test_replay_does_not_duplicate_product_limit_logic_in_python() -> None:
     source = Path(replay_example.__file__).read_text(encoding="utf-8")
     assert "clamp_joint_positions" not in source
     assert "robot.pv_velocity_limit" not in source
+    assert "REPLAY_HZ" not in source
+    assert "interpolate_sample" not in source
+    assert "submit_raw_mit" not in source
 
 
 def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:

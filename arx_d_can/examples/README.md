@@ -41,7 +41,21 @@ python -m arx_d_can.examples.control.example_07_cartesian_circular \
 python -m arx_d_can.examples.control.example_07_cartesian_circular \
   --side right --speed 20
 python -m arx_d_can.examples.control.example_08_gravity_compensation
+python -m arx_d_can.examples.control.example_11_bimanual_follow \
+  --mode pv --leader left --speed 30 --delta-deg 8
+python -m arx_d_can.examples.control.example_12_tcp_offset \
+  --side left --offset=-0.004,0,-0.128,0,0,0
+
+# 受控真机演示：先到 J4=90°、其余0°，右手主导并用普通 MIT 往返8°
+python -m arx_d_can.examples.control.example_11_bimanual_follow \
+  --mode mit --leader right --speed 30 --delta-deg 8
 ```
+
+`set_tcp_offset()` 的偏移由 C++ Runtime 保存到当前 Runtime 会话，并同时用于
+`get_pose()`、PTP、Linear 和 Circular 的 FK/IK。它不是 Python 本地换算，也不会写入
+电机 Flash。未设置时，有夹爪产品继续使用内置 `tool0`，无夹爪产品继续使用 `link7`；
+`reset_tcp_offset()` 恢复这个产品默认值。为防止运动中坐标系突变，偏移只能在
+Runtime 未连接或 READY 且整机确认失能时修改。
 
 轨迹录制和回放也属于 `control`：
 
@@ -50,15 +64,18 @@ python -m arx_d_can.examples.control.example_09_record_gravity_trajectory \
   --output trajectories/dual.json --seconds 30 --hz 100
 
 python -m arx_d_can.examples.control.example_10_replay_trajectory \
-  --input trajectories/dual.json --mode pv --interpolation quintic
+  --input trajectories/dual.json --mode pv
 
 python -m arx_d_can.examples.control.example_10_replay_trajectory \
-  --input trajectories/dual.json --mode mit --interpolation quintic \
-  --mit-target-velocity "0,0,0,0,0,0,0" \
+  --input trajectories/dual.json --mode mit \
   --mit-kp "190,190,70,125,10,22,28" \
   --mit-kd "4.55,4.5,2,2.9,0.7,0.89,0.84" \
   --mit-feedforward-torque "0,0,0,0,0,0,0"
 ```
+
+回放只把完整双臂路点和时间戳提交一次。五次插值与 500 Hz 发送由 C++ Runtime
+完成，Python 不再维护 100 Hz 实时回放循环。这里的关节轨迹不同于笛卡尔 PTP：
+笛卡尔 PTP 只做终点 IK 后执行普通 PV；关节轨迹才使用原生五次规划和状态/取消接口。
 
 ## diagnostics：读取和诊断
 
@@ -87,9 +104,9 @@ PV 单点控制只使用 `set_max_speed(0..100)` 和不带速度参数的 `set_j
 `example_07_cartesian_linear` 和 `example_07_cartesian_circular`。PTP 通过一次原子
 双臂调用提交左右镜像的 tool0 目标，使双臂到达 `J4=90°、其余关节=0°` 对应位姿；
 Runtime 先完成两侧 IK，再一次安装普通 PV 的 14 关节目标。PTP 返回 `None`，没有 motion ID、状态或取消
-接口，默认速度为 50。Linear 根据 `--side` 选择镜像路径：左臂沿 `+Y`、右臂
-沿 `-Y` 横向向外直线移动 10 cm。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
-执行半径约 6 cm、向手臂外侧鼓出的半圆。三个示例均可用命令行参数覆盖默认位姿。
+接口，默认速度为 50。Linear 根据 `--side` 选择镜像路径，以原默认起点作为中心，
+通过三个进入 Runtime FIFO 的直线任务画边长 7 cm 的左右镜像等边三角形。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
+通过两个进入 Runtime FIFO 的半圆任务执行半径 8 cm 的完整圆并返回起点。三个示例均可用命令行参数覆盖默认位姿。
 Runtime 将 Linear/Circular 作为复合 FIFO 任务：如果当前规划参考不在显式起点，先用
 普通 PV PTP 接近，再由真实反馈按 5 mm / 0.035 rad 和稳定速度确认起点，最后执行声明的
 直线或圆弧；全部阶段共用一个 motion ID。位姿单位为米和弧度。Linear 和 Circular

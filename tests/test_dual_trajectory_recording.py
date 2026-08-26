@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from arx_d_can import TrajectoryState
+
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DEFAULT_MIT_FEEDFORWARD_TORQUES,
     DEFAULT_MIT_KD,
     DEFAULT_MIT_KP,
-    DEFAULT_MIT_TARGET_VELOCITIES,
+    DEFAULT_PV_VELOCITY_LIMITS,
     DualArmTrajectorySample,
-    interpolate_sample,
     load_trajectory,
     record,
     replay,
@@ -71,143 +72,105 @@ def test_dual_trajectory_rejects_wrong_product_joints(tmp_path) -> None:
         )
 
 
-def test_dual_replay_keeps_arm_and_gripper_commands_separate(monkeypatch) -> None:
+def test_dual_replay_submits_once_to_native_runtime(monkeypatch) -> None:
     commands: list[tuple] = []
 
     class Robot:
         has_grippers = True
         control_mode = "pv"
 
-        def set_max_speed(self, value) -> None:
-            commands.append(("max-speed", value))
+        def __init__(self) -> None:
+            self.status_reads = 0
 
-        def set_joint_pv(self, *, left, right) -> None:
-            commands.append(
-                ("arms", tuple(left), tuple(right))
+        def set_grippers(self, **kwargs) -> None:
+            commands.append(("grippers", kwargs))
+
+        def start_trajectory(self, **kwargs) -> int:
+            commands.append(("trajectory", kwargs))
+            return 7
+
+        @property
+        def trajectory_status(self):
+            self.status_reads += 1
+            state = (
+                TrajectoryState.RUNNING
+                if self.status_reads == 1
+                else TrajectoryState.COMPLETED
             )
+            return type("Status", (), {"state": state, "error": None})()
 
-        def set_grippers(self, *, left, right, gripper_level) -> None:
-            commands.append(("grippers", left, right, gripper_level))
+        def cancel_trajectory(self) -> None:
+            commands.append(("cancel",))
 
-    monkeypatch.setattr(
-        "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
-        lambda: 0.0,
-    )
-    replay(
-        Robot(),
-        timestamps=[0.0],
-        samples=[DualArmTrajectorySample((0.1,), (0.2,), 1000.0, 0.0)],
-    )
-
-    assert commands == [
-        ("max-speed", 50.0),
-        ("arms", (0.1,), (0.2,)),
-        ("grippers", 1000.0, 0.0, 5),
-    ]
-
-
-def test_dual_replay_refreshes_stepped_target_across_long_sample_gap(
-    monkeypatch,
-) -> None:
-    now = 0.0
-    positions = []
-
-    def sleep(seconds: float) -> None:
-        nonlocal now
-        now += seconds
-
-    class Robot:
-        has_grippers = False
-        control_mode = "pv"
-
-        def set_max_speed(self, value) -> None:
-            assert value == 50.0
-
-        def set_joint_pv(self, *, left, right) -> None:
-            positions.append(
-                (now, tuple(left), tuple(right))
-            )
-
-    monkeypatch.setattr(
-        "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
-        lambda: now,
-    )
     monkeypatch.setattr(
         "arx_d_can.service_tools.dual_trajectory_recording.time.sleep",
-        sleep,
+        lambda _seconds: None,
     )
-    replay(
-        Robot(),
-        timestamps=[0.0, 0.35],
-        samples=[
-            DualArmTrajectorySample((0.1,), (0.2,), None, None),
-            DualArmTrajectorySample((0.3,), (0.4,), None, None),
-        ],
+    samples = [
+        DualArmTrajectorySample((0.1,), (0.2,), 1000.0, 500.0),
+        DualArmTrajectorySample((0.3,), (0.4,), 1000.0, 500.0),
+    ]
+    replay(Robot(), timestamps=[5.0, 5.35], samples=samples)
+
+    assert commands[0] == (
+        "grippers",
+        {"left": 1000.0, "right": 500.0, "gripper_level": 5},
     )
-
-    assert len(positions) == 36
-    assert [command[0] for command in positions[:3]] == pytest.approx(
-        [0.0, 0.01, 0.02]
-    )
-    assert positions[-1][0] == pytest.approx(0.35)
-    assert positions[-1][1:] == ((0.3,), (0.4,))
-
-
-@pytest.mark.parametrize(
-    ("mode", "expected"),
-    [
-        ("none", 0.0),
-        ("linear", 0.25),
-        ("quintic", 0.103515625),
-    ],
-)
-def test_dual_interpolation_modes(mode, expected) -> None:
-    start = DualArmTrajectorySample((0.0,), (0.0,), 0.0, 0.0)
-    end = DualArmTrajectorySample((1.0,), (-1.0,), 1000.0, 500.0)
-
-    sample = interpolate_sample(start, end, progress=0.25, mode=mode)
-
-    assert sample.left_positions == pytest.approx((expected,))
-    assert sample.right_positions == pytest.approx((-expected,))
-    assert sample.left_gripper == pytest.approx(1000.0 * expected)
-    assert sample.right_gripper == pytest.approx(500.0 * expected)
+    assert commands[1][0] == "trajectory"
+    request = commands[1][1]
+    assert request["timestamps"] == pytest.approx([0.0, 0.35])
+    assert request["left_positions"] == [(0.1,), (0.3,)]
+    assert request["right_positions"] == [(0.2,), (0.4,)]
+    assert request["pv_velocity_limits"] == DEFAULT_PV_VELOCITY_LIMITS
+    assert not any(command[0] == "arms" for command in commands)
 
 
-def test_dual_mit_replay_sends_explicit_gains_and_zero_dynamic_targets(
-    monkeypatch,
-) -> None:
+def test_dual_mit_replay_submits_native_gains_once(monkeypatch) -> None:
     commands = []
 
     class Robot:
         has_grippers = False
         control_mode = "mit"
 
-        def submit_raw_mit(self, **kwargs) -> None:
+        def start_trajectory(self, **kwargs) -> int:
             commands.append(kwargs)
+            return 8
 
-    monkeypatch.setattr(
-        "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
-        lambda: 0.0,
-    )
+        @property
+        def trajectory_status(self):
+            return type(
+                "Status", (),
+                {"state": TrajectoryState.COMPLETED, "error": None},
+            )()
+
     replay(
         Robot(),
-        timestamps=[0.0],
-        samples=[DualArmTrajectorySample((0.1,), (-0.2,), None, None)],
-        interpolation="none",
+        timestamps=[0.0, 1.0],
+        samples=[
+            DualArmTrajectorySample((0.1,), (-0.2,), None, None),
+            DualArmTrajectorySample((0.2,), (-0.1,), None, None),
+        ],
     )
 
-    assert commands == [
-        {
-            "left_positions": (0.1,),
-            "right_positions": (-0.2,),
-            "left_velocities": DEFAULT_MIT_TARGET_VELOCITIES,
-            "right_velocities": DEFAULT_MIT_TARGET_VELOCITIES,
-            "kp": DEFAULT_MIT_KP,
-            "kd": DEFAULT_MIT_KD,
-            "left_feedforward_torques": DEFAULT_MIT_FEEDFORWARD_TORQUES,
-            "right_feedforward_torques": DEFAULT_MIT_FEEDFORWARD_TORQUES,
-        }
+    assert len(commands) == 1
+    assert commands[0]["kp"] == DEFAULT_MIT_KP
+    assert commands[0]["kd"] == DEFAULT_MIT_KD
+    assert commands[0]["feedforward_torque"] == DEFAULT_MIT_FEEDFORWARD_TORQUES
+
+
+def test_dual_replay_rejects_python_interpolation_and_dynamic_grippers() -> None:
+    class Robot:
+        has_grippers = True
+        control_mode = "pv"
+
+    samples = [
+        DualArmTrajectorySample((0.1,), (0.2,), 1000.0, 500.0),
+        DualArmTrajectorySample((0.3,), (0.4,), 900.0, 500.0),
     ]
+    with pytest.raises(ValueError, match="only supports quintic"):
+        replay(Robot(), timestamps=[0.0, 1.0], samples=samples, interpolation="linear")
+    with pytest.raises(ValueError, match="time-varying gripper"):
+        replay(Robot(), timestamps=[0.0, 1.0], samples=samples)
 
 
 def test_dual_record_uses_cached_runtime_state_and_grippers(

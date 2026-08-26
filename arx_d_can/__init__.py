@@ -7,6 +7,8 @@ from ._motor_abi import (
     CartesianMotionStatus,
     GravityCompensationPhase,
     GravityCompensationStatus,
+    BimanualFollowPhase,
+    BimanualFollowStatus,
     GripperHealth,
     ProductPose,
     RuntimeCallError,
@@ -14,6 +16,8 @@ from ._motor_abi import (
     RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
+    TrajectoryState,
+    TrajectoryStatus,
 )
 from .sdk import (
     ArxDCanDualArm,
@@ -33,6 +37,8 @@ __all__ = [
     "DualArmGripperState",
     "GravityCompensationPhase",
     "GravityCompensationStatus",
+    "BimanualFollowPhase",
+    "BimanualFollowStatus",
     "GripperHealth",
     "JointState",
     "ProductPose",
@@ -41,4 +47,6 @@ __all__ = [
     "RuntimeTransportHealth",
     "SafetyHealth",
     "SafetyState",
+    "TrajectoryState",
+    "TrajectoryStatus",
 ]

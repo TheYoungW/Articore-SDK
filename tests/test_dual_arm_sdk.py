@@ -20,11 +20,16 @@ from arx_d_can._motor_abi import (
     RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
+    TrajectoryState,
+    TrajectoryStatus,
 )
 from arx_d_can.sdk.dual_arm import ArxDCanDualArm
 from arx_d_can._motor_abi._runtime_abi import (
     CCartesianMotionStatus,
     CProductStateV2,
+    CTrajectoryConfig,
+    CTrajectoryStatus,
+    CTrajectoryWaypoint,
 )
 from arx_d_can._motor_abi.runtime import ArticoreRuntime
 
@@ -102,6 +107,9 @@ class FakeRuntime:
         self.closed = False
         self.calls: list[tuple] = []
         self.gravity_compensation_status = SimpleNamespace(active=False)
+        self.bimanual_follow_status = SimpleNamespace(
+            active=False, leader="left", follower="right",
+        )
         self._cartesian_motion_status = CartesianMotionStatus(
             state=CartesianMotionState.RUNNING,
             motion_id=9,
@@ -117,6 +125,16 @@ class FakeRuntime:
         )
         self.fps = 8120.0
         self.max_speed = 50.0
+        self._trajectory_status = TrajectoryStatus(
+            state=TrajectoryState.RUNNING,
+            trajectory_id=31,
+            active_segment=0,
+            waypoint_count=2,
+            elapsed_s=0.5,
+            duration_s=2.0,
+            progress=0.25,
+            error=None,
+        )
 
     @property
     def cartesian_motion_status(self) -> CartesianMotionStatus:
@@ -178,6 +196,17 @@ class FakeRuntime:
     def submit_mit_frame(self, *values) -> None:
         self.calls.append(("mit", *values))
 
+    def start_trajectory(self, **kwargs) -> int:
+        self.calls.append(("start_trajectory", kwargs))
+        return self._trajectory_status.trajectory_id
+
+    @property
+    def trajectory_status(self) -> TrajectoryStatus:
+        return self._trajectory_status
+
+    def cancel_trajectory(self) -> None:
+        self.calls.append(("cancel_trajectory",))
+
     def set_product_grippers(self, *, left, right, gripper_level, mode) -> None:
         self.calls.append(("grippers", left, right, gripper_level, mode))
 
@@ -186,6 +215,12 @@ class FakeRuntime:
 
     def stop_gravity_compensation(self) -> None:
         self.calls.append(("gravity-stop",))
+
+    def start_bimanual_follow(self, leader_side: int) -> None:
+        self.calls.append(("bimanual-start", leader_side))
+
+    def stop_bimanual_follow(self) -> None:
+        self.calls.append(("bimanual-stop",))
 
     def estop(self) -> None:
         self.calls.append(("estop",))
@@ -209,6 +244,16 @@ class FakeRuntime:
 
     def get_pose(self, side: int) -> list[float]:
         return list(self.get_pose_sample(side).values)
+
+    def set_tcp_offset(self, side: int, offset) -> None:
+        self.calls.append(("set_tcp_offset", side, tuple(offset)))
+
+    def get_tcp_offset(self, side: int) -> list[float]:
+        self.calls.append(("get_tcp_offset", side))
+        return [-0.004, 0.0, -0.178, 0.0, 0.0, 0.0]
+
+    def reset_tcp_offset(self, side: int) -> None:
+        self.calls.append(("reset_tcp_offset", side))
 
     def move_pose(self, side, target_pose, speed_percent=50.0) -> None:
         self.calls.append(("move_pose", side, tuple(target_pose), speed_percent))
@@ -423,6 +468,95 @@ def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) 
     assert call[5] == (0.5,) * 14
 
 
+def test_product_joint_trajectory_is_one_native_submission(product_factory) -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+    left = [(0.0,) * 7, (0.1,) * 7]
+    right = [(0.0,) * 7, (-0.1,) * 7]
+
+    trajectory_id = robot.start_trajectory(
+        timestamps=[0.0, 2.0],
+        left_positions=left,
+        right_positions=right,
+    )
+
+    assert trajectory_id == 31
+    call = robot._runtime.calls[0]
+    assert call[0] == "start_trajectory"
+    assert call[1]["timestamps"] == [0.0, 2.0]
+    assert call[1]["left_positions"] is left
+    assert call[1]["right_positions"] is right
+    assert call[1]["pv_velocity_limits"] == (2.5,) * 14
+    assert robot.trajectory_status.state is TrajectoryState.RUNNING
+    robot.cancel_trajectory()
+    assert robot._runtime.calls[-1] == ("cancel_trajectory",)
+
+
+def test_mit_joint_trajectory_requires_explicit_gains(product_factory) -> None:
+    robot = ArxDCanDualArm(control_mode="mit")
+
+    with pytest.raises(ValueError, match="explicit kp and kd"):
+        robot.start_trajectory(
+            timestamps=[0.0, 1.0],
+            left_positions=[(0.0,) * 7] * 2,
+            right_positions=[(0.0,) * 7] * 2,
+        )
+
+
+def test_ctypes_joint_trajectory_copies_complete_native_request() -> None:
+    captured = {}
+
+    def start(_runtime, waypoints, count, config) -> int:
+        captured["count"] = count
+        native_waypoints = ctypes.cast(
+            waypoints, ctypes.POINTER(CTrajectoryWaypoint)
+        )
+        captured["times"] = tuple(native_waypoints[i].time_s for i in range(count))
+        captured["left_end"] = tuple(native_waypoints[1].left_positions)
+        captured["velocity_mask"] = int(native_waypoints[0].velocity_valid_mask)
+        native_config = ctypes.cast(
+            config, ctypes.POINTER(CTrajectoryConfig)
+        ).contents
+        captured["mode"] = int(native_config.control_mode)
+        captured["limits"] = tuple(native_config.pv_velocity_limits)
+        return 0
+
+    def status(_runtime, output) -> int:
+        native = ctypes.cast(output, ctypes.POINTER(CTrajectoryStatus)).contents
+        native.state = 1
+        native.trajectory_id = 42
+        native.active_segment = 0
+        native.waypoint_count = 2
+        native.duration_s = 2.0
+        native.progress = 0.25
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._control_mode = RuntimeControlMode.PV
+    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_start_trajectory=start,
+        articore_runtime_get_trajectory_status=status,
+    ))
+
+    trajectory_id = runtime.start_trajectory(
+        timestamps=[0.0, 2.0],
+        left_positions=[(0.0,) * 7, (0.1,) * 7],
+        right_positions=[(0.0,) * 7, (-0.1,) * 7],
+        pv_velocity_limits=(2.5,) * 14,
+    )
+
+    assert trajectory_id == 42
+    assert captured == {
+        "count": 2,
+        "times": (0.0, 2.0),
+        "left_end": pytest.approx((0.1,) * 7),
+        "velocity_mask": 0,
+        "mode": int(RuntimeControlMode.PV),
+        "limits": pytest.approx((2.5,) * 14),
+    }
+
+
 def test_read_state_uses_one_native_product_snapshot(product_factory) -> None:
     robot = ArxDCanDualArm()
     state = robot.read_state()
@@ -490,6 +624,23 @@ def test_get_pose_returns_six_values_and_optional_sample_metadata(
     assert right.sequence == 77
     with pytest.raises(ValueError, match="side"):
         robot.get_pose("center")
+
+
+def test_tcp_offset_is_forwarded_to_the_native_runtime(product_factory) -> None:
+    robot = ArxDCanDualArm(with_grippers=True)
+    custom = (0.01, -0.02, 0.12, 0.1, -0.2, 0.3)
+    robot.set_tcp_offset(side="left", offset=custom)
+    assert robot.get_tcp_offset(side="right") == [
+        -0.004, 0.0, -0.178, 0.0, 0.0, 0.0,
+    ]
+    robot.reset_tcp_offset(side="left")
+    assert robot._runtime.calls == [
+        ("set_tcp_offset", 0, custom),
+        ("get_tcp_offset", 1),
+        ("reset_tcp_offset", 0),
+    ]
+    with pytest.raises(ValueError, match="side"):
+        robot.set_tcp_offset(side="center", offset=custom)
 
 
 def test_cartesian_motion_is_forwarded_as_one_side_native_operation(
@@ -727,6 +878,21 @@ def test_maintenance_and_gravity_only_delegate(product_factory) -> None:
         ("zero",), ("clear",), ("gravity-start", 250),
         ("gravity-stop",), ("estop",), ("recover",),
     ]
+
+
+def test_bimanual_follow_only_selects_leader_and_delegates(product_factory) -> None:
+    robot = ArxDCanDualArm(control_mode="mit")
+    robot.start_bimanual_follow(leader="left")
+    robot.stop_bimanual_follow()
+    robot.start_bimanual_follow(leader="RIGHT")
+    assert robot.bimanual_follow_status.leader == "left"
+    assert robot._runtime.calls == [
+        ("bimanual-start", 0),
+        ("bimanual-stop",),
+        ("bimanual-start", 1),
+    ]
+    with pytest.raises(ValueError, match="leader"):
+        robot.start_bimanual_follow(leader="middle")
 
 
 def test_grippers_are_submitted_as_one_two_side_product_frame(product_factory) -> None:

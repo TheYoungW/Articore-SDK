@@ -22,8 +22,9 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-MIN_RUNTIME_ABI_VERSION = 0x00030003
+MIN_RUNTIME_ABI_VERSION = 0x00030006
 ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS = 1 << 48
+ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY = 1 << 47
 ARTICORE_CAP_PRODUCT_GRIPPER_DIRECT_MODE = 1 << 49
 ARTICORE_CAP_FIXED_GRIPPER_MIT_MODE = 1 << 50
 ARTICORE_CAP_DIRECT_GRIPPER_GAIN_X10 = 1 << 51
@@ -281,6 +282,13 @@ class CProductPose(Structure):
     ]
 
 
+class CTcpOffset(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32), ("side", c_uint32),
+        ("values", c_float * 6),
+    ]
+
+
 class CCartesianMotionStatus(Structure):
     _fields_ = [
         ("struct_size", c_uint32), ("state", c_int32),
@@ -289,6 +297,47 @@ class CCartesianMotionStatus(Structure):
         ("speed_percent", c_float), ("elapsed_s", ctypes.c_double),
         ("duration_s", ctypes.c_double), ("progress", c_float),
         ("target_pose", c_float * 6), ("error", c_char * 512),
+    ]
+
+
+class CTrajectoryWaypoint(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("time_s", ctypes.c_double),
+        ("left_positions", c_float * 7),
+        ("right_positions", c_float * 7),
+        ("left_velocities", c_float * 7),
+        ("right_velocities", c_float * 7),
+        ("left_accelerations", c_float * 7),
+        ("right_accelerations", c_float * 7),
+        ("velocity_valid_mask", c_uint32),
+        ("acceleration_valid_mask", c_uint32),
+    ]
+
+
+class CTrajectoryConfig(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("interpolation", c_int32),
+        ("control_mode", c_int32),
+        ("mit_kp", c_float * 14),
+        ("mit_kd", c_float * 14),
+        ("mit_feedforward_torque", c_float * 14),
+        ("pv_velocity_limits", c_float * 14),
+    ]
+
+
+class CTrajectoryStatus(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32),
+        ("state", c_int32),
+        ("trajectory_id", c_uint64),
+        ("active_segment", c_uint32),
+        ("waypoint_count", c_uint32),
+        ("elapsed_s", ctypes.c_double),
+        ("duration_s", ctypes.c_double),
+        ("progress", c_float),
+        ("error", c_char * 512),
     ]
 
 
@@ -308,6 +357,17 @@ class CGravityCompensationStatus(Structure):
     ]
 
 
+class CBimanualFollowStatus(Structure):
+    _fields_ = [
+        ("struct_size", c_uint32), ("phase", c_int32), ("active", c_int32),
+        ("leader_side", c_uint32), ("follower_side", c_uint32),
+        ("transition_progress", c_float), ("control_cycles", c_uint64),
+        ("leader_positions", c_float * 7),
+        ("follower_target_positions", c_float * 7),
+        ("max_tracking_error", c_float), ("error", c_char * 512),
+    ]
+
+
 class RuntimeAbi:
     def __init__(self) -> None:
         self.lib = ctypes.CDLL(runtime_library_path())
@@ -316,12 +376,18 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != MIN_RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI 3.3; "
+                "Articore-SDK requires Runtime ABI 3.6; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.lib.articore_runtime_capabilities.argtypes = []
         self.lib.articore_runtime_capabilities.restype = c_uint64
         capabilities = int(self.lib.articore_runtime_capabilities())
+        if not capabilities & ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY:
+            raise AbiLoadError(
+                "Articore-SDK requires native Yunyi quintic trajectories; "
+                "the loaded Runtime does not advertise "
+                "ARTICORE_CAP_PRODUCT_QUINTIC_TRAJECTORY"
+            )
         if not capabilities & ARTICORE_CAP_PRODUCT_GRIPPER_FORCE_10_LEVELS:
             raise AbiLoadError(
                 "Articore-SDK requires the Yunyi product-level 10-level "
@@ -445,6 +511,19 @@ class RuntimeAbi:
             float_pointer, float_pointer, c_uint32,
         ]
         lib.articore_runtime_submit_mit_frame.restype = c_int32
+        lib.articore_runtime_start_trajectory.argtypes = [
+            c_void_p,
+            POINTER(CTrajectoryWaypoint),
+            c_uint32,
+            POINTER(CTrajectoryConfig),
+        ]
+        lib.articore_runtime_start_trajectory.restype = c_int32
+        lib.articore_runtime_get_trajectory_status.argtypes = [
+            c_void_p, POINTER(CTrajectoryStatus),
+        ]
+        lib.articore_runtime_get_trajectory_status.restype = c_int32
+        lib.articore_runtime_cancel_trajectory.argtypes = [c_void_p]
+        lib.articore_runtime_cancel_trajectory.restype = c_int32
         lib.articore_runtime_set_grippers_v2.argtypes = [
             c_void_p, c_float, c_float, c_int32, c_int32,
         ]
@@ -460,6 +539,16 @@ class RuntimeAbi:
         lib.articore_runtime_get_state_v2.restype = c_int32
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
+        lib.articore_runtime_set_tcp_offset.argtypes = [
+            c_void_p, POINTER(CTcpOffset),
+        ]
+        lib.articore_runtime_set_tcp_offset.restype = c_int32
+        lib.articore_runtime_get_tcp_offset.argtypes = [
+            c_void_p, c_uint32, POINTER(CTcpOffset),
+        ]
+        lib.articore_runtime_get_tcp_offset.restype = c_int32
+        lib.articore_runtime_reset_tcp_offset.argtypes = [c_void_p, c_uint32]
+        lib.articore_runtime_reset_tcp_offset.restype = c_int32
         lib.articore_runtime_move_pose.argtypes = [
             c_void_p, c_uint32, float_pointer, c_float,
         ]
@@ -507,6 +596,14 @@ class RuntimeAbi:
             c_void_p, POINTER(CGravityCompensationStatus),
         ]
         lib.articore_runtime_get_gravity_compensation_status.restype = c_int32
+        lib.articore_runtime_start_bimanual_follow.argtypes = [c_void_p, c_uint32]
+        lib.articore_runtime_start_bimanual_follow.restype = c_int32
+        lib.articore_runtime_stop_bimanual_follow.argtypes = [c_void_p]
+        lib.articore_runtime_stop_bimanual_follow.restype = c_int32
+        lib.articore_runtime_get_bimanual_follow_status.argtypes = [
+            c_void_p, POINTER(CBimanualFollowStatus),
+        ]
+        lib.articore_runtime_get_bimanual_follow_status.restype = c_int32
 
 
 _runtime_abi: RuntimeAbi | None = None

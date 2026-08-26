@@ -6,6 +6,8 @@ from .runtime_models import (
     CartesianInterpolation,
     CartesianMotionState,
     CartesianMotionStatus,
+    BimanualFollowPhase,
+    BimanualFollowStatus,
     ConnectChannelResult,
     ConnectErrorCode,
     ConnectMotorResult,
@@ -26,6 +28,8 @@ from .runtime_models import (
     RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
+    TrajectoryState,
+    TrajectoryStatus,
 )
 
 __all__ = [
@@ -34,6 +38,8 @@ __all__ = [
     "CartesianInterpolation",
     "CartesianMotionState",
     "CartesianMotionStatus",
+    "BimanualFollowPhase",
+    "BimanualFollowStatus",
     "ConnectChannelResult",
     "ConnectErrorCode",
     "ConnectMotorResult",
@@ -56,4 +62,6 @@ __all__ = [
     "RuntimeTransportHealth",
     "SafetyHealth",
     "SafetyState",
+    "TrajectoryState",
+    "TrajectoryStatus",
 ]
