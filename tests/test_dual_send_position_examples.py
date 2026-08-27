@@ -16,8 +16,8 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         def enable(self):
             captured["calls"].append("enable")
 
-        def set_max_speed(self, value):
-            captured["max_speed"] = value
+        def set_max_acceleration(self, value):
+            captured["max_acceleration"] = value
 
         def set_joint_pv(self, **kwargs):
             captured.update(kwargs)
@@ -38,7 +38,8 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         lambda prompt: captured["calls"].append("input") or "",
     )
     args = pv_example.build_parser().parse_args([
-        "--velocity", "70", "--max-speed", "90",
+        "--velocity", "70",
+        "--max-acceleration", "4.56",
     ])
     pv_example.main(args)
 
@@ -50,22 +51,23 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
     assert captured["right"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0))
     )
-    assert captured["max_speed"] == 90.0
+    assert captured["max_acceleration"] == pytest.approx(4.56)
     assert captured["velocity"] == 70.0
 
 
-def test_pv_example_defaults_to_tuned_speed_and_validates_max_speed() -> None:
+def test_pv_example_defaults_to_native_acceleration_limit() -> None:
     parser = pv_example.build_parser()
     defaults = parser.parse_args([])
 
     assert defaults.left == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert defaults.right == pv_example.DEFAULT_JOINT_TARGET_DEGREES
-    assert defaults.max_speed == pytest.approx(50.0)
+    assert not hasattr(defaults, "max_speed")
+    assert defaults.max_acceleration == pytest.approx(4.0)
     assert defaults.velocity == pytest.approx(50.0)
-    assert parser.parse_args(["--max-speed", "0"]).max_speed == 0.0
+    assert parser.parse_args(
+        ["--max-acceleration", "4.565"]
+    ).max_acceleration == pytest.approx(4.565)
     assert parser.parse_args(["--velocity", "100"]).velocity == 100.0
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--max-speed", "100.1"])
     with pytest.raises(SystemExit):
         parser.parse_args(["--velocity", "-0.1"])
 

@@ -63,10 +63,10 @@ def main() -> None:
         if not robot.enable():
             raise RuntimeError("whole-product enable was not confirmed")
         enabled = True
-        robot.set_max_speed(10.0)
         robot.set_joint_pv(
             left=initial.left.arm.positions,
             right=initial.right.arm.positions,
+            velocity=10.0,
         )
 
         position_min = list(initial.left.arm.positions + initial.right.arm.positions)

@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can import CartesianMotionState
+from arx_d_can import MotionState
 from arx_d_can.examples.control import example_07_cartesian_circular as circular
 from arx_d_can.examples.control import example_07_cartesian_linear as linear
 from arx_d_can.examples.control import example_07_cartesian_orientation_ptp as orientation
 from arx_d_can.examples.control import example_07_cartesian_ptp as ptp
 
 
-def _status(state: CartesianMotionState, progress: float):
+def _status(state: MotionState, progress: float):
     return SimpleNamespace(
         state=state,
         progress=progress,
@@ -33,8 +33,8 @@ def test_ptp_example_submits_mirrored_dual_arm_targets(monkeypatch) -> None:
         def enable(self) -> None:
             calls.append(("enable",))
 
-        def move_poses(self, **kwargs) -> None:
-            calls.append(("move_poses", kwargs))
+        def move_pose(self, **kwargs) -> None:
+            calls.append(("move_pose", kwargs))
 
         def disconnect(self) -> None:
             calls.append(("disconnect",))
@@ -54,7 +54,7 @@ def test_ptp_example_submits_mirrored_dual_arm_targets(monkeypatch) -> None:
         ("connect",),
         ("enable",),
         (
-            "move_poses",
+            "move_pose",
             {
                 "left_target_pose": ptp.DEFAULT_LEFT_TARGET_POSE,
                 "right_target_pose": ptp.DEFAULT_RIGHT_TARGET_POSE,
@@ -171,11 +171,11 @@ def test_linear_example_uses_three_fifo_edges_for_a_mirrored_equilateral_triangl
             calls.append(("move_linear", kwargs))
             return 6 + sum(call[0] == "move_linear" for call in calls)
 
-        def get_cartesian_motion_status(self, motion_id: int):
+        def get_motion_status(self, motion_id: int):
             assert motion_id in (7, 8, 9)
-            return _status(CartesianMotionState.COMPLETED, 1.0)
+            return _status(MotionState.COMPLETED, 1.0)
 
-        def cancel_cartesian_motion(self) -> None:
+        def cancel_all_motions(self) -> None:
             calls.append(("cancel",))
 
         def disconnect(self) -> None:
@@ -185,7 +185,7 @@ def test_linear_example_uses_three_fifo_edges_for_a_mirrored_equilateral_triangl
     monkeypatch.setattr(linear.time, "sleep", lambda _seconds: None)
     args = linear.build_parser().parse_args([
         "--side", side,
-        "--speed", "20",
+        "--duration", "20",
     ])
 
     linear.main(args)
@@ -248,11 +248,11 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
             calls.append(("move_circular", kwargs))
             return 8 + len(calls) - 1
 
-        def get_cartesian_motion_status(self, motion_id: int):
+        def get_motion_status(self, motion_id: int):
             assert motion_id in (8, 9)
-            return _status(CartesianMotionState.COMPLETED, 1.0)
+            return _status(MotionState.COMPLETED, 1.0)
 
-        def cancel_cartesian_motion(self) -> None:
+        def cancel_all_motions(self) -> None:
             calls.append(("cancel",))
 
         def disconnect(self) -> None:
@@ -261,7 +261,7 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
     monkeypatch.setattr(circular, "ArxDCanDualArm", FakeRobot)
     args = circular.build_parser().parse_args([
         "--side", side,
-        "--speed", "15",
+        "--duration", "15",
     ])
 
     circular.main(args)
@@ -274,7 +274,7 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
                 "start_pose": start,
                 "via_pose": via,
                 "end_pose": end,
-                "speed_percent": 15.0,
+                "duration_s": 15.0,
             },
         ),
         (
@@ -284,7 +284,7 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
                 "start_pose": end,
                 "via_pose": return_via,
                 "end_pose": start,
-                "speed_percent": 15.0,
+                "duration_s": 15.0,
             },
         ),
     ]

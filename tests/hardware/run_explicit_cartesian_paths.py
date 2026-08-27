@@ -6,12 +6,12 @@ import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, CartesianMotionState, SafetyState
+from arx_d_can import ArxDCanDualArm, MotionState, SafetyState
 
 
 JOINT_TARGET = [0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0]
 SETUP_SPEED_PERCENT = 10.0
-CARTESIAN_SPEED_PERCENT = 10.0
+CARTESIAN_DURATION_S = 10.0
 VERTICAL_DISTANCE_M = 0.070
 RIGHT_OFFSET_M = 0.035
 
@@ -72,12 +72,12 @@ def wait_motion(
         if state.sequence != last_sequence:
             samples += 1
             last_sequence = state.sequence
-        status = robot.cartesian_motion_status
+        status = robot.get_motion_status(motion_id)
         if status.motion_id != motion_id:
             raise RuntimeError(
                 f"motion id changed: expected {motion_id}, got {status.motion_id}"
             )
-        if status.state is CartesianMotionState.COMPLETED:
+        if status.state is MotionState.COMPLETED:
             elapsed = time.monotonic() - started
             return {
                 "motion_id": motion_id,
@@ -88,8 +88,8 @@ def wait_motion(
                 "progress": status.progress,
             }
         if status.state in {
-            CartesianMotionState.CANCELLED,
-            CartesianMotionState.FAULT,
+            MotionState.CANCELLED,
+            MotionState.FAULT,
         }:
             raise RuntimeError(
                 f"motion {motion_id} ended as {status.state.value}: {status.error}"
@@ -140,7 +140,7 @@ def main() -> None:
         "vertical_distance_m": VERTICAL_DISTANCE_M,
         "right_offset_m": RIGHT_OFFSET_M,
         "right_direction": "base -Y",
-        "speed_percent": CARTESIAN_SPEED_PERCENT,
+        "duration_s": CARTESIAN_DURATION_S,
     }
     try:
         robot.connect()
@@ -154,8 +154,11 @@ def main() -> None:
         if not robot.enable():
             raise RuntimeError("whole-product enable was not confirmed")
         enabled = True
-        robot.set_max_speed(SETUP_SPEED_PERCENT)
-        robot.set_joint_pv(left=JOINT_TARGET, right=initial_right)
+        robot.set_joint_pv(
+            left=JOINT_TARGET,
+            right=initial_right,
+            velocity=SETUP_SPEED_PERCENT,
+        )
         report["joint_setup"] = wait_joint_target(robot, JOINT_TARGET)
         time.sleep(0.25)
 
@@ -175,7 +178,7 @@ def main() -> None:
             side="left",
             start_pose=start,
             end_pose=end,
-            speed_percent=CARTESIAN_SPEED_PERCENT,
+            duration_s=CARTESIAN_DURATION_S,
         )
         report["linear_up"] = wait_motion(robot, motion_id)
         report["linear_up_pose"] = pose_report(robot, end)
@@ -184,7 +187,7 @@ def main() -> None:
             side="left",
             start_pose=end,
             end_pose=start,
-            speed_percent=CARTESIAN_SPEED_PERCENT,
+            duration_s=CARTESIAN_DURATION_S,
         )
         report["linear_return"] = wait_motion(robot, motion_id)
         report["linear_return_pose"] = pose_report(robot, start)
@@ -194,7 +197,7 @@ def main() -> None:
             start_pose=start,
             via_pose=via,
             end_pose=end,
-            speed_percent=CARTESIAN_SPEED_PERCENT,
+            duration_s=CARTESIAN_DURATION_S,
         )
         report["circular_up"] = wait_motion(robot, motion_id)
         report["circular_up_pose"] = pose_report(robot, end)
@@ -203,7 +206,7 @@ def main() -> None:
             side="left",
             start_pose=end,
             end_pose=start,
-            speed_percent=CARTESIAN_SPEED_PERCENT,
+            duration_s=CARTESIAN_DURATION_S,
         )
         report["final_linear_return"] = wait_motion(robot, motion_id)
         report["final_linear_return_pose"] = pose_report(robot, start)
@@ -212,13 +215,17 @@ def main() -> None:
             flush=True,
         )
 
-        robot.set_joint_pv(left=initial_left, right=initial_right)
+        robot.set_joint_pv(
+            left=initial_left,
+            right=initial_right,
+            velocity=SETUP_SPEED_PERCENT,
+        )
         report["restore"] = wait_joint_target(robot, initial_left)
         report["health"] = robot.get_health().state.name
         print(json.dumps(report, indent=2, ensure_ascii=False))
     finally:
         try:
-            robot.cancel_cartesian_motion()
+            robot.cancel_all_motions()
         except Exception:
             pass
         if enabled:

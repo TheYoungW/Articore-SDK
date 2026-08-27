@@ -33,8 +33,7 @@ def set_joint_positions(
     if mode == "mit":
         robot.set_joint_mit(left=left, right=right, velocity=SPEED_PERCENT)
     else:
-        robot.set_max_speed(SPEED_PERCENT)
-        robot.set_joint_pv(left=left, right=right)
+        robot.set_joint_pv(left=left, right=right, velocity=SPEED_PERCENT)
 
 
 def require_motion_health(robot: ArxDCanDualArm) -> None:

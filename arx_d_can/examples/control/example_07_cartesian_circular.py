@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import time
 
-from arx_d_can import ArxDCanDualArm, CartesianMotionState
-from arx_d_can.examples.common import pose_values, positive_speed_percent
+from arx_d_can import ArxDCanDualArm, MotionState
+from arx_d_can.examples.common import pose_values, positive_duration_s
 
 
 DEFAULT_LEFT_START_POSE = (
@@ -112,7 +112,7 @@ def main(args: argparse.Namespace) -> None:
             start_pose=args.start,
             via_pose=args.via,
             end_pose=args.end,
-            speed_percent=args.speed,
+            duration_s=args.duration,
         )
         submitted = True
         try:
@@ -121,18 +121,18 @@ def main(args: argparse.Namespace) -> None:
                 start_pose=args.end,
                 via_pose=args.return_via,
                 end_pose=args.start,
-                speed_percent=args.speed,
+                duration_s=args.duration,
             )
         except Exception:
-            robot.cancel_cartesian_motion()
+            robot.cancel_all_motions()
             raise
         print(
             f"{args.side} 完整圆运动已提交："
             f"motion_ids=[{outward_motion_id}, {return_motion_id}]"
         )
         while True:
-            outward_status = robot.get_cartesian_motion_status(outward_motion_id)
-            return_status = robot.get_cartesian_motion_status(return_motion_id)
+            outward_status = robot.get_motion_status(outward_motion_id)
+            return_status = robot.get_motion_status(return_motion_id)
             progress = (outward_status.progress + return_status.progress) / 2.0
             print(
                 f"\rstate=[{outward_status.state.value}, "
@@ -141,14 +141,14 @@ def main(args: argparse.Namespace) -> None:
                 flush=True,
             )
             if (
-                outward_status.state is CartesianMotionState.COMPLETED
-                and return_status.state is CartesianMotionState.COMPLETED
+                outward_status.state is MotionState.COMPLETED
+                and return_status.state is MotionState.COMPLETED
             ):
                 print("\n完整圆执行完成，机械臂已回到起点")
                 return
             if (
-                outward_status.state is CartesianMotionState.CANCELLED
-                or return_status.state is CartesianMotionState.CANCELLED
+                outward_status.state is MotionState.CANCELLED
+                or return_status.state is MotionState.CANCELLED
             ):
                 print("\n运动已取消")
                 return
@@ -156,7 +156,7 @@ def main(args: argparse.Namespace) -> None:
                 (
                     status
                     for status in (outward_status, return_status)
-                    if status.state is CartesianMotionState.FAULT
+                    if status.state is MotionState.FAULT
                 ),
                 None,
             )
@@ -174,7 +174,7 @@ def main(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         if submitted:
             print("\n正在取消当前圆弧运动……")
-            robot.cancel_cartesian_motion()
+            robot.cancel_all_motions()
         else:
             print("\n用户中断")
     finally:
@@ -209,10 +209,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="返回半圆经由点 x,y,z,roll,pitch,yaw（米、弧度）",
     )
     parser.add_argument(
-        "--speed",
-        type=positive_speed_percent,
+        "--duration",
+        type=positive_duration_s,
         required=True,
-        help="速度百分比，范围 (0, 100]",
+        help="每段半圆完整任务的计划时间（秒，包含自动接近起点）",
     )
     return parser
 

@@ -28,7 +28,8 @@ def _move_to_start(
     target: DualArmTrajectorySample,
     *,
     start_velocity: float,
-    max_speed_percent: float,
+    start_speed_percent: float,
+    max_acceleration_rad_s2: float,
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
@@ -40,11 +41,11 @@ def _move_to_start(
     current_left = tuple(state.left.arm.positions)
     current_right = tuple(state.right.arm.positions)
     if robot.control_mode == "pv":
-        robot.set_max_speed(max_speed_percent)
+        robot.set_max_acceleration(max_acceleration_rad_s2)
         robot.set_joint_pv(
             left=target.left_positions,
             right=target.right_positions,
-            velocity=max_speed_percent,
+            velocity=start_speed_percent,
         )
     else:
         largest_move = max(
@@ -118,7 +119,9 @@ def main(args: argparse.Namespace) -> None:
     try:
         robot.enable()
         if args.mode == "pv":
-            print(f"正以 {args.max_speed:g}% 最大速度移动双臂到轨迹起点……")
+            print(
+                f"正以 {args.start_speed:g}% 速度移动双臂到轨迹起点……"
+            )
         else:
             print(
                 f"正以 {math.degrees(args.start_velocity):g}°/s "
@@ -128,7 +131,8 @@ def main(args: argparse.Namespace) -> None:
             robot,
             first,
             start_velocity=args.start_velocity,
-            max_speed_percent=args.max_speed,
+            start_speed_percent=args.start_speed,
+            max_acceleration_rad_s2=args.max_acceleration,
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
@@ -174,10 +178,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="MIT 返回轨迹起点的统一速度，单位为度/秒；PV 模式忽略；默认 30",
     )
     parser.add_argument(
-        "--max-speed",
+        "--start-speed",
         type=speed_percent,
         default=50.0,
-        help="PV reference 速度百分比 0–100；MIT 模式忽略；默认 50（1 rad/s）",
+        help="PV 返回轨迹起点的单次速度百分比 0–100；默认 50",
+    )
+    parser.add_argument(
+        "--max-acceleration",
+        type=float,
+        default=4.0,
+        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略；默认 4.00",
     )
     parser.add_argument(
         "--interpolation",

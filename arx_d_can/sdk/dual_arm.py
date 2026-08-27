@@ -7,14 +7,13 @@ from typing import Sequence
 
 from arx_d_can._motor_abi import (
     ArticoreRuntime,
-    CartesianMotionStatus,
     GravityCompensationStatus,
     JointLimit,
+    MotionStatus,
     BimanualFollowStatus,
     RuntimeControlMode,
     SafetyHealth,
     SafetyState,
-    TrajectoryStatus,
     ProductPose,
 )
 
@@ -148,17 +147,17 @@ class ArxDCanDualArm:
         """非阻塞返回最近 0.1 秒窗口内的双通道 CAN 总帧率。"""
         return self._runtime.get_fps()
 
-    def set_max_speed(self, max_speed_percent: float) -> None:
-        """设置普通 PV reference 速度百分比；0～100 线性对应 0～2 rad/s。"""
+    def set_max_acceleration(self, max_acceleration_rad_s2: float) -> None:
+        """设置普通 PV 最大加速度，单位为 rad/s²。"""
         if self._runtime.control_mode is not RuntimeControlMode.PV:
-            raise RuntimeError("set_max_speed() requires PV mode")
-        self._runtime.set_max_speed(max_speed_percent)
+            raise RuntimeError("set_max_acceleration() requires PV mode")
+        self._runtime.set_max_acceleration(max_acceleration_rad_s2)
 
-    def get_max_speed(self) -> float:
-        """返回普通 PV 位置运动的当前最大速度百分比。"""
+    def get_max_acceleration(self) -> float:
+        """返回普通 PV 最大加速度，单位为 rad/s²。"""
         if self._runtime.control_mode is not RuntimeControlMode.PV:
-            raise RuntimeError("get_max_speed() requires PV mode")
-        return self._runtime.get_max_speed()
+            raise RuntimeError("get_max_acceleration() requires PV mode")
+        return self._runtime.get_max_acceleration()
 
     def get_joint_limits(self) -> dict[str, JointLimit]:
         """返回 Runtime 实际使用的14关节产品逻辑限位。"""
@@ -279,15 +278,6 @@ class ArxDCanDualArm:
             ),
         )
 
-    @property
-    def trajectory_status(self) -> TrajectoryStatus:
-        """返回原生 14 关节轨迹的最新状态快照。"""
-        return self._runtime.trajectory_status
-
-    def cancel_trajectory(self) -> None:
-        """幂等取消原生关节轨迹；不用于笛卡尔 Linear/Circular。"""
-        self._runtime.cancel_trajectory()
-
     def read_state(self) -> ArxDCanDualArmState:
         value = self._runtime.state
 
@@ -298,6 +288,8 @@ class ArxDCanDualArm:
                     opening=gripper_source.opening,
                     gripper_level=gripper_source.gripper_level,
                     enabled=gripper_source.enabled,
+                    mos_temperature=gripper_source.mos_temperature,
+                    rotor_temperature=gripper_source.rotor_temperature,
                 )
             return ArxDCanState(
                 arm=JointState(
@@ -306,6 +298,8 @@ class ArxDCanDualArm:
                     velocities=source.velocities,
                     torques=source.torques,
                     enabled=source.enabled,
+                    mos_temperatures=source.mos_temperatures,
+                    rotor_temperatures=source.rotor_temperatures,
                 ),
                 gripper=gripper,
             )
@@ -344,20 +338,14 @@ class ArxDCanDualArm:
         self._runtime.reset_tcp_offset(_side(side))
 
     def move_pose(
-        self, *, side: str, target_pose: Sequence[float], speed_percent: float = 50.0
-    ) -> None:
-        """提交普通 PV PTP 目标；无 motion ID、状态查询或取消接口。"""
-        self._runtime.move_pose(_side(side), target_pose, speed_percent)
-
-    def move_poses(
         self,
         *,
         left_target_pose: Sequence[float],
         right_target_pose: Sequence[float],
         speed_percent: float = 50.0,
     ) -> None:
-        """原子提交双臂 PTP；两侧 IK 全部成功后同步启动。"""
-        self._runtime.move_poses(
+        """提交完整双臂 PTP；两侧 IK 成功后安装同一个 PV 目标。"""
+        self._runtime.move_pose(
             left_target_pose, right_target_pose, speed_percent
         )
 
@@ -367,11 +355,11 @@ class ArxDCanDualArm:
         side: str,
         start_pose: Sequence[float],
         end_pose: Sequence[float],
-        speed_percent: float,
+        duration_s: float,
     ) -> int:
-        """提交 Runtime 复合任务：PTP 到 start_pose，再执行直线路径。"""
+        """按完整任务时间提交自动接近加直线路径。"""
         return self._runtime.move_linear(
-            _side(side), start_pose, end_pose, speed_percent
+            _side(side), start_pose, end_pose, duration_s
         )
 
     def move_circular(
@@ -381,27 +369,24 @@ class ArxDCanDualArm:
         start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
-        speed_percent: float,
+        duration_s: float,
     ) -> int:
-        """提交 Runtime 复合任务：PTP 到 start_pose，再执行圆弧路径。"""
+        """按完整任务时间提交自动接近加圆弧路径。"""
         return self._runtime.move_circular(
-            _side(side), start_pose, via_pose, end_pose, speed_percent
+            _side(side), start_pose, via_pose, end_pose, duration_s
         )
 
-    @property
-    def cartesian_motion_status(self) -> CartesianMotionStatus:
-        """返回最近提交的直线或圆弧运动状态。"""
-        return self._runtime.cartesian_motion_status
+    def get_motion_status(self, motion_id: int) -> MotionStatus:
+        """按统一 Motion ID 查询关节、Linear 或 Circular 任务。"""
+        return self._runtime.get_motion_status(motion_id)
 
-    def get_cartesian_motion_status(
-        self, motion_id: int
-    ) -> CartesianMotionStatus:
-        """按 Linear/Circular motion_id 查询队列、运行或完成状态。"""
-        return self._runtime.get_cartesian_motion_status(motion_id)
+    def cancel_motion(self, motion_id: int) -> None:
+        """取消指定任务；具体依赖处理与安全保持由 Runtime 完成。"""
+        self._runtime.cancel_motion(motion_id)
 
-    def cancel_cartesian_motion(self) -> None:
-        """取消当前 Linear/Circular 和排队路径，并保持最后 PV 参考。"""
-        self._runtime.cancel_cartesian_motion()
+    def cancel_all_motions(self) -> None:
+        """取消全部关节和笛卡尔轨迹任务。"""
+        self._runtime.cancel_all_motions()
 
     def set_grippers(
         self,

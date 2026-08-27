@@ -53,6 +53,14 @@ def positive_speed_percent(text: str) -> float:
     return value
 
 
+def positive_duration_s(text: str) -> float:
+    """解析正的有限计划时间，单位为秒。"""
+    value = float(text)
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError("计划时间必须是正的有限秒数")
+    return value
+
+
 def pose_values(text: str) -> tuple[float, ...]:
     """解析 [x, y, z, roll, pitch, yaw]，单位为米和弧度。"""
     values = tuple(float(value) for value in text.split(",") if value.strip())

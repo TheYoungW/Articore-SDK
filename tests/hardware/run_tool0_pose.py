@@ -7,7 +7,7 @@ import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, CartesianMotionState, SafetyState
+from arx_d_can import ArxDCanDualArm, MotionState, SafetyState
 
 
 TOOL_OFFSET = (-0.004, 0.0, -0.178)
@@ -77,12 +77,12 @@ def wait_motion(
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         require_healthy(robot)
-        status = robot.cartesian_motion_status
+        status = robot.get_motion_status(motion_id)
         if status.motion_id != motion_id:
             raise RuntimeError(
                 f"motion id changed: expected {motion_id}, got {status.motion_id}"
             )
-        if status.state is CartesianMotionState.COMPLETED:
+        if status.state is MotionState.COMPLETED:
             return {
                 "motion_id": motion_id,
                 "state": status.state.value,
@@ -91,8 +91,8 @@ def wait_motion(
                 "progress": status.progress,
             }
         if status.state in {
-            CartesianMotionState.CANCELLED,
-            CartesianMotionState.FAULT,
+            MotionState.CANCELLED,
+            MotionState.FAULT,
         }:
             if allow_fault:
                 return {
@@ -170,7 +170,7 @@ def collect_hold(
     while time.monotonic() < deadline:
         require_healthy(robot)
         if motion_id is not None:
-            status = robot.cartesian_motion_status
+            status = robot.get_motion_status(motion_id)
             if status.motion_id != motion_id:
                 raise RuntimeError(
                     f"hold motion id changed: expected {motion_id}, "
@@ -204,12 +204,12 @@ def collect_hold(
         "final_status": (
             "not_available_for_ptp"
             if motion_id is None
-            else robot.cartesian_motion_status.state.value
+            else robot.get_motion_status(motion_id).state.value
         ),
         "final_status_error": (
             None
             if motion_id is None
-            else robot.cartesian_motion_status.error
+            else robot.get_motion_status(motion_id).error
         ),
     }
 
@@ -222,8 +222,7 @@ def bring_left_joint4_inside_limit(robot: ArxDCanDualArm) -> dict[str, object] |
     left = list(state.left.arm.positions)
     right = list(state.right.arm.positions)
     left[3] = -0.15
-    robot.set_max_speed(5.0)
-    robot.set_joint_pv(left=left, right=right)
+    robot.set_joint_pv(left=left, right=right, velocity=5.0)
     deadline = time.monotonic() + 8.0
     while time.monotonic() < deadline:
         require_healthy(robot)
@@ -250,10 +249,10 @@ def restore_left_joint_pose(target: list[float]) -> dict[str, object]:
             raise RuntimeError("whole-product enable was not confirmed")
         enabled = True
         current = robot.read_state()
-        robot.set_max_speed(5.0)
         robot.set_joint_pv(
             left=target,
             right=current.right.arm.positions,
+            velocity=5.0,
         )
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
@@ -287,6 +286,7 @@ def move_and_return(
     distance_m: float,
     *,
     speed_percent: float = 10.0,
+    duration_s: float = 10.0,
     hold_seconds: float = 5.0,
 ) -> dict[str, object]:
     robot = ArxDCanDualArm(control_mode="pv", with_grippers=True)
@@ -301,15 +301,19 @@ def move_and_return(
         start = robot.get_pose(side)
         target = list(start)
         target[2] += distance_m
+        other_side = "right" if side == "left" else "left"
+        other_target = robot.get_pose(other_side)
         robot.move_pose(
-            side=side, target_pose=target, speed_percent=speed_percent
+            left_target_pose=target if side == "left" else other_target,
+            right_target_pose=target if side == "right" else other_target,
+            speed_percent=speed_percent,
         )
         outbound = wait_ptp_pose(robot, side, target, 15.0)
         outbound_hold = collect_hold(robot, None, seconds=hold_seconds)
         reached = robot.get_pose(side)
         return_id = robot.move_linear(
             side=side, start_pose=reached, end_pose=start,
-            speed_percent=speed_percent,
+            duration_s=duration_s,
         )
         returned = wait_motion(robot, return_id, 15.0, allow_fault=True)
         return_hold = collect_hold(
@@ -333,7 +337,7 @@ def move_and_return(
         }
     finally:
         try:
-            robot.cancel_cartesian_motion()
+            robot.cancel_all_motions()
         except Exception:
             pass
         if enabled:
@@ -349,6 +353,7 @@ def main() -> None:
     parser.add_argument("--move-mm", type=float, default=0.0)
     parser.add_argument("--side", choices=("left", "right"), default="left")
     parser.add_argument("--speed-percent", type=float, default=10.0)
+    parser.add_argument("--duration-s", type=float, default=10.0)
     parser.add_argument("--hold-seconds", type=float, default=5.0)
     parser.add_argument(
         "--restore-left",
@@ -390,6 +395,7 @@ def main() -> None:
             args.side,
             args.move_mm / 1000.0,
             speed_percent=args.speed_percent,
+            duration_s=args.duration_s,
             hold_seconds=args.hold_seconds,
         )
     print(json.dumps(report, indent=2, ensure_ascii=False))

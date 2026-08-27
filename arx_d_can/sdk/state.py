@@ -11,6 +11,8 @@ class DualArmGripperState:
     opening: float
     gripper_level: int
     enabled: bool | None = None
+    mos_temperature: float | None = None
+    rotor_temperature: float | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -20,6 +22,8 @@ class JointState:
     velocities: tuple[float, ...]
     torques: tuple[float, ...]
     enabled: tuple[bool | None, ...] = (None,) * 7
+    mos_temperatures: tuple[float | None, ...] = (None,) * 7
+    rotor_temperatures: tuple[float | None, ...] = (None,) * 7
 
 
 @dataclass(slots=True, frozen=True)

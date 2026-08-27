@@ -32,7 +32,7 @@ def main(args: argparse.Namespace) -> None:
     try:
         robot.connect()
         robot.enable()
-        robot.move_poses(
+        robot.move_pose(
             left_target_pose=args.left_target,
             right_target_pose=args.right_target,
             speed_percent=args.speed,

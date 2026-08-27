@@ -26,7 +26,8 @@ TRAJECTORY_PATH = (
 JOINT_NAMES = tuple(f"joint{index}" for index in range(1, 8))
 EXPECTED_SAMPLE_COUNT = 200
 DISCONTINUITY_RATE_RAD_S = 10.0
-PV_MAX_SPEED_PERCENT = 50.0
+PV_START_SPEED_PERCENT = 50.0
+PV_MAX_ACCELERATION_RAD_S2 = 4.0
 MIT_START_VELOCITY_RAD_S = math.radians(30.0)
 START_TIMEOUT_S = 30.0
 POSITION_TOLERANCE_RAD = math.radians(1.0)
@@ -162,7 +163,8 @@ def _run_hardware(
                 robot,
                 samples[0],
                 start_velocity=MIT_START_VELOCITY_RAD_S,
-                max_speed_percent=PV_MAX_SPEED_PERCENT,
+                start_speed_percent=PV_START_SPEED_PERCENT,
+                max_acceleration_rad_s2=PV_MAX_ACCELERATION_RAD_S2,
                 timeout=START_TIMEOUT_S,
                 position_tolerance=POSITION_TOLERANCE_RAD,
                 velocity_tolerance=VELOCITY_TOLERANCE_RAD_S,

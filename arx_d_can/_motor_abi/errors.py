@@ -3,9 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .runtime_models import (
-        ConnectReport, DisableReport, EnableReport, MotorPowerReport,
-    )
+    from .runtime_models import MotorPowerReport
 
 
 class AbiLoadError(RuntimeError):
@@ -22,7 +20,7 @@ class RuntimeTransactionError(RuntimeCallError):
     def __init__(
         self,
         message: str,
-        report: ConnectReport | EnableReport | DisableReport | MotorPowerReport,
+        report: MotorPowerReport,
     ) -> None:
         super().__init__(message)
         self.report = report

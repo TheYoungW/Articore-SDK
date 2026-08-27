@@ -6,38 +6,23 @@ from threading import Event, RLock, Thread
 from types import TracebackType
 
 from ._runtime_abi import (
-    CCartesianMotionStatus,
-    CConnectReport,
-    CDisableReport,
-    CEnableReport,
     CGravityCompensationConfig,
     CGravityCompensationStatus,
     CBimanualFollowStatus,
     CMotorPowerReport,
+    CMotionStatus,
     CProductJointAngleVelLimits,
     CProductPose,
-    CProductStateV2,
+    CProductState,
     CRuntimeTransportHealth,
-    CSafetyHealthV2,
+    CSafetyHealth,
     CTrajectoryConfig,
-    CTrajectoryStatus,
     CTrajectoryWaypoint,
     CTcpOffset,
     get_runtime_abi,
 )
 from .errors import RuntimeCallError, RuntimeTransactionError
 from .runtime_models import (
-    CartesianInterpolation,
-    CartesianMotionState,
-    CartesianMotionStatus,
-    ConnectChannelResult,
-    ConnectErrorCode,
-    ConnectMotorResult,
-    ConnectReport,
-    DisableMotorResult,
-    DisableReport,
-    EnableMotorResult,
-    EnableReport,
     GripperControlState,
     GripperHealth,
     GravityCompensationPhase,
@@ -46,6 +31,9 @@ from .runtime_models import (
     BimanualFollowStatus,
     MotorPowerReport,
     MotorPowerResult,
+    MotionState,
+    MotionStatus,
+    MotionType,
     JointLimit,
     RuntimeControlMode,
     RuntimeOperation,
@@ -57,8 +45,6 @@ from .runtime_models import (
     RuntimeTransportHealth,
     SafetyHealth,
     SafetyState,
-    TrajectoryState,
-    TrajectoryStatus,
 )
 
 _UINT64_MAX = (1 << 64) - 1
@@ -75,6 +61,12 @@ def _optional_text(value: object) -> str | None:
 
 def _optional_age(value: int) -> int | None:
     return None if int(value) == _UINT64_MAX else int(value)
+
+
+def _motion_id(value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError("motion_id must be a positive integer")
+    return value
 
 
 def _transport_health(value: CRuntimeTransportHealth) -> RuntimeTransportHealth:
@@ -242,18 +234,13 @@ class ArticoreRuntime:
             self._runtime_abi.lib.articore_runtime_get_gravity_compensation_status,
             "get_gravity_compensation_status", ctypes.byref(native),
         )
-        count = min(int(native.joint_count), len(native.joints))
-        joints = tuple(
-            f"{side}/{prefix}-joint{index}"
-            for side, prefix in (("left", "l"), ("right", "r"))
-            for index in range(1, 8)
-        )[:count]
+        count = min(int(native.joint_count), 14)
         return GravityCompensationStatus(
             phase=GravityCompensationPhase(native.phase),
             active=bool(native.active),
             transition_progress=float(native.transition_progress),
             control_cycles=int(native.control_cycles),
-            joints=joints,
+            joint_count=count,
             gravity_feedforward_torque=tuple(
                 float(native.gravity_feedforward_torque[index])
                 for index in range(count)
@@ -301,66 +288,9 @@ class ArticoreRuntime:
             error=error or None,
         )
 
-    def connect(self) -> ConnectReport:
-        with self._lock:
-            rc = int(self._runtime_abi.lib.articore_runtime_connect(
-                self._require_open()
-            ))
-            failure = self._last_error() if rc != 0 else None
-            report = self.last_connect_report()
-            if rc != 0:
-                raise RuntimeTransactionError(
-                    f"connect failed: {failure}", report
-                )
+    def connect(self) -> None:
+        self._call(self._runtime_abi.lib.articore_runtime_connect, "connect")
         self._start_fps_monitor()
-        return report
-
-    def last_connect_report(self) -> ConnectReport:
-        native = CConnectReport()
-        native.struct_size = ctypes.sizeof(CConnectReport)
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_last_connect_report,
-            "get_last_connect_report", ctypes.byref(native),
-        )
-        channels = tuple(
-            ConnectChannelResult(
-                side=int(item.side), active=bool(item.active),
-                request_code=int(item.request_code),
-                expected_count=int(item.expected_count),
-                received_count=int(item.received_count),
-                missing_motor_ids=tuple(
-                    int(item.missing_motor_ids[index])
-                    for index in range(min(int(item.missing_count), 32))
-                ),
-                error=_optional_text(item.error),
-            )
-            for item in native.channels
-            if item.active
-        )
-        motors = tuple(
-            ConnectMotorResult(
-                side=int(item.side),
-                configured_can_id=int(item.configured_can_id),
-                reported_can_id=int(item.reported_can_id),
-                has_feedback=bool(item.has_feedback),
-                feedback_fresh=bool(item.feedback_fresh),
-                feedback_valid=bool(item.feedback_valid),
-                update_count=int(item.update_count),
-                feedback_age_ns=_optional_age(item.feedback_age_ns),
-                name=_text(item.name), error=_optional_text(item.error),
-            )
-            for item in native.motors[:min(int(native.motor_count), 32)]
-        )
-        return ConnectReport(
-            success=bool(native.success),
-            error_code=ConnectErrorCode(native.error_code),
-            expected_count=int(native.expected_count),
-            received_count=int(native.received_count),
-            missing_count=int(native.missing_count),
-            failure_count=int(native.failure_count),
-            channels=channels, motors=motors,
-            error=_optional_text(native.error),
-        )
 
     def _motor_power_report(self, native: CMotorPowerReport) -> MotorPowerReport:
         count = min(int(native.motor_count), 32)
@@ -418,39 +348,11 @@ class ArticoreRuntime:
             return self._set_motor_power(motors, enabled=True)
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_enable(
-                self._require_open(), int(self._control_mode)
+                self._require_open()
             ))
             if rc != 0:
-                raise RuntimeTransactionError(
-                    f"enable failed: {self._last_error()}",
-                    self._last_enable_report(),
-                )
+                raise RuntimeCallError(f"enable failed: {self._last_error()}")
         return True
-
-    def _last_enable_report(self) -> EnableReport:
-        native = CEnableReport()
-        native.struct_size = ctypes.sizeof(CEnableReport)
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_last_enable_report,
-            "get_last_enable_report", ctypes.byref(native),
-        )
-        count = min(int(native.motor_count), 32)
-        missing_count = min(int(native.missing_count), 32)
-        return EnableReport(
-            success=bool(native.success), disable_confirmed=bool(native.disable_confirmed),
-            expected_count=int(native.expected_count), enabled_count=int(native.enabled_count),
-            missing_count=int(native.missing_count), failure_count=int(native.failure_count),
-            missing_motors=tuple(
-                (int(native.missing_motor_sides[i]), int(native.missing_motor_ids[i]))
-                for i in range(missing_count)
-            ),
-            motors=tuple(EnableMotorResult(
-                side=int(item.side), can_id=int(item.can_id), status_code=int(item.status_code),
-                has_feedback=bool(item.has_feedback), feedback_fresh=bool(item.feedback_fresh),
-                enabled=bool(item.enabled), name=_text(item.name),
-            ) for item in native.motors[:count]),
-            error=_optional_text(native.error),
-        )
 
     def disable(self, motors: Sequence[str] | None = None) -> bool:
         if motors is not None:
@@ -458,36 +360,8 @@ class ArticoreRuntime:
         with self._lock:
             rc = int(self._runtime_abi.lib.articore_runtime_disable(self._require_open()))
             if rc != 0:
-                raise RuntimeTransactionError(
-                    f"disable failed: {self._last_error()}",
-                    self._last_disable_report(),
-                )
+                raise RuntimeCallError(f"disable failed: {self._last_error()}")
         return True
-
-    def _last_disable_report(self) -> DisableReport:
-        native = CDisableReport()
-        native.struct_size = ctypes.sizeof(CDisableReport)
-        self._call(self._runtime_abi.lib.articore_runtime_get_last_disable_report,
-                   "get_last_disable_report", ctypes.byref(native))
-        count = min(int(native.motor_count), 32)
-        missing_count = min(int(native.missing_count), 32)
-        return DisableReport(
-            success=bool(native.success), barrier_confirmed=bool(native.barrier_confirmed),
-            expected_count=int(native.expected_count), disabled_count=int(native.disabled_count),
-            missing_count=int(native.missing_count), failure_count=int(native.failure_count),
-            retry_count=int(native.retry_count),
-            missing_motors=tuple(
-                (int(native.missing_motor_sides[i]), int(native.missing_motor_ids[i]))
-                for i in range(missing_count)
-            ),
-            motors=tuple(DisableMotorResult(
-                side=int(item.side), can_id=int(item.can_id), status_code=int(item.status_code),
-                has_feedback=bool(item.has_feedback), feedback_fresh=bool(item.feedback_fresh),
-                disabled=bool(item.disabled), disable_sent=bool(item.disable_sent),
-                retry_sent=bool(item.retry_sent), name=_text(item.name),
-            ) for item in native.motors[:count]),
-            error=_optional_text(native.error),
-        )
 
     def estop(self) -> None:
         """请求原生 Runtime 执行整机急停并锁存急停状态。"""
@@ -523,19 +397,19 @@ class ArticoreRuntime:
             if failure is not None:
                 raise RuntimeCallError(f"disconnect failed: {failure}")
 
-    def set_max_speed(self, max_speed_percent: float) -> None:
-        """Set persistent PV reference speed; 0..100 maps to 0..2 rad/s."""
+    def set_max_acceleration(self, max_acceleration_rad_s2: float) -> None:
+        """Set the ordinary-PV maximum acceleration in rad/s²."""
         self._call(
-            self._runtime_abi.lib.articore_runtime_set_max_speed,
-            "set_max_speed", float(max_speed_percent),
+            self._runtime_abi.lib.articore_runtime_set_max_acceleration,
+            "set_max_acceleration", float(max_acceleration_rad_s2),
         )
 
-    def get_max_speed(self) -> float:
-        """Return the persistent 0..100 ordinary-PV reference percentage."""
+    def get_max_acceleration(self) -> float:
+        """Return the ordinary-PV maximum acceleration in rad/s²."""
         value = ctypes.c_float()
         self._call(
-            self._runtime_abi.lib.articore_runtime_get_max_speed,
-            "get_max_speed", ctypes.byref(value),
+            self._runtime_abi.lib.articore_runtime_get_max_acceleration,
+            "get_max_acceleration", ctypes.byref(value),
         )
         return float(value.value)
 
@@ -693,65 +567,23 @@ class ArticoreRuntime:
         native_config.pv_velocity_limits[:] = vector(
             "pv_velocity_limits", pv_velocity_limits
         )
-        # The current C ABI returns the id through the status snapshot. Keep
-        # submission and that snapshot under one binding lock so another SDK
-        # thread cannot install a different trajectory between the two calls.
-        with self._lock:
-            self._call(
-                self._runtime_abi.lib.articore_runtime_start_trajectory,
-                "start_trajectory",
-                native_waypoints,
-                count,
-                ctypes.byref(native_config),
-            )
-            return self.trajectory_status.trajectory_id
-
-    @property
-    def trajectory_status(self) -> TrajectoryStatus:
-        native = CTrajectoryStatus()
-        native.struct_size = ctypes.sizeof(native)
+        motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_get_trajectory_status,
-            "get_trajectory_status",
-            ctypes.byref(native),
+            self._runtime_abi.lib.articore_runtime_start_trajectory,
+            "start_trajectory",
+            native_waypoints,
+            count,
+            ctypes.byref(native_config),
+            ctypes.byref(motion_id),
         )
-        states = {
-            0: TrajectoryState.IDLE,
-            1: TrajectoryState.RUNNING,
-            2: TrajectoryState.COMPLETED,
-            3: TrajectoryState.CANCELLED,
-            4: TrajectoryState.FAULT,
-            5: TrajectoryState.QUEUED,
-        }
-        try:
-            state = states[int(native.state)]
-        except KeyError as exc:
-            raise RuntimeCallError(
-                f"get_trajectory_status returned unknown state {int(native.state)}"
-            ) from exc
-        return TrajectoryStatus(
-            state=state,
-            trajectory_id=int(native.trajectory_id),
-            active_segment=int(native.active_segment),
-            waypoint_count=int(native.waypoint_count),
-            elapsed_s=float(native.elapsed_s),
-            duration_s=float(native.duration_s),
-            progress=float(native.progress),
-            error=_optional_text(native.error),
-        )
-
-    def cancel_trajectory(self) -> None:
-        self._call(
-            self._runtime_abi.lib.articore_runtime_cancel_trajectory,
-            "cancel_trajectory",
-        )
+        return int(motion_id.value)
 
     def set_product_grippers(
         self, *, left: float, right: float, gripper_level: int, mode: int
     ) -> None:
         self._call(
-            self._runtime_abi.lib.articore_runtime_set_grippers_v2,
-            "set_product_grippers_v2", float(left), float(right),
+            self._runtime_abi.lib.articore_runtime_set_grippers,
+            "set_grippers", float(left), float(right),
             int(gripper_level), int(mode),
         )
 
@@ -766,11 +598,11 @@ class ArticoreRuntime:
 
     @property
     def state(self) -> ProductState:
-        native = CProductStateV2()
+        native = CProductState()
         native.struct_size = ctypes.sizeof(native)
         self._call(
-            self._runtime_abi.lib.articore_runtime_get_state_v2,
-            "get_state_v2", ctypes.byref(native),
+            self._runtime_abi.lib.articore_runtime_get_state,
+            "get_state", ctypes.byref(native),
         )
         def arm(value) -> ProductArmState:
             enabled = tuple(
@@ -778,20 +610,35 @@ class ArticoreRuntime:
                 if value.enabled_valid_mask & (1 << index) else None
                 for index in range(7)
             )
+            mos_temperatures = tuple(
+                float(value.mos_temperatures[index])
+                if value.temperature_valid_mask & (1 << index) else None
+                for index in range(7)
+            )
+            rotor_temperatures = tuple(
+                float(value.rotor_temperatures[index])
+                if value.temperature_valid_mask & (1 << index) else None
+                for index in range(7)
+            )
             return ProductArmState(
                 tuple(float(item) for item in value.positions),
                 tuple(float(item) for item in value.velocities),
                 tuple(float(item) for item in value.torques),
                 enabled,
+                mos_temperatures,
+                rotor_temperatures,
             )
         def gripper(
             available, opening, level, enabled, enabled_valid,
+            mos_temperature, rotor_temperature, temperature_valid,
         ) -> ProductGripperState | None:
             if not available:
                 return None
             return ProductGripperState(
                 True, float(opening), int(level),
                 bool(enabled) if enabled_valid else None,
+                float(mos_temperature) if temperature_valid else None,
+                float(rotor_temperature) if temperature_valid else None,
             )
         return ProductState(
             bool(native.has_grippers),
@@ -802,6 +649,9 @@ class ArticoreRuntime:
                 native.left_gripper_level,
                 native.left_gripper_enabled,
                 native.left_gripper_enabled_valid,
+                native.left_gripper_mos_temperature,
+                native.left_gripper_rotor_temperature,
+                native.left_gripper_temperature_valid,
             ),
             gripper(
                 native.right_gripper_available,
@@ -809,6 +659,9 @@ class ArticoreRuntime:
                 native.right_gripper_level,
                 native.right_gripper_enabled,
                 native.right_gripper_enabled_valid,
+                native.right_gripper_mos_temperature,
+                native.right_gripper_rotor_temperature,
+                native.right_gripper_temperature_valid,
             ),
             int(native.timestamp_ns), int(native.sequence),
         )
@@ -870,27 +723,17 @@ class ArticoreRuntime:
         )
 
     def move_pose(
-        self, side: int, target_pose: Sequence[float], speed_percent: float = 50.0
-    ) -> None:
-        """Install one endpoint IK solution as an ordinary 500 Hz PV target."""
-        target = _pose(target_pose)
-        self._call(
-            self._runtime_abi.lib.articore_runtime_move_pose,
-            "move_pose", int(side), target, float(speed_percent),
-        )
-
-    def move_poses(
         self,
         left_target_pose: Sequence[float],
         right_target_pose: Sequence[float],
         speed_percent: float = 50.0,
     ) -> None:
-        """Atomically solve and install one ordinary dual-arm PV PTP."""
+        """Solve both endpoint poses and atomically install one dual-arm PV target."""
         left_target = _pose(left_target_pose)
         right_target = _pose(right_target_pose)
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_poses,
-            "move_poses",
+            self._runtime_abi.lib.articore_runtime_move_pose,
+            "move_pose",
             left_target,
             right_target,
             float(speed_percent),
@@ -901,16 +744,16 @@ class ArticoreRuntime:
         side: int,
         start_pose: Sequence[float],
         end_pose: Sequence[float],
-        speed_percent: float,
+        duration_s: float,
     ) -> int:
         """Submit one native approach-PTP plus start-to-end line task."""
         start = _pose(start_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_linear_v2,
-            "move_linear_v2", int(side), start, end,
-            float(speed_percent), ctypes.byref(motion_id),
+            self._runtime_abi.lib.articore_runtime_move_linear,
+            "move_linear", int(side), start, end,
+            float(duration_s), ctypes.byref(motion_id),
         )
         return int(motion_id.value)
 
@@ -920,7 +763,7 @@ class ArticoreRuntime:
         start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
-        speed_percent: float,
+        duration_s: float,
     ) -> int:
         """Submit one native approach-PTP plus start/via/end circular task."""
         start = _pose(start_pose)
@@ -930,81 +773,67 @@ class ArticoreRuntime:
         self._call(
             self._runtime_abi.lib.articore_runtime_move_circular,
             "move_circular", int(side), start, via, end,
-            float(speed_percent), ctypes.byref(motion_id),
+            float(duration_s), ctypes.byref(motion_id),
         )
         return int(motion_id.value)
 
-    def get_cartesian_motion_status(
-        self, motion_id: int | None = None
-    ) -> CartesianMotionStatus:
-        native = CCartesianMotionStatus()
+    def get_motion_status(self, motion_id: int) -> MotionStatus:
+        native = CMotionStatus()
         native.struct_size = ctypes.sizeof(native)
-        if motion_id is None:
-            self._call(
-                self._runtime_abi.lib.articore_runtime_get_cartesian_motion_status,
-                "get_cartesian_motion_status", ctypes.byref(native),
-            )
-        else:
-            if (
-                not isinstance(motion_id, int)
-                or isinstance(motion_id, bool)
-                or motion_id <= 0
-            ):
-                raise ValueError("motion_id must be a positive integer")
-            self._call(
-                self._runtime_abi.lib.articore_runtime_get_cartesian_motion_status_v2,
-                "get_cartesian_motion_status_v2", int(motion_id),
-                ctypes.byref(native),
-            )
+        validated_id = _motion_id(motion_id)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_motion_status,
+            "get_motion_status", validated_id, ctypes.byref(native),
+        )
         states = {
-            0: CartesianMotionState.IDLE,
-            1: CartesianMotionState.RUNNING,
-            2: CartesianMotionState.COMPLETED,
-            3: CartesianMotionState.CANCELLED,
-            4: CartesianMotionState.FAULT,
-            5: CartesianMotionState.QUEUED,
+            0: MotionState.IDLE,
+            1: MotionState.RUNNING,
+            2: MotionState.COMPLETED,
+            3: MotionState.CANCELLED,
+            4: MotionState.FAULT,
+            5: MotionState.QUEUED,
         }
-        interpolations = {
-            2: CartesianInterpolation.LINEAR,
-            3: CartesianInterpolation.CIRCULAR,
+        motion_types = {
+            1: MotionType.JOINT_TRAJECTORY,
+            2: MotionType.CARTESIAN_LINEAR,
+            3: MotionType.CARTESIAN_CIRCULAR,
         }
         state_value = int(native.state)
         try:
             state = states[state_value]
         except KeyError as exc:
             raise RuntimeCallError(
-                f"get_cartesian_motion_status returned unknown state {state_value}"
+                f"get_motion_status returned unknown state {state_value}"
             ) from exc
         try:
-            interpolation = interpolations[int(native.interpolation)]
+            motion_type = motion_types[int(native.motion_type)]
         except KeyError as exc:
             raise RuntimeCallError(
-                "get_cartesian_motion_status returned unknown interpolation "
-                f"{int(native.interpolation)}"
+                "get_motion_status returned unknown motion type "
+                f"{int(native.motion_type)}"
             ) from exc
-        values = tuple(float(value) for value in native.target_pose)
-        return CartesianMotionStatus(
+        return MotionStatus(
             state=state,
             motion_id=int(native.motion_id),
-            superseded_motion_id=int(native.superseded_motion_id),
-            side="left" if int(native.side) == 0 else "right",
-            interpolation=interpolation,
-            speed_percent=float(native.speed_percent),
+            motion_type=motion_type,
+            active_segment=int(native.active_segment),
+            waypoint_count=int(native.waypoint_count),
             elapsed_s=float(native.elapsed_s),
             duration_s=float(native.duration_s),
             progress=float(native.progress),
-            target_pose=values,  # type: ignore[arg-type]
             error=_optional_text(native.error),
         )
 
-    @property
-    def cartesian_motion_status(self) -> CartesianMotionStatus:
-        return self.get_cartesian_motion_status()
-
-    def cancel_cartesian_motion(self) -> None:
+    def cancel_motion(self, motion_id: int) -> None:
         self._call(
-            self._runtime_abi.lib.articore_runtime_cancel_cartesian_motion,
-            "cancel_cartesian_motion",
+            self._runtime_abi.lib.articore_runtime_cancel_motion,
+            "cancel_motion", _motion_id(motion_id),
+        )
+
+    def cancel_all_motions(self) -> None:
+        self._call(
+            self._runtime_abi.lib.articore_runtime_cancel_all_motions,
+            "cancel_all_motions",
         )
 
     def clear_faults(self) -> None:
@@ -1024,11 +853,11 @@ class ArticoreRuntime:
 
     @property
     def health(self) -> SafetyHealth:
-        native = CSafetyHealthV2()
+        native = CSafetyHealth()
         native.struct_size = ctypes.sizeof(native)
-        self._call(self._runtime_abi.lib.articore_runtime_get_health_v2,
+        self._call(self._runtime_abi.lib.articore_runtime_get_health,
                    "get_health", ctypes.byref(native))
-        value = native.health
+        value = native
         gripper_count = min(int(value.gripper_count), 2)
         return SafetyHealth(
             state=SafetyState(value.state), safe_holding=bool(value.safe_holding),
@@ -1054,18 +883,18 @@ class ArticoreRuntime:
             unconfirmed_disable=tuple(_text(value.unconfirmed_disable[i])
                                       for i in range(min(int(value.unconfirmed_disable_count), 32))),
             fault_reason=_optional_text(value.fault_reason),
-            last_operation=RuntimeOperation(native.last_operation),
-            last_operation_code=OperationError(native.last_operation_code),
+            last_operation=RuntimeOperation(value.last_operation),
+            last_operation_code=OperationError(value.last_operation_code),
             operation_failed_motors=tuple(
-                _text(native.operation_failed_motors[i])
-                for i in range(min(int(native.operation_failed_motor_count), 32))
+                _text(value.operation_failed_motors[i])
+                for i in range(min(int(value.operation_failed_motor_count), 32))
             ),
-            last_operation_error=_optional_text(native.last_operation_error),
-            degraded=bool(native.degraded),
-            safe_stopped=bool(native.safe_stopped),
-            requires_resynchronization=bool(native.requires_resynchronization),
-            command_scale=float(native.command_scale),
-            safety_reason=_optional_text(native.safety_reason),
+            last_operation_error=_optional_text(value.last_operation_error),
+            degraded=bool(value.degraded),
+            safe_stopped=bool(value.safe_stopped),
+            requires_resynchronization=bool(value.requires_resynchronization),
+            command_scale=float(value.command_scale),
+            safety_reason=_optional_text(value.safety_reason),
         )
 
     def __enter__(self) -> ArticoreRuntime:

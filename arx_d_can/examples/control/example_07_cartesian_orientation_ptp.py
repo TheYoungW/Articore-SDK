@@ -176,7 +176,7 @@ def _move_and_wait(
     label: str,
 ) -> None:
     print(f"提交：{label}")
-    robot.move_poses(
+    robot.move_pose(
         left_target_pose=left,
         right_target_pose=right,
         speed_percent=speed,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 03（PV）：按本次速度和 Runtime 全局上限设置双臂目标。"""
+"""控制示例 03（PV）：设置加速度并提交双臂位置目标。"""
 from __future__ import annotations
 
 import argparse
@@ -18,7 +18,7 @@ def main(args: argparse.Namespace) -> None:
     try:
         robot.enable()
         print("已进入 PV 模式")
-        robot.set_max_speed(args.max_speed)
+        robot.set_max_acceleration(args.max_acceleration)
         robot.set_joint_pv(
             left=joint_degrees(args.left),
             right=joint_degrees(args.right),
@@ -53,10 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="本次 PV 命令速度百分比，范围 0～100，默认 50",
     )
     parser.add_argument(
-        "--max-speed",
-        type=speed_percent,
-        default=50.0,
-        help="PV 全局速度上限，范围 0～100，默认 50；与本次速度取较小值",
+        "--max-acceleration",
+        type=float,
+        default=4.0,
+        help="普通 PV 最大加速度，单位 rad/s²，范围 0.01～8.00，默认 4.00",
     )
     return parser
 

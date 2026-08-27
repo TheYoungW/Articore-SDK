@@ -18,7 +18,7 @@ python -m arx_d_can.examples.control.example_02_enable_disable
 
 python -m arx_d_can.examples.control.example_03_send_position_pv \
   --velocity 50 \
-  --max-speed 50
+  --max-acceleration 4.00
 
 python -m arx_d_can.examples.control.example_04_send_position_mit \
   --left "0,0,0,90,0,0,0" \
@@ -36,13 +36,13 @@ python -m arx_d_can.examples.control.example_07_cartesian_ptp
 python -m arx_d_can.examples.control.example_07_cartesian_orientation_ptp \
   --speed 20
 python -m arx_d_can.examples.control.example_07_cartesian_linear \
-  --side left --speed 20
+  --side left --duration 12
 python -m arx_d_can.examples.control.example_07_cartesian_linear \
-  --side right --speed 20
+  --side right --duration 12
 python -m arx_d_can.examples.control.example_07_cartesian_circular \
-  --side left --speed 20
+  --side left --duration 15
 python -m arx_d_can.examples.control.example_07_cartesian_circular \
-  --side right --speed 20
+  --side right --duration 15
 python -m arx_d_can.examples.control.example_08_gravity_compensation
 python -m arx_d_can.examples.control.example_11_bimanual_follow \
   --mode pv --leader left --speed 30 --delta-deg 8
@@ -102,12 +102,12 @@ python -m arx_d_can.examples.maintenance.example_03_set_zero_current_position
 ```
 
 PV 单点控制使用带单次 `velocity=0..100` 的 `set_joint_pv()`；默认单次速度为 50。
-`set_max_speed(0..100)` 是独立的持久全局上限，实际速度百分比取单次速度与全局上限
-的较小值。有效的 0～100 线性对应 0～2 rad/s reference slew；50 对应 1 rad/s 和
-500 Hz 下每周期 0.002 rad，100 对应每周期 0.004 rad。达妙 POS_VEL 的 `V` 始终固定
-为 3 rad/s，不随百分比缩放。SDK 不公开 Raw PV。MIT 仍可通过 `set_joint_mit()` 的
-显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗及安全状态仍由
-C++ Runtime 负责。
+该百分比直接映射为 `0..2 rad/s`；`set_max_acceleration()` 使用
+`0.01..8.00 rad/s²`，默认 `4.00 rad/s²`，使用 `0.01` 分辨率并由 Runtime 校验，
+SDK 不取整。达妙 POS_VEL 独立的驱动速度上限仍为 3 rad/s。SDK 不公开 Raw PV，
+也不生成 reference 或速度斜坡。MIT 仍可通过
+`set_joint_mit()` 的显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗
+及安全状态仍由 C++ Runtime 负责。
 
 笛卡尔控制包含四个 PV 示例：`example_07_cartesian_ptp`、
 `example_07_cartesian_orientation_ptp`、`example_07_cartesian_linear` 和

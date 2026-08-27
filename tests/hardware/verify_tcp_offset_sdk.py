@@ -6,7 +6,7 @@ import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, CartesianMotionState, SafetyState
+from arx_d_can import ArxDCanDualArm, MotionState, SafetyState
 
 
 SAFE_Q = [0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0]
@@ -57,10 +57,10 @@ def wait_motion(robot: ArxDCanDualArm, motion_id: int, timeout: float = 20.0) ->
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         healthy(robot)
-        status = robot.get_cartesian_motion_status(motion_id)
-        if status.state is CartesianMotionState.COMPLETED:
+        status = robot.get_motion_status(motion_id)
+        if status.state is MotionState.COMPLETED:
             return {"duration_s": status.duration_s, "progress": status.progress}
-        if status.state in {CartesianMotionState.CANCELLED, CartesianMotionState.FAULT}:
+        if status.state in {MotionState.CANCELLED, MotionState.FAULT}:
             raise RuntimeError(status.error or status.state.value)
         time.sleep(0.002)
     raise TimeoutError(f"motion {motion_id} did not complete")
@@ -87,18 +87,21 @@ def main() -> None:
         if not robot.enable():
             raise RuntimeError("enable was not confirmed")
         enabled = True
-        robot.set_max_speed(20.0)
-        robot.set_joint_pv(left=SAFE_Q, right=SAFE_Q)
+        robot.set_joint_pv(left=SAFE_Q, right=SAFE_Q, velocity=20.0)
         wait_joints(robot, SAFE_Q, SAFE_Q)
 
         start = robot.get_pose("left")
         up = list(start)
         up[2] += 0.01
-        robot.move_pose(side="left", target_pose=up, speed_percent=20.0)
+        robot.move_pose(
+            left_target_pose=up,
+            right_target_pose=robot.get_pose("right"),
+            speed_percent=20.0,
+        )
         report["ptp"] = wait_pose(robot, up)
 
         linear_id = robot.move_linear(
-            side="left", start_pose=up, end_pose=start, speed_percent=20.0
+            side="left", start_pose=up, end_pose=start, duration_s=10.0
         )
         report["linear"] = wait_motion(robot, linear_id)
         report["linear_end"] = wait_pose(robot, start)
@@ -110,18 +113,22 @@ def main() -> None:
         end[2] += 0.01
         circular_id = robot.move_circular(
             side="left", start_pose=start, via_pose=via, end_pose=end,
-            speed_percent=20.0,
+            duration_s=10.0,
         )
         report["circular"] = wait_motion(robot, circular_id)
         report["circular_end"] = wait_pose(robot, end)
 
         return_id = robot.move_linear(
-            side="left", start_pose=end, end_pose=start, speed_percent=20.0
+            side="left", start_pose=end, end_pose=start, duration_s=10.0
         )
         report["return"] = wait_motion(robot, return_id)
         wait_pose(robot, start)
 
-        robot.set_joint_pv(left=initial_left, right=initial_right)
+        robot.set_joint_pv(
+            left=initial_left,
+            right=initial_right,
+            velocity=20.0,
+        )
         wait_joints(robot, initial_left, initial_right)
         robot.disable()
         enabled = False
@@ -131,7 +138,7 @@ def main() -> None:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     finally:
         try:
-            robot.cancel_cartesian_motion()
+            robot.cancel_all_motions()
         except Exception:
             pass
         if enabled:

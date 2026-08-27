@@ -45,7 +45,9 @@ def test_replay_parser_defaults_to_safe_atomic_start() -> None:
     args = replay_example.build_parser().parse_args(["--input", "dual.json"])
 
     assert math.degrees(args.start_velocity) == pytest.approx(30.0)
-    assert args.max_speed == pytest.approx(50.0)
+    assert args.start_speed == pytest.approx(50.0)
+    assert not hasattr(args, "max_speed")
+    assert args.max_acceleration == pytest.approx(4.0)
     assert args.mode == "pv"
     assert args.interpolation == "quintic"
     assert args.mit_kp == (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
@@ -79,11 +81,11 @@ def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
     class Robot:
         def __init__(self):
             self.control_mode = "pv"
-            self.max_speeds = []
+            self.max_accelerations = []
             self.position_commands = []
 
-        def set_max_speed(self, value):
-            self.max_speeds.append(value)
+        def set_max_acceleration(self, value):
+            self.max_accelerations.append(value)
 
         def set_joint_pv(self, **kwargs):
             self.position_commands.append(kwargs)
@@ -100,14 +102,15 @@ def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
         robot,
         target,
         start_velocity=0.5,
-        max_speed_percent=70.0,
+        start_speed_percent=70.0,
+        max_acceleration_rad_s2=4.5,
         timeout=1.0,
         position_tolerance=0.01,
         velocity_tolerance=0.01,
     )
 
     assert now >= 0.5
-    assert robot.max_speeds == [70.0]
+    assert robot.max_accelerations == [4.5]
     assert robot.position_commands == [
         {"left": (0.0,), "right": (0.0,), "velocity": 70.0}
     ]

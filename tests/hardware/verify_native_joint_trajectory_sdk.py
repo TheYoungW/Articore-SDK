@@ -7,7 +7,7 @@ import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, TrajectoryState
+from arx_d_can import ArxDCanDualArm, MotionState
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,
     replay,
@@ -24,17 +24,19 @@ def _toward_zero(value: float, distance: float, zero_direction: float) -> float:
     return value - math.copysign(min(abs(value), distance), value)
 
 
-def _wait(robot: ArxDCanDualArm, timeout: float) -> tuple[object, list[float]]:
+def _wait(
+    robot: ArxDCanDualArm, motion_id: int, timeout: float
+) -> tuple[object, list[float]]:
     deadline = time.monotonic() + timeout
     sample_times: list[float] = []
     while time.monotonic() < deadline:
         sample_times.append(time.monotonic())
         robot.read_state()
-        status = robot.trajectory_status
+        status = robot.get_motion_status(motion_id)
         if status.state in {
-            TrajectoryState.COMPLETED,
-            TrajectoryState.CANCELLED,
-            TrajectoryState.FAULT,
+            MotionState.COMPLETED,
+            MotionState.CANCELLED,
+            MotionState.FAULT,
         }:
             return status, sample_times
         time.sleep(0.002)
@@ -95,7 +97,7 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
                     ),
                 ],
             )
-            trajectory_id = status.trajectory_id
+            trajectory_id = status.motion_id
         else:
             trajectory_id = _start(
                 robot,
@@ -108,9 +110,9 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
             )
         if cancel:
             time.sleep(0.5)
-            robot.cancel_trajectory()
+            robot.cancel_motion(trajectory_id)
         status, sample_times = (
-            (status, []) if replay_service else _wait(robot, 10.0)
+            (status, []) if replay_service else _wait(robot, trajectory_id, 10.0)
         )
         result.update(
             trajectory_id=trajectory_id,
@@ -124,9 +126,9 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
             ),
         )
         if cancel:
-            if status.state is not TrajectoryState.CANCELLED:
+            if status.state is not MotionState.CANCELLED:
                 raise RuntimeError(f"expected CANCELLED, got {status.state.value}")
-        elif status.state is not TrajectoryState.COMPLETED:
+        elif status.state is not MotionState.COMPLETED:
             raise RuntimeError(status.error or f"trajectory ended as {status.state.value}")
 
         current = robot.read_state()
@@ -139,8 +141,8 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
             start_right,
             2.0,
         )
-        return_status, _ = _wait(robot, 10.0)
-        if return_status.state is not TrajectoryState.COMPLETED:
+        return_status, _ = _wait(robot, return_id, 10.0)
+        if return_status.state is not MotionState.COMPLETED:
             raise RuntimeError(
                 return_status.error or f"return ended as {return_status.state.value}"
             )

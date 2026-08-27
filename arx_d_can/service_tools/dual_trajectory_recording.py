@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 from typing import Literal, TYPE_CHECKING
 
-from .._motor_abi import TrajectoryState, TrajectoryStatus
+from .._motor_abi import MotionState, MotionStatus
 
 if TYPE_CHECKING:
     from ..sdk.dual_arm import ArxDCanDualArm
@@ -206,7 +206,7 @@ def replay(
     pv_velocity_limits: tuple[float, ...] = DEFAULT_PV_VELOCITY_LIMITS,
     gripper_level: int = 5,
     timeout: float | None = None,
-) -> TrajectoryStatus:
+) -> MotionStatus:
     """一次性提交原生轨迹，并仅轮询状态等待 C++ 500 Hz 执行完成。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
@@ -235,7 +235,7 @@ def replay(
         )
 
     relative_timestamps = [value - timestamps[0] for value in timestamps]
-    robot.start_trajectory(
+    motion_id = robot.start_trajectory(
         timestamps=relative_timestamps,
         left_positions=[sample.left_positions for sample in samples],
         right_positions=[sample.right_positions for sample in samples],
@@ -255,13 +255,13 @@ def replay(
         else time.monotonic() + relative_timestamps[-1] + 30.0
     )
     while True:
-        status = robot.trajectory_status
-        if status.state is TrajectoryState.COMPLETED:
+        status = robot.get_motion_status(motion_id)
+        if status.state is MotionState.COMPLETED:
             return status
-        if status.state in {TrajectoryState.CANCELLED, TrajectoryState.FAULT}:
+        if status.state in {MotionState.CANCELLED, MotionState.FAULT}:
             raise RuntimeError(status.error or f"trajectory {status.state.value}")
         if time.monotonic() >= deadline:
-            robot.cancel_trajectory()
+            robot.cancel_motion(motion_id)
             raise TimeoutError("native trajectory did not complete before timeout")
         time.sleep(0.02)
 

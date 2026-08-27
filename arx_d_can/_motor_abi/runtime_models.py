@@ -21,7 +21,7 @@ class RuntimeControlMode(IntEnum):
     MIT = 2
 
 
-class CartesianMotionState(str, Enum):
+class MotionState(str, Enum):
     IDLE = "idle"
     QUEUED = "queued"
     RUNNING = "running"
@@ -30,18 +30,10 @@ class CartesianMotionState(str, Enum):
     FAULT = "fault"
 
 
-class TrajectoryState(str, Enum):
-    IDLE = "idle"
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    FAULT = "fault"
-
-
-class CartesianInterpolation(str, Enum):
-    LINEAR = "linear"
-    CIRCULAR = "circular"
+class MotionType(str, Enum):
+    JOINT_TRAJECTORY = "joint_trajectory"
+    CARTESIAN_LINEAR = "cartesian_linear"
+    CARTESIAN_CIRCULAR = "cartesian_circular"
 
 
 class RuntimeOperation(IntEnum):
@@ -52,19 +44,18 @@ class RuntimeOperation(IntEnum):
     CONFIGURE_MODE = 4
     CLEAR_FAULTS = 5
     SET_ZERO = 6
-    CLOSE = 7
-    DISCONNECT = 8
-    COMMAND = 9
-    RECOVER = 10
-    START_TRAJECTORY = 11
-    CANCEL_TRAJECTORY = 12
-    MOVE_POSE = 13
-    CANCEL_CARTESIAN_MOTION = 14
-    MOVE_LINEAR = 15
-    MOVE_CIRCULAR = 16
-    START_BIMANUAL_FOLLOW = 17
-    STOP_BIMANUAL_FOLLOW = 18
-    SET_TCP_OFFSET = 19
+    DISCONNECT = 7
+    COMMAND = 8
+    RECOVER = 9
+    START_TRAJECTORY = 10
+    CANCEL_MOTION = 11
+    MOVE_POSE = 12
+    CANCEL_ALL_MOTIONS = 13
+    MOVE_LINEAR = 14
+    MOVE_CIRCULAR = 15
+    START_BIMANUAL_FOLLOW = 16
+    STOP_BIMANUAL_FOLLOW = 17
+    SET_TCP_OFFSET = 18
 
 
 class OperationError(IntEnum):
@@ -104,21 +95,14 @@ class GripperControlState(IntEnum):
     FAULT = 6
 
 
-class ConnectErrorCode(IntEnum):
-    OK = 0
-    CONFIGURATION = 1
-    TRANSPORT = 2
-    FEEDBACK_TIMEOUT = 3
-    FEEDBACK_INCOMPLETE = 4
-    FEEDBACK_INVALID = 5
-
-
 @dataclass(frozen=True)
 class ProductArmState:
     positions: tuple[float, ...]
     velocities: tuple[float, ...]
     torques: tuple[float, ...]
     enabled: tuple[bool | None, ...] = (None,) * 7
+    mos_temperatures: tuple[float | None, ...] = (None,) * 7
+    rotor_temperatures: tuple[float | None, ...] = (None,) * 7
 
 
 @dataclass(frozen=True)
@@ -127,6 +111,8 @@ class ProductGripperState:
     opening: float
     gripper_level: int
     enabled: bool | None = None
+    mos_temperature: float | None = None
+    rotor_temperature: float | None = None
 
 
 @dataclass(frozen=True)
@@ -180,24 +166,10 @@ class ProductPose:
 
 
 @dataclass(frozen=True)
-class CartesianMotionStatus:
-    state: CartesianMotionState
+class MotionStatus:
+    state: MotionState
     motion_id: int
-    superseded_motion_id: int
-    side: str
-    interpolation: CartesianInterpolation
-    speed_percent: float
-    elapsed_s: float
-    duration_s: float
-    progress: float
-    target_pose: tuple[float, float, float, float, float, float]
-    error: str | None
-
-
-@dataclass(frozen=True)
-class TrajectoryStatus:
-    state: TrajectoryState
-    trajectory_id: int
+    motion_type: MotionType
     active_segment: int
     waypoint_count: int
     elapsed_s: float
@@ -212,7 +184,7 @@ class GravityCompensationStatus:
     active: bool
     transition_progress: float
     control_cycles: int
-    joints: tuple[str, ...]
+    joint_count: int
     gravity_feedforward_torque: tuple[float, ...]
 
 
@@ -227,95 +199,6 @@ class BimanualFollowStatus:
     leader_positions: tuple[float, ...]
     follower_target_positions: tuple[float, ...]
     max_tracking_error: float
-    error: str | None
-
-
-@dataclass(frozen=True)
-class EnableMotorResult:
-    side: int
-    can_id: int
-    status_code: int
-    has_feedback: bool
-    feedback_fresh: bool
-    enabled: bool
-    name: str
-
-
-@dataclass(frozen=True)
-class ConnectChannelResult:
-    side: int
-    active: bool
-    request_code: int
-    expected_count: int
-    received_count: int
-    missing_motor_ids: tuple[int, ...]
-    error: str | None
-
-
-@dataclass(frozen=True)
-class ConnectMotorResult:
-    side: int
-    configured_can_id: int
-    reported_can_id: int
-    has_feedback: bool
-    feedback_fresh: bool
-    feedback_valid: bool
-    update_count: int
-    feedback_age_ns: int | None
-    name: str
-    error: str | None
-
-
-@dataclass(frozen=True)
-class ConnectReport:
-    success: bool
-    error_code: ConnectErrorCode
-    expected_count: int
-    received_count: int
-    missing_count: int
-    failure_count: int
-    channels: tuple[ConnectChannelResult, ...]
-    motors: tuple[ConnectMotorResult, ...]
-    error: str | None
-
-
-@dataclass(frozen=True)
-class EnableReport:
-    success: bool
-    disable_confirmed: bool
-    expected_count: int
-    enabled_count: int
-    missing_count: int
-    failure_count: int
-    missing_motors: tuple[tuple[int, int], ...]
-    motors: tuple[EnableMotorResult, ...]
-    error: str | None
-
-
-@dataclass(frozen=True)
-class DisableMotorResult:
-    side: int
-    can_id: int
-    status_code: int
-    has_feedback: bool
-    feedback_fresh: bool
-    disabled: bool
-    disable_sent: bool
-    retry_sent: bool
-    name: str
-
-
-@dataclass(frozen=True)
-class DisableReport:
-    success: bool
-    barrier_confirmed: bool
-    expected_count: int
-    disabled_count: int
-    missing_count: int
-    failure_count: int
-    retry_count: int
-    missing_motors: tuple[tuple[int, int], ...]
-    motors: tuple[DisableMotorResult, ...]
     error: str | None
 
 

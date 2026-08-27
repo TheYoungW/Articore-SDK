@@ -69,7 +69,7 @@ def main(args: argparse.Namespace) -> None:
         robot.connect()
         robot.enable()
         if args.mode == "pv":
-            robot.set_max_speed(args.speed)
+            robot.set_max_acceleration(args.max_acceleration)
 
         if args.mode == "pv":
             robot.set_joint_pv(
@@ -122,6 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("pv", "mit"), default="pv")
     parser.add_argument("--leader", choices=("left", "right"), default="right")
     parser.add_argument("--speed", type=float, default=30.0)
+    parser.add_argument(
+        "--max-acceleration", type=float, default=4.0,
+        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略",
+    )
     parser.add_argument("--delta-deg", type=float, default=8.0)
     return parser
 

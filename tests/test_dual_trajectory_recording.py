@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from arx_d_can import TrajectoryState
+from arx_d_can import MotionState
 
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DEFAULT_MIT_FEEDFORWARD_TORQUES,
@@ -89,18 +89,18 @@ def test_dual_replay_submits_once_to_native_runtime(monkeypatch) -> None:
             commands.append(("trajectory", kwargs))
             return 7
 
-        @property
-        def trajectory_status(self):
+        def get_motion_status(self, motion_id: int):
+            assert motion_id == 7
             self.status_reads += 1
             state = (
-                TrajectoryState.RUNNING
+                MotionState.RUNNING
                 if self.status_reads == 1
-                else TrajectoryState.COMPLETED
+                else MotionState.COMPLETED
             )
             return type("Status", (), {"state": state, "error": None})()
 
-        def cancel_trajectory(self) -> None:
-            commands.append(("cancel",))
+        def cancel_motion(self, motion_id: int) -> None:
+            commands.append(("cancel", motion_id))
 
     monkeypatch.setattr(
         "arx_d_can.service_tools.dual_trajectory_recording.time.sleep",
@@ -136,11 +136,11 @@ def test_dual_mit_replay_submits_native_gains_once(monkeypatch) -> None:
             commands.append(kwargs)
             return 8
 
-        @property
-        def trajectory_status(self):
+        def get_motion_status(self, motion_id: int):
+            assert motion_id == 8
             return type(
                 "Status", (),
-                {"state": TrajectoryState.COMPLETED, "error": None},
+                {"state": MotionState.COMPLETED, "error": None},
             )()
 
     replay(
