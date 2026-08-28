@@ -12,6 +12,7 @@ import pytest
 from arx_d_can._motor_abi import ArticoreRuntime, RuntimeControlMode
 from arx_d_can._motor_abi._runtime_abi import (
     CGravityCompensationStatus,
+    CMotorFeedbackHealth,
     CMotionStatus,
     CProductJointAngleVelLimits,
     CProductState,
@@ -26,7 +27,7 @@ from arx_d_can._motor_abi.errors import RuntimeCallError
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
     assert importlib.util.find_spec("motor_drive_layer") is None
     package = distribution("motor-drive-layer")
-    assert package.version == "0.18.0"
+    assert package.version == "0.22.0"
     package_files = {entry.as_posix() for entry in package.files or ()}
     native_payload = {
         entry for entry in package_files
@@ -47,23 +48,33 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert runtime_abi.abi_version == RUNTIME_ABI_VERSION
     assert not hasattr(runtime_abi, "capabilities")
     assert hasattr(runtime_abi.lib, "articore_runtime_set_joint_pv")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_submit_pv_frame")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_submit_raw_pv")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_set_realtime_pv")
     assert hasattr(runtime_abi.lib, "articore_runtime_set_joint_mit")
     assert not hasattr(runtime_abi.lib, "articore_runtime_set_max_speed")
     assert not hasattr(runtime_abi.lib, "articore_runtime_get_max_speed")
     assert hasattr(runtime_abi.lib, "articore_runtime_set_max_acceleration")
     assert hasattr(runtime_abi.lib, "articore_runtime_get_max_acceleration")
-    assert hasattr(runtime_abi.lib, "articore_runtime_move_pose")
-    assert hasattr(runtime_abi.lib, "articore_runtime_start_trajectory")
-    assert hasattr(runtime_abi.lib, "articore_runtime_move_linear")
-    assert hasattr(runtime_abi.lib, "articore_runtime_move_circular")
+    assert hasattr(runtime_abi.lib, "articore_runtime_set_pose")
+    assert hasattr(runtime_abi.lib, "articore_runtime_move_joint_trajectory")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_start_trajectory")
+    assert hasattr(runtime_abi.lib, "articore_runtime_move_linear_trajectory")
+    assert hasattr(
+        runtime_abi.lib, "articore_runtime_move_linear_path_trajectory"
+    )
+    assert hasattr(runtime_abi.lib, "articore_runtime_move_circular_trajectory")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_move_linear")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_move_circular")
     assert hasattr(runtime_abi.lib, "articore_runtime_get_motion_status")
     assert hasattr(runtime_abi.lib, "articore_runtime_cancel_motion")
     assert hasattr(runtime_abi.lib, "articore_runtime_cancel_all_motions")
     assert hasattr(runtime_abi.lib, "articore_runtime_get_state")
     assert hasattr(runtime_abi.lib, "articore_runtime_get_health")
+    assert hasattr(runtime_abi.lib, "articore_runtime_solve_ik")
     assert not hasattr(runtime_abi.lib, "articore_runtime_capabilities")
-    assert not hasattr(runtime_abi.lib, "articore_runtime_move_poses")
-    assert not hasattr(runtime_abi.lib, "articore_runtime_move_linear_v2")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_set_poses")
+    assert not hasattr(runtime_abi.lib, "articore_runtime_move_linear_trajectory_v2")
     assert not hasattr(runtime_abi.lib, "articore_runtime_get_state_v2")
     assert not hasattr(runtime_abi.lib, "articore_runtime_get_health_v2")
     assert not hasattr(runtime_abi.lib, "articore_runtime_get_trajectory_status")
@@ -77,14 +88,32 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert runtime_abi.lib.articore_runtime_get_max_acceleration.argtypes == [
         ctypes.c_void_p, ctypes.POINTER(ctypes.c_float),
     ]
-    assert runtime_abi.lib.articore_runtime_start_trajectory.argtypes[-1] is (
+    assert runtime_abi.lib.articore_runtime_solve_ik.argtypes == [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_uint32,
+    ]
+    assert runtime_abi.lib.articore_runtime_solve_ik.restype is ctypes.c_int32
+    assert runtime_abi.lib.articore_runtime_move_joint_trajectory.argtypes[-1] is (
         ctypes.POINTER(ctypes.c_uint64)
     )
-    assert runtime_abi.lib.articore_runtime_move_linear.argtypes[-2:] == [
+    assert len(runtime_abi.lib.articore_runtime_move_joint_trajectory.argtypes) == 5
+    assert len(runtime_abi.lib.articore_runtime_move_linear_trajectory.argtypes) == 6
+    assert len(
+        runtime_abi.lib.articore_runtime_move_linear_path_trajectory.argtypes
+    ) == 6
+    assert (
+        "articore_runtime_move_linear_trajectory_with_point_count"
+        not in vars(runtime_abi.lib)
+    )
+    assert len(runtime_abi.lib.articore_runtime_move_circular_trajectory.argtypes) == 7
+    assert runtime_abi.lib.articore_runtime_move_linear_trajectory.argtypes[-2:] == [
         ctypes.c_double,
         ctypes.POINTER(ctypes.c_uint64),
     ]
-    assert runtime_abi.lib.articore_runtime_move_circular.argtypes[-2:] == [
+    assert runtime_abi.lib.articore_runtime_move_circular_trajectory.argtypes[-2:] == [
         ctypes.c_double,
         ctypes.POINTER(ctypes.c_uint64),
     ]
@@ -110,7 +139,77 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert ctypes.sizeof(CProductJointAngleVelLimits) == 176
     assert ctypes.sizeof(CGravityCompensationStatus) == 88
     assert ctypes.sizeof(CProductState) == 392
-    assert ctypes.sizeof(CSafetyHealth) == 9176
+    assert ctypes.sizeof(CMotorFeedbackHealth) == 136
+    assert ctypes.sizeof(CSafetyHealth) == 13544
+    assert {
+        name: getattr(CMotorFeedbackHealth, name).offset
+        for name, _ctype in CMotorFeedbackHealth._fields_
+    } == {
+        "side": 0,
+        "can_id": 4,
+        "can_id_valid": 8,
+        "is_gripper": 12,
+        "has_feedback": 16,
+        "fresh": 20,
+        "has_state": 24,
+        "values_finite": 28,
+        "status_code": 32,
+        "issues": 36,
+        "position": 40,
+        "velocity": 44,
+        "torque": 48,
+        "feedback_age_ns": 56,
+        "update_count": 64,
+        "role": 72,
+    }
+    assert CSafetyHealth.motor_feedback_count.offset == 696
+    assert CSafetyHealth.feedback_issue_count.offset == 700
+    assert CSafetyHealth.feedback_issue_scope.offset == 704
+    assert CSafetyHealth.motor_feedback.offset == 712
+    assert CSafetyHealth.gripper_count.offset == 5064
+
+
+def test_sdk_dependency_is_strictly_pinned_to_motor_0_22_0() -> None:
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    text = pyproject.read_text(encoding="utf-8")
+
+    assert '"motor-drive-layer==0.22.0"' in text
+    assert '"motor-drive-layer>=' not in text
+
+
+def test_native_solve_ik_rejects_non_fourteen_output_count() -> None:
+    runtime = ArticoreRuntime.create_yunyi(
+        RuntimeControlMode.PV, with_grippers=False
+    )
+    try:
+        pose = (ctypes.c_float * 6)()
+        output = (ctypes.c_float * 14)()
+        rc = runtime._runtime_abi.lib.articore_runtime_solve_ik(
+            runtime._ptr,
+            pose,
+            pose,
+            output,
+            13,
+        )
+
+        assert rc != 0
+        assert "output count must be 14" in runtime._last_error()
+    finally:
+        runtime.disconnect()
+
+
+def test_native_solve_ik_without_planning_reference_or_feedback_fails() -> None:
+    runtime = ArticoreRuntime.create_yunyi(
+        RuntimeControlMode.PV, with_grippers=False
+    )
+    try:
+        with pytest.raises(
+            RuntimeCallError,
+            match="requires fresh complete joint feedback",
+        ):
+            runtime.solve_ik((0.0,) * 6, (0.0,) * 6)
+    finally:
+        runtime.disconnect()
 
 
 def test_runtime_library_override_is_explicit(monkeypatch, tmp_path: Path) -> None:
@@ -120,8 +219,12 @@ def test_runtime_library_override_is_explicit(monkeypatch, tmp_path: Path) -> No
     assert Path(runtime_library_path()) == library
 
 
-@pytest.mark.parametrize("version", (0x00080000, 0x00090001, 0x000A0000))
-def test_runtime_abi_requires_exact_nine_zero(monkeypatch, version: int) -> None:
+@pytest.mark.parametrize(
+    "version", (0x000A0000, 0x000B0001, 0x000B0002, 0x000C0000)
+)
+def test_runtime_abi_requires_exact_eleven_three(
+    monkeypatch, version: int
+) -> None:
     class VersionFunction:
         argtypes = None
         restype = None
@@ -138,7 +241,7 @@ def test_runtime_abi_requires_exact_nine_zero(monkeypatch, version: int) -> None
         lambda: "/tmp/fake-libarticore-runtime.so",
     )
 
-    with pytest.raises(RuntimeError, match="exactly 9.0"):
+    with pytest.raises(RuntimeError, match="exactly 11.3"):
         RuntimeAbi()
 
 
@@ -147,7 +250,7 @@ def test_native_ordinary_pv_acceleration_default_range_and_resolution() -> None:
         RuntimeControlMode.PV, with_grippers=False
     )
     try:
-        assert runtime.get_max_acceleration() == pytest.approx(4.0)
+        assert runtime.get_max_acceleration() == pytest.approx(6.0)
         runtime.set_max_acceleration(0.01)
         assert runtime.get_max_acceleration() == pytest.approx(0.01)
         runtime.set_max_acceleration(8.0)

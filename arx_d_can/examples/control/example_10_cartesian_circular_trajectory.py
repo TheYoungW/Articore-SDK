@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 07-3（PV）：指定手臂在 base_link 的 YZ 平面执行完整圆运动。"""
+"""控制示例 10（PV）：在 base_link 的 YZ 平面执行半径 10 cm 圆弧轨迹。"""
 from __future__ import annotations
 
 import argparse
@@ -9,17 +9,19 @@ from arx_d_can import ArxDCanDualArm, MotionState
 from arx_d_can.examples.common import pose_values, positive_duration_s
 
 
+CIRCLE_RADIUS_M = 0.10
+
 DEFAULT_LEFT_START_POSE = (
     0.403537,
     0.231892,
-    0.301638,
+    0.281638,
     0.0,
     -1.570796,
     0.0,
 )
 DEFAULT_LEFT_VIA_POSE = (
     0.403537,
-    0.311892,
+    0.331892,
     0.381638,
     0.0,
     -1.570796,
@@ -28,14 +30,14 @@ DEFAULT_LEFT_VIA_POSE = (
 DEFAULT_LEFT_END_POSE = (
     0.403537,
     0.231892,
-    0.461638,
+    0.481638,
     0.0,
     -1.570796,
     0.0,
 )
 DEFAULT_LEFT_RETURN_VIA_POSE = (
     0.403537,
-    0.151892,
+    0.131892,
     0.381638,
     0.0,
     -1.570796,
@@ -44,14 +46,14 @@ DEFAULT_LEFT_RETURN_VIA_POSE = (
 DEFAULT_RIGHT_START_POSE = (
     0.403537,
     -0.231889,
-    0.301639,
+    0.281639,
     0.0,
     -1.570796,
     0.0,
 )
 DEFAULT_RIGHT_VIA_POSE = (
     0.403537,
-    -0.311889,
+    -0.331889,
     0.381639,
     0.0,
     -1.570796,
@@ -60,14 +62,14 @@ DEFAULT_RIGHT_VIA_POSE = (
 DEFAULT_RIGHT_END_POSE = (
     0.403537,
     -0.231889,
-    0.461639,
+    0.481639,
     0.0,
     -1.570796,
     0.0,
 )
 DEFAULT_RIGHT_RETURN_VIA_POSE = (
     0.403537,
-    -0.151889,
+    -0.131889,
     0.381639,
     0.0,
     -1.570796,
@@ -107,7 +109,7 @@ def main(args: argparse.Namespace) -> None:
     try:
         robot.connect()
         robot.enable()
-        outward_motion_id = robot.move_circular(
+        outward_motion_id = robot.move_circular_trajectory(
             side=args.side,
             start_pose=args.start,
             via_pose=args.via,
@@ -116,7 +118,7 @@ def main(args: argparse.Namespace) -> None:
         )
         submitted = True
         try:
-            return_motion_id = robot.move_circular(
+            return_motion_id = robot.move_circular_trajectory(
                 side=args.side,
                 start_pose=args.end,
                 via_pose=args.return_via,
@@ -146,30 +148,36 @@ def main(args: argparse.Namespace) -> None:
             ):
                 print("\n完整圆执行完成，机械臂已回到起点")
                 return
+            fault = next(
+                (
+                    (motion_id, status)
+                    for motion_id, status in (
+                        (outward_motion_id, outward_status),
+                        (return_motion_id, return_status),
+                    )
+                    if status.state is MotionState.FAULT
+                ),
+                None,
+            )
+            if fault is not None:
+                fault_motion_id, fault_status = fault
+                health = robot.get_health()
+                detail = (
+                    fault_status.error
+                    or health.last_operation_error
+                    or health.safety_reason
+                    or health.fault_reason
+                    or "未知错误"
+                )
+                raise RuntimeError(
+                    f"完整圆运动失败：motion_id={fault_motion_id}，{detail}"
+                )
             if (
                 outward_status.state is MotionState.CANCELLED
                 or return_status.state is MotionState.CANCELLED
             ):
                 print("\n运动已取消")
                 return
-            fault_status = next(
-                (
-                    status
-                    for status in (outward_status, return_status)
-                    if status.state is MotionState.FAULT
-                ),
-                None,
-            )
-            if fault_status is not None:
-                health = robot.get_health()
-                detail = (
-                    health.last_operation_error
-                    or health.safety_reason
-                    or health.fault_reason
-                    or fault_status.error
-                    or "未知错误"
-                )
-                raise RuntimeError(f"完整圆运动失败：{detail}")
             time.sleep(0.05)
     except KeyboardInterrupt:
         if submitted:
@@ -212,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--duration",
         type=positive_duration_s,
         required=True,
-        help="每段半圆完整任务的计划时间（秒，包含自动接近起点）",
+        help="每段半圆完整任务的预计时间（秒，包含自动接近起点）",
     )
     return parser
 

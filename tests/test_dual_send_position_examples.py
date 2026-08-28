@@ -62,7 +62,7 @@ def test_pv_example_defaults_to_native_acceleration_limit() -> None:
     assert defaults.left == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert defaults.right == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert not hasattr(defaults, "max_speed")
-    assert defaults.max_acceleration == pytest.approx(4.0)
+    assert defaults.max_acceleration == pytest.approx(6.0)
     assert defaults.velocity == pytest.approx(50.0)
     assert parser.parse_args(
         ["--max-acceleration", "4.565"]

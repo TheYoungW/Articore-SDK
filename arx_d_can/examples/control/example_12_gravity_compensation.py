@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 08：开启 Yunyi 双臂重力补偿。"""
+"""控制示例 12：开启 Yunyi 双臂重力补偿。"""
 from __future__ import annotations
 
 import argparse

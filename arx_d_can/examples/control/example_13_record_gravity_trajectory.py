@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 09：双臂同时进入重力补偿并录制示教轨迹。"""
+"""控制示例 13：双臂同时进入重力补偿并录制示教轨迹。"""
 from __future__ import annotations
 
 import argparse
@@ -8,10 +8,11 @@ from pathlib import Path
 import time
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.control.example_08_gravity_compensation import (
+from arx_d_can.examples.control.example_12_gravity_compensation import (
     _stop_and_close,
 )
 from arx_d_can.service_tools.dual_trajectory_recording import (
+    MAX_RECORDING_HZ,
     record,
     save_trajectory,
 )
@@ -28,6 +29,10 @@ def positive_hz(text: str) -> float:
     value = float(text)
     if not math.isfinite(value) or value <= 0.0:
         raise argparse.ArgumentTypeError("调用频率必须是有限正数")
+    if value > MAX_RECORDING_HZ:
+        raise argparse.ArgumentTypeError(
+            f"录制频率不能超过 {MAX_RECORDING_HZ:g} Hz"
+        )
     return value
 
 
@@ -91,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--hz",
         type=positive_hz,
         default=100.0,
-        help="反馈录制频率；重力控制周期由 Runtime 独立执行，默认 100",
+        help="反馈录制频率，最大 500 Hz；默认 100 Hz",
     )
     return parser
 

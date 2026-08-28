@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 07-4（PV）：双臂笛卡尔 PTP 演示 Pitch、Roll、Yaw。"""
+"""控制示例 11（PV）：用 set_pose 演示 Pitch、Roll、Yaw。"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ import time
 from typing import Sequence
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.common import positive_speed_percent
+from arx_d_can.examples.common import speed_percent
 
 
 Pose = tuple[float, float, float, float, float, float]
@@ -129,7 +129,7 @@ def _wait_dual_pose(
     *,
     timeout_s: float = 30.0,
 ) -> None:
-    """PTP 无 motion ID，使用真实位姿和关节速度确认双臂稳定到位。"""
+    """set_pose 无 motion ID，使用真实位姿和关节速度确认双臂稳定到位。"""
     deadline = time.monotonic() + timeout_s
     stable_since: float | None = None
     while time.monotonic() < deadline:
@@ -164,7 +164,7 @@ def _wait_dual_pose(
         else:
             stable_since = None
         time.sleep(0.01)
-    raise TimeoutError(f"双臂 PTP 在 {timeout_s:.0f} 秒内未稳定到位")
+    raise TimeoutError(f"双臂 set_pose 在 {timeout_s:.0f} 秒内未稳定到位")
 
 
 def _move_and_wait(
@@ -176,7 +176,7 @@ def _move_and_wait(
     label: str,
 ) -> None:
     print(f"提交：{label}")
-    robot.move_pose(
+    robot.set_pose(
         left_target_pose=left,
         right_target_pose=right,
         speed_percent=speed,
@@ -237,9 +237,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--speed",
-        type=positive_speed_percent,
-        default=20.0,
-        help="普通 PV PTP 速度百分比，范围 (0, 100]，默认 20",
+        type=speed_percent,
+        default=50.0,
+        help="set_pose 普通 PV 速度百分比，范围 [0, 100]，默认 50",
     )
     return parser
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 from collections.abc import Sequence
 from threading import Event, RLock, Thread
 from types import TracebackType
@@ -31,6 +32,9 @@ from .runtime_models import (
     BimanualFollowStatus,
     MotorPowerReport,
     MotorPowerResult,
+    MotorFeedbackHealth,
+    MotorFeedbackIssue,
+    FeedbackIssueScope,
     MotionState,
     MotionStatus,
     MotionType,
@@ -92,6 +96,8 @@ def _pose(values: Sequence[float]) -> ctypes.Array[ctypes.c_float]:
         raise ValueError(
             "pose must contain exactly 6 values: x, y, z, roll, pitch, yaw"
         )
+    if not all(math.isfinite(value) for value in pose):
+        raise ValueError("pose values must all be finite")
     return (ctypes.c_float * 6)(*pose)
 
 
@@ -450,7 +456,7 @@ class ArticoreRuntime:
     def set_joint_mit(
         self,
         positions: Sequence[float],
-        speed_percent: float = 100.0,
+        speed_percent: float = 50.0,
     ) -> None:
         values = tuple(float(value) for value in positions)
         native = (ctypes.c_float * len(values))(*values)
@@ -480,7 +486,7 @@ class ArticoreRuntime:
             optional(feedforward_torques), optional(kp), optional(kd), len(q),
         )
 
-    def start_trajectory(
+    def move_joint_trajectory(
         self,
         *,
         timestamps: Sequence[float],
@@ -495,7 +501,7 @@ class ArticoreRuntime:
         mit_feedforward_torques: Sequence[float] | None = None,
         pv_velocity_limits: Sequence[float] | None = None,
     ) -> int:
-        """Copy a complete 14-joint trajectory into the native 500 Hz worker."""
+        """Copy a complete trajectory into the native planner and FIFO."""
         times = tuple(float(value) for value in timestamps)
         left_q = tuple(tuple(float(value) for value in row) for row in left_positions)
         right_q = tuple(tuple(float(value) for value in row) for row in right_positions)
@@ -503,10 +509,10 @@ class ArticoreRuntime:
         if count < 2 or len(left_q) != count or len(right_q) != count:
             raise ValueError(
                 "trajectory timestamps and both position arrays must contain "
-                "the same 2..10000 waypoint count"
+                "the same 2..30000 waypoint count"
             )
-        if count > 10_000:
-            raise ValueError("trajectory supports at most 10000 waypoints")
+        if count > 30_000:
+            raise ValueError("trajectory supports at most 30000 waypoints")
 
         def rows(
             name: str,
@@ -569,8 +575,8 @@ class ArticoreRuntime:
         )
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_start_trajectory,
-            "start_trajectory",
+            self._runtime_abi.lib.articore_runtime_move_joint_trajectory,
+            "move_joint_trajectory",
             native_waypoints,
             count,
             ctypes.byref(native_config),
@@ -722,7 +728,26 @@ class ArticoreRuntime:
             "reset_tcp_offset", int(side),
         )
 
-    def move_pose(
+    def solve_ik(
+        self,
+        left_target_pose: Sequence[float],
+        right_target_pose: Sequence[float],
+    ) -> tuple[float, ...]:
+        """Solve both TCP targets without installing or sending a motion command."""
+        left_target = _pose(left_target_pose)
+        right_target = _pose(right_target_pose)
+        output = (ctypes.c_float * 14)()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_solve_ik,
+            "solve_ik",
+            left_target,
+            right_target,
+            output,
+            14,
+        )
+        return tuple(float(value) for value in output)
+
+    def set_pose(
         self,
         left_target_pose: Sequence[float],
         right_target_pose: Sequence[float],
@@ -732,32 +757,58 @@ class ArticoreRuntime:
         left_target = _pose(left_target_pose)
         right_target = _pose(right_target_pose)
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_pose,
-            "move_pose",
+            self._runtime_abi.lib.articore_runtime_set_pose,
+            "set_pose",
             left_target,
             right_target,
             float(speed_percent),
         )
 
-    def move_linear(
+    def move_linear_trajectory(
         self,
         side: int,
         start_pose: Sequence[float],
         end_pose: Sequence[float],
         duration_s: float,
     ) -> int:
-        """Submit one native approach-PTP plus start-to-end line task."""
+        """Submit Linear motion for native 100 Hz internal real-time PV."""
         start = _pose(start_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_linear,
-            "move_linear", int(side), start, end,
+            self._runtime_abi.lib.articore_runtime_move_linear_trajectory,
+            "move_linear_trajectory", int(side), start, end,
             float(duration_s), ctypes.byref(motion_id),
         )
         return int(motion_id.value)
 
-    def move_circular(
+    def move_linear_path_trajectory(
+        self,
+        side: int,
+        poses: Sequence[Sequence[float]],
+        segment_duration_s: float,
+    ) -> int:
+        """Submit one atomically planned Linear path with automatic 10 mm blends."""
+        values = tuple(_pose(pose) for pose in poses)
+        if not 2 <= len(values) <= 64:
+            raise ValueError("linear path requires 2..64 poses")
+        flattened_values = [
+            float(value)
+            for pose in values
+            for value in pose
+        ]
+        flattened = (ctypes.c_float * len(flattened_values))(
+            *flattened_values
+        )
+        motion_id = ctypes.c_uint64()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_move_linear_path_trajectory,
+            "move_linear_trajectory", int(side), flattened, len(values),
+            float(segment_duration_s), ctypes.byref(motion_id),
+        )
+        return int(motion_id.value)
+
+    def move_circular_trajectory(
         self,
         side: int,
         start_pose: Sequence[float],
@@ -765,14 +816,14 @@ class ArticoreRuntime:
         end_pose: Sequence[float],
         duration_s: float,
     ) -> int:
-        """Submit one native approach-PTP plus start/via/end circular task."""
+        """Submit one native joint-approach plus start/via/end Circular task."""
         start = _pose(start_pose)
         via = _pose(via_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_circular,
-            "move_circular", int(side), start, via, end,
+            self._runtime_abi.lib.articore_runtime_move_circular_trajectory,
+            "move_circular_trajectory", int(side), start, via, end,
             float(duration_s), ctypes.byref(motion_id),
         )
         return int(motion_id.value)
@@ -858,6 +909,7 @@ class ArticoreRuntime:
         self._call(self._runtime_abi.lib.articore_runtime_get_health,
                    "get_health", ctypes.byref(native))
         value = native
+        motor_feedback_count = min(int(value.motor_feedback_count), 32)
         gripper_count = min(int(value.gripper_count), 2)
         return SafetyHealth(
             state=SafetyState(value.state), safe_holding=bool(value.safe_holding),
@@ -895,6 +947,28 @@ class ArticoreRuntime:
             requires_resynchronization=bool(value.requires_resynchronization),
             command_scale=float(value.command_scale),
             safety_reason=_optional_text(value.safety_reason),
+            motor_feedback=tuple(
+                MotorFeedbackHealth(
+                    side=int(item.side),
+                    can_id=int(item.can_id) if item.can_id_valid else None,
+                    is_gripper=bool(item.is_gripper),
+                    has_feedback=bool(item.has_feedback),
+                    fresh=bool(item.fresh),
+                    has_state=bool(item.has_state),
+                    values_finite=bool(item.values_finite),
+                    status_code=int(item.status_code),
+                    issues=MotorFeedbackIssue(item.issues),
+                    position=float(item.position),
+                    velocity=float(item.velocity),
+                    torque=float(item.torque),
+                    feedback_age_ns=_optional_age(item.feedback_age_ns),
+                    update_count=int(item.update_count),
+                    role=_text(item.role),
+                )
+                for item in value.motor_feedback[:motor_feedback_count]
+            ),
+            feedback_issue_count=int(value.feedback_issue_count),
+            feedback_issue_scope=FeedbackIssueScope(value.feedback_issue_scope),
         )
 
     def __enter__(self) -> ArticoreRuntime:

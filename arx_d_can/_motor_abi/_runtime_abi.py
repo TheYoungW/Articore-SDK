@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-RUNTIME_ABI_VERSION = 0x00090000
+RUNTIME_ABI_VERSION = 0x000B0003
 
 
 def _runtime_library_name() -> str:
@@ -121,6 +121,27 @@ class CGripperHealth(Structure):
     ]
 
 
+class CMotorFeedbackHealth(Structure):
+    _fields_ = [
+        ("side", c_uint32),
+        ("can_id", c_uint32),
+        ("can_id_valid", c_uint32),
+        ("is_gripper", c_uint32),
+        ("has_feedback", c_uint32),
+        ("fresh", c_uint32),
+        ("has_state", c_uint32),
+        ("values_finite", c_uint32),
+        ("status_code", c_uint32),
+        ("issues", c_uint32),
+        ("position", c_float),
+        ("velocity", c_float),
+        ("torque", c_float),
+        ("feedback_age_ns", c_uint64),
+        ("update_count", c_uint64),
+        ("role", c_char * 64),
+    ]
+
+
 class CSafetyHealth(Structure):
     _fields_ = [
         ("struct_size", c_uint32),
@@ -128,6 +149,10 @@ class CSafetyHealth(Structure):
         ("last_successful_command_age_ns", c_uint64), ("last_fresh_feedback_age_ns", c_uint64),
         ("consecutive_send_failures", c_uint32), ("consecutive_feedback_failures", c_uint32),
         ("left_transport", CRuntimeTransportHealth), ("right_transport", CRuntimeTransportHealth),
+        ("motor_feedback_count", c_uint32),
+        ("feedback_issue_count", c_uint32),
+        ("feedback_issue_scope", c_int32),
+        ("motor_feedback", CMotorFeedbackHealth * 32),
         ("gripper_count", c_uint32), ("grippers", CGripperHealth * 2),
         ("motor_fault_count", c_uint32), ("motor_faults", (c_char * 64) * 32),
         ("unconfirmed_disable_count", c_uint32), ("unconfirmed_disable", (c_char * 64) * 32),
@@ -275,7 +300,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI exactly 9.0; "
+                "Articore-SDK requires Runtime ABI exactly 11.3; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.abi_version = version
@@ -335,14 +360,14 @@ class RuntimeAbi:
             float_pointer, float_pointer, c_uint32,
         ]
         lib.articore_runtime_submit_mit_frame.restype = c_int32
-        lib.articore_runtime_start_trajectory.argtypes = [
+        lib.articore_runtime_move_joint_trajectory.argtypes = [
             c_void_p,
             POINTER(CTrajectoryWaypoint),
             c_uint32,
             POINTER(CTrajectoryConfig),
             POINTER(c_uint64),
         ]
-        lib.articore_runtime_start_trajectory.restype = c_int32
+        lib.articore_runtime_move_joint_trajectory.restype = c_int32
         lib.articore_runtime_set_grippers.argtypes = [
             c_void_p, c_float, c_float, c_int32, c_int32,
         ]
@@ -358,6 +383,14 @@ class RuntimeAbi:
         lib.articore_runtime_get_joint_angle_vel_limits.restype = c_int32
         lib.articore_runtime_get_pose.argtypes = [c_void_p, c_uint32, POINTER(CProductPose)]
         lib.articore_runtime_get_pose.restype = c_int32
+        lib.articore_runtime_solve_ik.argtypes = [
+            c_void_p,
+            float_pointer,
+            float_pointer,
+            float_pointer,
+            c_uint32,
+        ]
+        lib.articore_runtime_solve_ik.restype = c_int32
         lib.articore_runtime_set_tcp_offset.argtypes = [
             c_void_p, POINTER(CTcpOffset),
         ]
@@ -368,20 +401,25 @@ class RuntimeAbi:
         lib.articore_runtime_get_tcp_offset.restype = c_int32
         lib.articore_runtime_reset_tcp_offset.argtypes = [c_void_p, c_uint32]
         lib.articore_runtime_reset_tcp_offset.restype = c_int32
-        lib.articore_runtime_move_pose.argtypes = [
+        lib.articore_runtime_set_pose.argtypes = [
             c_void_p, float_pointer, float_pointer, c_float,
         ]
-        lib.articore_runtime_move_pose.restype = c_int32
-        lib.articore_runtime_move_linear.argtypes = [
+        lib.articore_runtime_set_pose.restype = c_int32
+        lib.articore_runtime_move_linear_trajectory.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer,
             ctypes.c_double, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_linear.restype = c_int32
-        lib.articore_runtime_move_circular.argtypes = [
+        lib.articore_runtime_move_linear_trajectory.restype = c_int32
+        lib.articore_runtime_move_linear_path_trajectory.argtypes = [
+            c_void_p, c_uint32, float_pointer, c_uint32,
+            ctypes.c_double, POINTER(c_uint64),
+        ]
+        lib.articore_runtime_move_linear_path_trajectory.restype = c_int32
+        lib.articore_runtime_move_circular_trajectory.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer, float_pointer,
             ctypes.c_double, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_circular.restype = c_int32
+        lib.articore_runtime_move_circular_trajectory.restype = c_int32
         lib.articore_runtime_get_motion_status.argtypes = [
             c_void_p, c_uint64, POINTER(CMotionStatus),
         ]

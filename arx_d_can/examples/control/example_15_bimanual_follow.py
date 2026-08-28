@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 11：普通 PV/MIT 控制一侧，另一侧保持启动时相对关系。"""
+"""控制示例 15：普通 PV/MIT 控制一侧，另一侧保持启动时相对关系。"""
 from __future__ import annotations
 
 import argparse
@@ -121,10 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("pv", "mit"), default="pv")
     parser.add_argument("--leader", choices=("left", "right"), default="right")
-    parser.add_argument("--speed", type=float, default=30.0)
+    parser.add_argument("--speed", type=float, default=50.0)
     parser.add_argument(
-        "--max-acceleration", type=float, default=4.0,
-        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略",
+        "--max-acceleration", type=float, default=6.0,
+        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略；默认 6.00",
     )
     parser.add_argument("--delta-deg", type=float, default=8.0)
     return parser

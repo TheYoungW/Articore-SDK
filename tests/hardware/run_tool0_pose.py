@@ -124,7 +124,7 @@ def wait_ptp_pose(
     target: list[float],
     timeout_s: float,
 ) -> dict[str, object]:
-    """PTP has no motion status; verify pose and velocity feedback directly."""
+    """set_pose has no motion status; verify pose and velocity feedback directly."""
     deadline = time.monotonic() + timeout_s
     stable_samples = 0
     while time.monotonic() < deadline:
@@ -150,7 +150,7 @@ def wait_ptp_pose(
         else:
             stable_samples = 0
         time.sleep(0.002)
-    raise TimeoutError(f"PTP did not settle within {timeout_s}s")
+    raise TimeoutError(f"set_pose did not settle within {timeout_s}s")
 
 
 def collect_hold(
@@ -303,7 +303,7 @@ def move_and_return(
         target[2] += distance_m
         other_side = "right" if side == "left" else "left"
         other_target = robot.get_pose(other_side)
-        robot.move_pose(
+        robot.set_pose(
             left_target_pose=target if side == "left" else other_target,
             right_target_pose=target if side == "right" else other_target,
             speed_percent=speed_percent,
@@ -311,7 +311,7 @@ def move_and_return(
         outbound = wait_ptp_pose(robot, side, target, 15.0)
         outbound_hold = collect_hold(robot, None, seconds=hold_seconds)
         reached = robot.get_pose(side)
-        return_id = robot.move_linear(
+        return_id = robot.move_linear_trajectory(
             side=side, start_pose=reached, end_pose=start,
             duration_s=duration_s,
         )

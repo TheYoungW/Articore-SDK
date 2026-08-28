@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""控制示例 07-1（PV）：双臂笛卡尔 PTP 到 J4=90°、其余关节为零。"""
+"""控制示例 07（PV）：双臂 Pose 经一次 IK 后执行普通关节点到点。"""
 from __future__ import annotations
 
 import argparse
-import time
 
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.common import pose_values, speed_percent
@@ -31,15 +30,20 @@ def main(args: argparse.Namespace) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
     try:
         robot.connect()
-        robot.enable()
-        robot.move_pose(
+        left_q, right_q = robot.solve_ik(
             left_target_pose=args.left_target,
             right_target_pose=args.right_target,
-            speed_percent=args.speed,
         )
-        print("双臂普通 PV PTP 目标已原子提交；按 Ctrl+C 失能并退出")
-        while True:
-            time.sleep(1.0)
+        print("双臂 IK 已求解；solve_ik() 未使能电机、未提交运动")
+        robot.enable()
+        robot.set_joint_pv(
+            left=left_q,
+            right=right_q,
+            velocity=args.speed,
+        )
+        input("双臂普通 PV 关节点到点目标已提交；按回车失能并退出...")
+        robot.disable()
+        print("双臂已失能")
     except KeyboardInterrupt:
         print("\n用户中断")
     finally:
@@ -65,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--speed",
         type=speed_percent,
         default=50.0,
-        help="普通 PV PTP 速度百分比，范围 [0, 100]，默认 50（1 rad/s）",
+        help="普通 PV 速度百分比，范围 [0, 100]，默认 50（1 rad/s）",
     )
     return parser
 

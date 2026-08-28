@@ -65,7 +65,7 @@ def _start(
             kd=MIT_KD,
             feedforward_torque=(0.0,) * 7,
         )
-    return robot.start_trajectory(**arguments)
+    return robot.move_joint_trajectory(**arguments)
 
 
 def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
@@ -73,7 +73,7 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
     result: dict[str, object] = {
         "mode": mode,
         "cancel_requested": cancel,
-        "submission": "recording.replay" if replay_service else "start_trajectory",
+        "submission": "recording.replay" if replay_service else "move_joint_trajectory",
     }
     robot.connect()
     try:
@@ -87,7 +87,7 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
 
         robot.enable()
         if replay_service:
-            status = replay(
+            replay(
                 robot,
                 timestamps=[0.0, 2.0],
                 samples=[
@@ -96,8 +96,11 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
                         start_left, target_right_tuple, None, None
                     ),
                 ],
+                velocity=50.0,
             )
-            trajectory_id = status.motion_id
+            trajectory_id = None
+            status = None
+            sample_times = []
         else:
             trajectory_id = _start(
                 robot,
@@ -108,28 +111,32 @@ def run(mode: str, cancel: bool, replay_service: bool) -> dict[str, object]:
                 target_right_tuple,
                 4.0 if cancel else 2.0,
             )
-        if cancel:
-            time.sleep(0.5)
-            robot.cancel_motion(trajectory_id)
-        status, sample_times = (
-            (status, []) if replay_service else _wait(robot, trajectory_id, 10.0)
-        )
+            if cancel:
+                time.sleep(0.5)
+                robot.cancel_motion(trajectory_id)
+            status, sample_times = _wait(robot, trajectory_id, 10.0)
+            if cancel:
+                if status.state is not MotionState.CANCELLED:
+                    raise RuntimeError(
+                        f"expected CANCELLED, got {status.state.value}"
+                    )
+            elif status.state is not MotionState.COMPLETED:
+                raise RuntimeError(
+                    status.error or f"trajectory ended as {status.state.value}"
+                )
         result.update(
             trajectory_id=trajectory_id,
-            terminal_state=status.state.value,
-            progress=status.progress,
-            status_error=status.error,
+            terminal_state=(
+                "stream_complete" if status is None else status.state.value
+            ),
+            progress=(1.0 if status is None else status.progress),
+            status_error=(None if status is None else status.error),
             measured_read_hz=(
                 (len(sample_times) - 1) / (sample_times[-1] - sample_times[0])
                 if len(sample_times) > 1
                 else 0.0
             ),
         )
-        if cancel:
-            if status.state is not MotionState.CANCELLED:
-                raise RuntimeError(f"expected CANCELLED, got {status.state.value}")
-        elif status.state is not MotionState.COMPLETED:
-            raise RuntimeError(status.error or f"trajectory ended as {status.state.value}")
 
         current = robot.read_state()
         return_id = _start(

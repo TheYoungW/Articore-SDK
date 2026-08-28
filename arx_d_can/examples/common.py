@@ -45,14 +45,6 @@ def speed_percent(text: str) -> float:
     return value
 
 
-def positive_speed_percent(text: str) -> float:
-    """解析原生笛卡尔运动的 (0, 100] 速度百分比。"""
-    value = float(text)
-    if not math.isfinite(value) or not 0.0 < value <= 100.0:
-        raise ValueError("笛卡尔速度百分比必须在 (0, 100] 范围内")
-    return value
-
-
 def positive_duration_s(text: str) -> float:
     """解析正的有限计划时间，单位为秒。"""
     value = float(text)

@@ -55,8 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-acceleration",
         type=float,
-        default=4.0,
-        help="普通 PV 最大加速度，单位 rad/s²，范围 0.01～8.00，默认 4.00",
+        default=6.0,
+        help="普通 PV 最大加速度，单位 rad/s²，范围 0.01～8.00，默认 6.00",
     )
     return parser
 

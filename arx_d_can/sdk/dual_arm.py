@@ -199,7 +199,7 @@ class ArxDCanDualArm:
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float = 100.0,
+        velocity: float = 50.0,
     ) -> None:
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
             raise RuntimeError("set_joint_mit() requires MIT mode")
@@ -212,6 +212,7 @@ class ArxDCanDualArm:
         right: Sequence[float],
         velocity: float = 50.0,
     ) -> None:
+        """提交用户普通 PV 步进/点到点目标；不提供实时 PV 流式直发。"""
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_joint_pv() requires PV mode")
         self._runtime.set_joint_pv(_frame(left, right), velocity)
@@ -238,7 +239,7 @@ class ArxDCanDualArm:
             _gain_frame(kd),
         )
 
-    def start_trajectory(
+    def move_joint_trajectory(
         self,
         *,
         timestamps: Sequence[float],
@@ -254,13 +255,13 @@ class ArxDCanDualArm:
         feedforward_torque: float | Sequence[float] | None = None,
         pv_velocity_limits: float | Sequence[float] = 2.5,
     ) -> int:
-        """一次性提交完整双臂关节轨迹，由 C++ Runtime 在 500 Hz 执行。"""
+        """一次提交有限双臂轨迹；PV 由 Runtime 内部按 100 Hz 实时执行。"""
         if str(interpolation).strip().lower() != "quintic":
             raise ValueError("native joint trajectories only support 'quintic'")
         mode = self._runtime.control_mode
         if mode is RuntimeControlMode.MIT and (kp is None or kd is None):
             raise ValueError("MIT trajectories require explicit kp and kd")
-        return self._runtime.start_trajectory(
+        return self._runtime.move_joint_trajectory(
             timestamps=timestamps,
             left_positions=left_positions,
             right_positions=right_positions,
@@ -337,32 +338,60 @@ class ArxDCanDualArm:
         """恢复产品默认 TCP：有夹爪为 tool0，无夹爪为 link7。"""
         self._runtime.reset_tcp_offset(_side(side))
 
-    def move_pose(
+    def solve_ik(
+        self,
+        *,
+        left_target_pose: Sequence[float],
+        right_target_pose: Sequence[float],
+    ) -> tuple[tuple[float, ...], tuple[float, ...]]:
+        """只求解双臂目标位姿，返回左右各7个逻辑关节角，不执行运动。"""
+        positions = self._runtime.solve_ik(
+            left_target_pose,
+            right_target_pose,
+        )
+        if len(positions) != 14:
+            raise RuntimeError(
+                f"Runtime returned {len(positions)} IK positions; expected 14"
+            )
+        return positions[:7], positions[7:]
+
+    def set_pose(
         self,
         *,
         left_target_pose: Sequence[float],
         right_target_pose: Sequence[float],
         speed_percent: float = 50.0,
     ) -> None:
-        """提交完整双臂 PTP；两侧 IK 成功后安装同一个 PV 目标。"""
-        self._runtime.move_pose(
+        """兼容快捷入口：两侧终点 IK 后原子安装一个普通双臂 PV 目标。"""
+        self._runtime.set_pose(
             left_target_pose, right_target_pose, speed_percent
         )
 
-    def move_linear(
+    def move_linear_trajectory(
         self,
         *,
         side: str,
-        start_pose: Sequence[float],
-        end_pose: Sequence[float],
+        start_pose: Sequence[float] | None = None,
+        end_pose: Sequence[float] | None = None,
+        poses: Sequence[Sequence[float]] | None = None,
         duration_s: float,
     ) -> int:
-        """按完整任务时间提交自动接近加直线路径。"""
-        return self._runtime.move_linear(
+        """执行直线或自动 10 mm 圆角融合的多段直线路径。"""
+        if poses is not None:
+            if start_pose is not None or end_pose is not None:
+                raise ValueError("poses cannot be combined with start_pose/end_pose")
+            return self._runtime.move_linear_path_trajectory(
+                _side(side), poses, duration_s
+            )
+        if start_pose is None or end_pose is None:
+            raise ValueError(
+                "start_pose and end_pose are required when poses is omitted"
+            )
+        return self._runtime.move_linear_trajectory(
             _side(side), start_pose, end_pose, duration_s
         )
 
-    def move_circular(
+    def move_circular_trajectory(
         self,
         *,
         side: str,
@@ -371,8 +400,8 @@ class ArxDCanDualArm:
         end_pose: Sequence[float],
         duration_s: float,
     ) -> int:
-        """按完整任务时间提交自动接近加圆弧路径。"""
-        return self._runtime.move_circular(
+        """按 duration 生成固定 10 ms 圆弧参考，由 Runtime 内部实时 PV 执行。"""
+        return self._runtime.move_circular_trajectory(
             _side(side), start_pose, via_pose, end_pose, duration_s
         )
 

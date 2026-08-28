@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 07-2（PV）：指定手臂用三段 Linear 画边长 7 cm 的等边三角形。"""
+"""控制示例 09（PV）：用一条自动圆角融合的 Linear 轨迹画等边三角形。"""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +10,7 @@ from arx_d_can import ArxDCanDualArm, MotionState
 from arx_d_can.examples.common import pose_values, positive_duration_s
 
 
-TRIANGLE_SIDE_M = 0.07
+TRIANGLE_SIDE_M = 0.14
 
 DEFAULT_LEFT_CENTER_POSE = (
     0.403537,
@@ -57,74 +57,53 @@ def _triangle_vertices(
 def main(args: argparse.Namespace) -> None:
     _apply_default_center(args)
     vertices = _triangle_vertices(args.center, args.side)
-    edges = tuple(zip(vertices, vertices[1:] + vertices[:1]))
+    path = vertices + vertices[:1]
     robot = ArxDCanDualArm(control_mode="pv")
     submitted = False
     try:
         robot.connect()
         robot.enable()
-        motion_ids: list[int] = []
         try:
-            for start_pose, end_pose in edges:
-                motion_ids.append(
-                    robot.move_linear(
-                        side=args.side,
-                        start_pose=start_pose,
-                        end_pose=end_pose,
-                        duration_s=args.duration,
-                    )
-                )
-                submitted = True
+            motion_id = robot.move_linear_trajectory(
+                side=args.side,
+                poses=path,
+                duration_s=args.duration,
+            )
+            submitted = True
         except Exception:
             if submitted:
                 robot.cancel_all_motions()
             raise
         print(
-            f"{args.side} 等边三角形已提交：motion_ids={motion_ids}，"
+            f"{args.side} 等边三角形已提交：motion_id={motion_id}，"
+            f"模式=PV 50，默认圆角=10 mm，"
             f"边长={TRIANGLE_SIDE_M * 100:.1f} cm"
         )
         while True:
-            statuses = [
-                robot.get_motion_status(motion_id)
-                for motion_id in motion_ids
-            ]
-            progress = sum(status.progress for status in statuses) / len(statuses)
+            status = robot.get_motion_status(motion_id)
             print(
-                f"\rstate={[status.state.value for status in statuses]} "
-                f"progress={progress:.1%}",
+                f"\rstate={status.state.value} progress={status.progress:.1%}",
                 end="",
                 flush=True,
             )
-            if all(
-                status.state is MotionState.COMPLETED
-                for status in statuses
-            ):
+            if status.state is MotionState.COMPLETED:
                 print("\n三角形执行完成，机械臂已回到第一个顶点")
                 return
-            if any(
-                status.state is MotionState.CANCELLED
-                for status in statuses
-            ):
-                print("\n运动已取消")
-                return
-            fault_status = next(
-                (
-                    status
-                    for status in statuses
-                    if status.state is MotionState.FAULT
-                ),
-                None,
-            )
-            if fault_status is not None:
+            if status.state is MotionState.FAULT:
                 health = robot.get_health()
                 detail = (
-                    health.last_operation_error
+                    status.error
+                    or health.last_operation_error
                     or health.safety_reason
                     or health.fault_reason
-                    or fault_status.error
                     or "未知错误"
                 )
-                raise RuntimeError(f"三角形运动失败：{detail}")
+                raise RuntimeError(
+                    f"三角形运动失败：motion_id={motion_id}，{detail}"
+                )
+            if status.state is MotionState.CANCELLED:
+                print("\n运动已取消")
+                return
             time.sleep(0.05)
     except KeyboardInterrupt:
         if submitted:
@@ -149,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--duration",
         type=positive_duration_s,
         required=True,
-        help="每段完整任务的计划时间（秒，包含自动接近起点）",
+        help="每条原始边的参考时间（秒；整条路径统一五次时间律和10 mm圆角）",
     )
     return parser
 

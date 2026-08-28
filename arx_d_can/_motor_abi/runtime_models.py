@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import Enum, IntEnum, IntFlag
 
 
 class SafetyState(IntEnum):
@@ -47,12 +47,12 @@ class RuntimeOperation(IntEnum):
     DISCONNECT = 7
     COMMAND = 8
     RECOVER = 9
-    START_TRAJECTORY = 10
+    MOVE_JOINT_TRAJECTORY = 10
     CANCEL_MOTION = 11
-    MOVE_POSE = 12
+    SET_POSE = 12
     CANCEL_ALL_MOTIONS = 13
-    MOVE_LINEAR = 14
-    MOVE_CIRCULAR = 15
+    MOVE_LINEAR_TRAJECTORY = 14
+    MOVE_CIRCULAR_TRAJECTORY = 15
     START_BIMANUAL_FOLLOW = 16
     STOP_BIMANUAL_FOLLOW = 17
     SET_TCP_OFFSET = 18
@@ -69,6 +69,25 @@ class OperationError(IntEnum):
     MOTOR_COMMAND = 7
     VERIFICATION = 8
     UNSUPPORTED = 9
+
+
+class MotorFeedbackIssue(IntFlag):
+    NONE = 0
+    MISSING = 1 << 0
+    STALE = 1 << 1
+    STATE_UNAVAILABLE = 1 << 2
+    NONFINITE = 1 << 3
+    MOTOR_FAULT = 1 << 4
+    UNEXPECTED_POWER_STATE = 1 << 5
+
+
+class FeedbackIssueScope(IntEnum):
+    NONE = 0
+    SINGLE_MOTOR = 1
+    MULTIPLE_MOTORS = 2
+    LEFT_CHANNEL = 3
+    RIGHT_CHANNEL = 4
+    BOTH_CHANNELS = 5
 
 
 class GravityCompensationPhase(IntEnum):
@@ -265,6 +284,25 @@ class GripperHealth:
 
 
 @dataclass(frozen=True)
+class MotorFeedbackHealth:
+    side: int
+    can_id: int | None
+    is_gripper: bool
+    has_feedback: bool
+    fresh: bool
+    has_state: bool
+    values_finite: bool
+    status_code: int
+    issues: MotorFeedbackIssue
+    position: float
+    velocity: float
+    torque: float
+    feedback_age_ns: int | None
+    update_count: int
+    role: str
+
+
+@dataclass(frozen=True)
 class SafetyHealth:
     state: SafetyState
     safe_holding: bool
@@ -288,3 +326,10 @@ class SafetyHealth:
     requires_resynchronization: bool = False
     command_scale: float = 1.0
     safety_reason: str | None = None
+    motor_feedback: tuple[MotorFeedbackHealth, ...] = ()
+    feedback_issue_count: int = 0
+    feedback_issue_scope: FeedbackIssueScope = FeedbackIssueScope.NONE
+
+    @property
+    def motor_feedback_count(self) -> int:
+        return len(self.motor_feedback)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""设置一侧法兰到活动 TCP 的偏移，并验证读取与恢复默认值。"""
+"""控制示例 16：设置一侧法兰到活动 TCP 的偏移并验证恢复默认值。"""
 from __future__ import annotations
 
 import argparse

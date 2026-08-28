@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 10：安全回到双臂轨迹起点后，按原始时间戳原子回放。"""
+"""控制示例 14：回到起点后，按时间戳逐点发送普通 PV 或 MIT 轨迹。"""
 from __future__ import annotations
 
 import argparse
@@ -9,14 +9,10 @@ import time
 
 from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.common import (
-    joint_values,
     positive_velocity_degrees,
     speed_percent,
 )
 from arx_d_can.service_tools.dual_trajectory_recording import (
-    DEFAULT_MIT_FEEDFORWARD_TORQUES,
-    DEFAULT_MIT_KD,
-    DEFAULT_MIT_KP,
     DualArmTrajectorySample,
     load_trajectory,
     replay,
@@ -27,39 +23,24 @@ def _move_to_start(
     robot: ArxDCanDualArm,
     target: DualArmTrajectorySample,
     *,
-    start_velocity: float,
-    start_speed_percent: float,
+    velocity: float,
     max_acceleration_rad_s2: float,
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
-    mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
-    mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
-    mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
 ) -> None:
-    state = robot.read_cached_state()
-    current_left = tuple(state.left.arm.positions)
-    current_right = tuple(state.right.arm.positions)
     if robot.control_mode == "pv":
         robot.set_max_acceleration(max_acceleration_rad_s2)
         robot.set_joint_pv(
             left=target.left_positions,
             right=target.right_positions,
-            velocity=start_speed_percent,
+            velocity=velocity,
         )
     else:
-        largest_move = max(
-            *(abs(end - start) for start, end in zip(current_left, target.left_positions)),
-            *(abs(end - start) for start, end in zip(current_right, target.right_positions)),
-        )
-        duration = max(0.5, 1.875 * largest_move / start_velocity)
-        robot.start_trajectory(
-            timestamps=[0.0, duration],
-            left_positions=[current_left, target.left_positions],
-            right_positions=[current_right, target.right_positions],
-            kp=mit_kp,
-            kd=mit_kd,
-            feedforward_torque=mit_feedforward_torques,
+        robot.set_joint_mit(
+            left=target.left_positions,
+            right=target.right_positions,
+            velocity=velocity,
         )
 
     deadline = time.monotonic() + timeout
@@ -118,41 +99,26 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
     try:
         robot.enable()
-        if args.mode == "pv":
-            print(
-                f"正以 {args.start_speed:g}% 速度移动双臂到轨迹起点……"
-            )
-        else:
-            print(
-                f"正以 {math.degrees(args.start_velocity):g}°/s "
-                "原子移动双臂到轨迹起点……"
-            )
+        print(f"正以普通 {args.mode.upper()} 速度 {args.velocity:g} 移动到轨迹起点……")
         _move_to_start(
             robot,
             first,
-            start_velocity=args.start_velocity,
-            start_speed_percent=args.start_speed,
+            velocity=args.velocity,
             max_acceleration_rad_s2=args.max_acceleration,
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
-            mit_kp=args.mit_kp,
-            mit_kd=args.mit_kd,
-            mit_feedforward_torques=args.mit_feedforward_torque,
         )
         print(
-            f"开始原子回放 {len(samples)} 个双臂轨迹点，"
-            f"控制模式：{args.mode.upper()}，插值模式：{args.interpolation}；"
+            f"开始按记录时间戳回放 {len(samples)} 个双臂轨迹点，"
+            f"控制模式：普通 {args.mode.upper()}，无插值；"
             "按 Ctrl+C 可安全停止"
         )
         replay(
             robot,
             timestamps=timestamps,
             samples=samples,
-            interpolation="quintic",
-            mit_kp=args.mit_kp,
-            mit_kd=args.mit_kd,
-            mit_feedforward_torques=args.mit_feedforward_torque,
+            velocity=args.velocity,
         )
         print("双臂轨迹回放完成")
     except KeyboardInterrupt:
@@ -172,46 +138,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="回放控制模式；默认 pv",
     )
     parser.add_argument(
-        "--start-velocity",
-        type=positive_velocity_degrees,
-        default=math.radians(30.0),
-        help="MIT 返回轨迹起点的统一速度，单位为度/秒；PV 模式忽略；默认 30",
-    )
-    parser.add_argument(
-        "--start-speed",
+        "--velocity",
         type=speed_percent,
         default=50.0,
-        help="PV 返回轨迹起点的单次速度百分比 0–100；默认 50",
+        help="普通 PV/MIT 回放统一速度档位，范围 0–100；默认 50",
     )
     parser.add_argument(
         "--max-acceleration",
         type=float,
-        default=4.0,
-        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略；默认 4.00",
-    )
-    parser.add_argument(
-        "--interpolation",
-        choices=("quintic",),
-        default="quintic",
-        help="原生轨迹固定使用五次多项式插值",
-    )
-    parser.add_argument(
-        "--mit-kp",
-        type=lambda text: joint_values(text, name="MIT Kp"),
-        default=DEFAULT_MIT_KP,
-        help="MIT 7 轴 Kp；默认 190,190,70,125,10,22,28",
-    )
-    parser.add_argument(
-        "--mit-kd",
-        type=lambda text: joint_values(text, name="MIT Kd"),
-        default=DEFAULT_MIT_KD,
-        help="MIT 7 轴 Kd；默认 4.55,4.5,2,2.9,0.7,0.89,0.84",
-    )
-    parser.add_argument(
-        "--mit-feedforward-torque",
-        type=lambda text: joint_values(text, name="MIT 前馈力矩"),
-        default=DEFAULT_MIT_FEEDFORWARD_TORQUES,
-        help="MIT 7 轴前馈力矩，单位为 N·m；默认全部为 0",
+        default=6.0,
+        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略；默认 6.00",
     )
     parser.add_argument("--start-timeout", type=float, default=30.0)
     parser.add_argument(

@@ -6,20 +6,14 @@ import json
 import math
 from pathlib import Path
 import time
-from typing import Literal, TYPE_CHECKING
-
-from .._motor_abi import MotionState, MotionStatus
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..sdk.dual_arm import ArxDCanDualArm
 
 
 FORMAT_VERSION = 1
-InterpolationMode = Literal["quintic"]
-DEFAULT_MIT_KP = (190.0, 190.0, 70.0, 125.0, 10.0, 22.0, 28.0)
-DEFAULT_MIT_KD = (4.55, 4.5, 2.0, 2.9, 0.7, 0.89, 0.84)
-DEFAULT_MIT_FEEDFORWARD_TORQUES = (0.0,) * 7
-DEFAULT_PV_VELOCITY_LIMITS = (2.5,) * 7
+MAX_RECORDING_HZ = 500.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -36,7 +30,16 @@ def _frequency(value: float) -> float:
     hz = float(value)
     if not math.isfinite(hz) or hz <= 0.0:
         raise ValueError("hz must be finite and positive")
+    if hz > MAX_RECORDING_HZ:
+        raise ValueError(f"hz must not exceed {MAX_RECORDING_HZ:g}")
     return hz
+
+
+def _speed_percent(value: float) -> float:
+    speed = float(value)
+    if not math.isfinite(speed) or not 0.0 <= speed <= 100.0:
+        raise ValueError("velocity must be finite and in the range 0..100")
+    return speed
 
 
 def _duration(value: float) -> float:
@@ -156,7 +159,10 @@ def load_trajectory(
     timestamps = [float(value) for value in raw_timestamps]
     if any(not math.isfinite(value) for value in timestamps):
         raise ValueError("trajectory timestamps must be finite")
-    if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
+    if any(
+        current <= previous
+        for previous, current in zip(timestamps, timestamps[1:])
+    ):
         raise ValueError("trajectory timestamps must be strictly increasing")
 
     samples: list[DualArmTrajectorySample] = []
@@ -199,80 +205,65 @@ def replay(
     *,
     timestamps: list[float],
     samples: list[DualArmTrajectorySample],
-    interpolation: InterpolationMode = "quintic",
-    mit_kp: tuple[float, ...] = DEFAULT_MIT_KP,
-    mit_kd: tuple[float, ...] = DEFAULT_MIT_KD,
-    mit_feedforward_torques: tuple[float, ...] = DEFAULT_MIT_FEEDFORWARD_TORQUES,
-    pv_velocity_limits: tuple[float, ...] = DEFAULT_PV_VELOCITY_LIMITS,
+    velocity: float = 50.0,
     gripper_level: int = 5,
-    timeout: float | None = None,
-) -> MotionStatus:
-    """一次性提交原生轨迹，并仅轮询状态等待 C++ 500 Hz 执行完成。"""
+) -> None:
+    """按记录时间戳逐点发送普通 PV 或 MIT 位置命令，不做插值。"""
     if not samples or len(timestamps) != len(samples):
         raise ValueError("timestamps and samples must have the same non-zero length")
-    if interpolation != "quintic":
-        raise ValueError("native trajectory replay only supports quintic interpolation")
-    if any(current <= previous for previous, current in zip(timestamps, timestamps[1:])):
+    times = [float(value) for value in timestamps]
+    if any(not math.isfinite(value) for value in times):
+        raise ValueError("timestamps must be finite")
+    if any(current <= previous for previous, current in zip(times, times[1:])):
         raise ValueError("timestamps must be strictly increasing")
-    gripper_pairs = {
+    speed = _speed_percent(velocity)
+    mode = str(robot.control_mode).strip().lower()
+    if mode not in {"pv", "mit"}:
+        raise RuntimeError(f"unsupported replay control mode: {robot.control_mode}")
+
+    gripper_pairs = [
         (sample.left_gripper, sample.right_gripper) for sample in samples
-        if sample.left_gripper is not None or sample.right_gripper is not None
-    }
-    if gripper_pairs:
-        if not robot.has_grippers:
-            raise RuntimeError("trajectory requires the dual-arm gripper pair")
-        if len(gripper_pairs) != 1:
-            raise ValueError(
-                "native arm trajectories do not support time-varying gripper commands"
-            )
-        left_gripper, right_gripper = next(iter(gripper_pairs))
-        if left_gripper is None or right_gripper is None:
-            raise ValueError("native trajectory gripper commands require both sides")
-        robot.set_grippers(
-            left=left_gripper,
-            right=right_gripper,
-            gripper_level=gripper_level,
+    ]
+    if any((left is None) != (right is None) for left, right in gripper_pairs):
+        raise ValueError("trajectory gripper commands require both sides")
+    if any(left is not None for left, _ in gripper_pairs) and not robot.has_grippers:
+        raise RuntimeError("trajectory requires the dual-arm gripper pair")
+
+    started = time.perf_counter()
+    first_timestamp = times[0]
+    previous_grippers: tuple[float, float] | None = None
+    for timestamp, sample, grippers in zip(times, samples, gripper_pairs):
+        scheduled_at = started + timestamp - first_timestamp
+        remaining = scheduled_at - time.perf_counter()
+        if remaining > 0.0:
+            time.sleep(remaining)
+
+        command = (
+            robot.set_joint_pv
+            if mode == "pv"
+            else robot.set_joint_mit
+        )
+        command(
+            left=sample.left_positions,
+            right=sample.right_positions,
+            velocity=speed,
         )
 
-    relative_timestamps = [value - timestamps[0] for value in timestamps]
-    motion_id = robot.start_trajectory(
-        timestamps=relative_timestamps,
-        left_positions=[sample.left_positions for sample in samples],
-        right_positions=[sample.right_positions for sample in samples],
-        interpolation="quintic",
-        kp=mit_kp if robot.control_mode == "mit" else None,
-        kd=mit_kd if robot.control_mode == "mit" else None,
-        feedforward_torque=(
-            mit_feedforward_torques if robot.control_mode == "mit" else None
-        ),
-        pv_velocity_limits=(
-            pv_velocity_limits if robot.control_mode == "pv" else 2.5
-        ),
-    )
-    deadline = (
-        time.monotonic() + timeout
-        if timeout is not None
-        else time.monotonic() + relative_timestamps[-1] + 30.0
-    )
-    while True:
-        status = robot.get_motion_status(motion_id)
-        if status.state is MotionState.COMPLETED:
-            return status
-        if status.state in {MotionState.CANCELLED, MotionState.FAULT}:
-            raise RuntimeError(status.error or f"trajectory {status.state.value}")
-        if time.monotonic() >= deadline:
-            robot.cancel_motion(motion_id)
-            raise TimeoutError("native trajectory did not complete before timeout")
-        time.sleep(0.02)
+        left_gripper, right_gripper = grippers
+        if left_gripper is not None and right_gripper is not None:
+            current_grippers = (float(left_gripper), float(right_gripper))
+            if current_grippers != previous_grippers:
+                robot.set_grippers(
+                    left=current_grippers[0],
+                    right=current_grippers[1],
+                    gripper_level=gripper_level,
+                )
+                previous_grippers = current_grippers
 
 
 __all__ = [
-    "DEFAULT_MIT_FEEDFORWARD_TORQUES",
-    "DEFAULT_MIT_KD",
-    "DEFAULT_MIT_KP",
-    "DEFAULT_PV_VELOCITY_LIMITS",
     "DualArmTrajectorySample",
-    "InterpolationMode",
+    "MAX_RECORDING_HZ",
     "load_trajectory",
     "record",
     "replay",

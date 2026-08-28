@@ -7,7 +7,9 @@ import ctypes
 import pytest
 
 from arx_d_can._motor_abi import (
+    FeedbackIssueScope,
     JointLimit,
+    MotorFeedbackIssue,
     MotionState,
     MotionStatus,
     MotionType,
@@ -128,7 +130,7 @@ class FakeRuntime:
             error=None,
         )
         self.fps = 8120.0
-        self.max_acceleration = 4.0
+        self.max_acceleration = 6.0
         self.joint_limits = tuple(
             JointLimit(-float(index + 1), float(index + 1), 5.0)
             for index in range(14)
@@ -203,8 +205,8 @@ class FakeRuntime:
     def submit_mit_frame(self, *values) -> None:
         self.calls.append(("mit", *values))
 
-    def start_trajectory(self, **kwargs) -> int:
-        self.calls.append(("start_trajectory", kwargs))
+    def move_joint_trajectory(self, **kwargs) -> int:
+        self.calls.append(("move_joint_trajectory", kwargs))
         return 31
 
     def set_product_grippers(self, *, left, right, gripper_level, mode) -> None:
@@ -255,26 +257,43 @@ class FakeRuntime:
     def reset_tcp_offset(self, side: int) -> None:
         self.calls.append(("reset_tcp_offset", side))
 
-    def move_pose(
+    def solve_ik(self, left_target_pose, right_target_pose) -> tuple[float, ...]:
+        self.calls.append((
+            "solve_ik", tuple(left_target_pose), tuple(right_target_pose),
+        ))
+        return tuple(float(index) for index in range(14))
+
+    def set_pose(
         self, left_target_pose, right_target_pose, speed_percent=50.0
     ) -> None:
         self.calls.append((
-            "move_pose", tuple(left_target_pose), tuple(right_target_pose),
+            "set_pose", tuple(left_target_pose), tuple(right_target_pose),
             speed_percent,
         ))
 
-    def move_linear(self, side, start_pose, end_pose, duration_s) -> int:
+    def move_linear_trajectory(
+        self, side, start_pose, end_pose, duration_s
+    ) -> int:
         self.calls.append((
-            "move_linear", side, tuple(start_pose), tuple(end_pose),
+            "move_linear_trajectory", side, tuple(start_pose), tuple(end_pose),
             duration_s,
         ))
         return 11
 
-    def move_circular(
+    def move_linear_path_trajectory(
+        self, side, poses, segment_duration_s
+    ) -> int:
+        self.calls.append((
+            "move_linear_path_trajectory", side,
+            tuple(tuple(pose) for pose in poses), segment_duration_s,
+        ))
+        return 13
+
+    def move_circular_trajectory(
         self, side, start_pose, via_pose, end_pose, duration_s
     ) -> int:
         self.calls.append((
-            "move_circular", side, tuple(start_pose), tuple(via_pose),
+            "move_circular_trajectory", side, tuple(start_pose), tuple(via_pose),
             tuple(end_pose), duration_s,
         ))
         return 12
@@ -378,7 +397,7 @@ def test_ctypes_enable_uses_the_abi_six_single_argument_signature() -> None:
     assert calls == [123]
 
 
-def test_ctypes_health_maps_the_unified_abi_six_structure() -> None:
+def test_ctypes_health_maps_per_motor_feedback_diagnostics() -> None:
     def get_health(_pointer, output) -> int:
         native = ctypes.cast(output, ctypes.POINTER(CSafetyHealth)).contents
         native.state = int(SafetyState.FAULT)
@@ -387,10 +406,31 @@ def test_ctypes_health_maps_the_unified_abi_six_structure() -> None:
         native.left_transport.connected = 1
         native.left_transport.healthy = 0
         native.left_transport.last_error = b"left feedback incomplete"
+        native.motor_feedback_count = 1
+        native.feedback_issue_count = 1
+        native.feedback_issue_scope = int(FeedbackIssueScope.SINGLE_MOTOR)
+        motor = native.motor_feedback[0]
+        motor.side = 0
+        motor.can_id = 5
+        motor.can_id_valid = 1
+        motor.has_feedback = 1
+        motor.fresh = 0
+        motor.has_state = 1
+        motor.values_finite = 1
+        motor.status_code = 3
+        motor.issues = int(
+            MotorFeedbackIssue.STALE | MotorFeedbackIssue.MOTOR_FAULT
+        )
+        motor.position = 0.25
+        motor.velocity = -0.5
+        motor.torque = 1.5
+        motor.feedback_age_ns = 125_000_000
+        motor.update_count = 77
+        motor.role = b"left/l-joint5"
         native.motor_fault_count = 1
         native.motor_faults[0].value = b"left/l-joint2"
         native.fault_reason = b"connect detected motor fault"
-        native.last_operation = int(RuntimeOperation.MOVE_POSE)
+        native.last_operation = int(RuntimeOperation.SET_POSE)
         native.last_operation_code = int(OperationError.INVALID_STATE)
         native.operation_failed_motor_count = 1
         native.operation_failed_motors[0].value = b"left/l-joint2"
@@ -408,13 +448,63 @@ def test_ctypes_health_maps_the_unified_abi_six_structure() -> None:
     health = runtime.health
     assert health.state is SafetyState.FAULT
     assert health.left_transport.last_error == "left feedback incomplete"
+    assert health.motor_feedback_count == 1
+    assert health.feedback_issue_count == 1
+    assert health.feedback_issue_scope is FeedbackIssueScope.SINGLE_MOTOR
+    motor = health.motor_feedback[0]
+    assert motor.role == "left/l-joint5"
+    assert motor.side == 0
+    assert motor.can_id == 5
+    assert motor.feedback_age_ns == 125_000_000
+    assert motor.status_code == 3
+    assert motor.issues == (
+        MotorFeedbackIssue.STALE | MotorFeedbackIssue.MOTOR_FAULT
+    )
+    assert motor.position == pytest.approx(0.25)
+    assert motor.velocity == pytest.approx(-0.5)
+    assert motor.torque == pytest.approx(1.5)
+    assert motor.update_count == 77
     assert health.motor_faults == ("left/l-joint2",)
     assert health.fault_reason == "connect detected motor fault"
-    assert health.last_operation is RuntimeOperation.MOVE_POSE
+    assert health.last_operation is RuntimeOperation.SET_POSE
     assert health.last_operation_code is OperationError.INVALID_STATE
     assert health.operation_failed_motors == ("left/l-joint2",)
     assert health.last_operation_error == "current_state=FAULT"
     assert health.safety_reason == "motion rejected"
+
+
+@pytest.mark.parametrize(
+    ("scope", "issue_count"),
+    (
+        (FeedbackIssueScope.SINGLE_MOTOR, 1),
+        (FeedbackIssueScope.MULTIPLE_MOTORS, 2),
+        (FeedbackIssueScope.LEFT_CHANNEL, 8),
+        (FeedbackIssueScope.RIGHT_CHANNEL, 8),
+        (FeedbackIssueScope.BOTH_CHANNELS, 16),
+    ),
+)
+def test_ctypes_health_preserves_native_feedback_issue_scope(
+    scope: FeedbackIssueScope,
+    issue_count: int,
+) -> None:
+    def get_health(_pointer, output) -> int:
+        native = ctypes.cast(output, ctypes.POINTER(CSafetyHealth)).contents
+        native.state = int(SafetyState.DEGRADED)
+        native.feedback_issue_count = issue_count
+        native.feedback_issue_scope = int(scope)
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(
+        lib=SimpleNamespace(articore_runtime_get_health=get_health)
+    )
+
+    health = runtime.health
+
+    assert health.feedback_issue_count == issue_count
+    assert health.feedback_issue_scope is scope
 
 
 def test_ctypes_gravity_status_uses_fixed_fourteen_joint_payload() -> None:
@@ -489,7 +579,7 @@ def test_ordinary_pv_acceleration_limit_uses_physical_units(
     )
     assert tuple(inspect.signature(robot.get_max_acceleration).parameters) == ()
 
-    assert robot.get_max_acceleration() == pytest.approx(4.0)
+    assert robot.get_max_acceleration() == pytest.approx(6.0)
     robot.set_max_acceleration(4.56)
     assert robot.get_max_acceleration() == pytest.approx(4.56)
     assert not hasattr(robot, "set_speed")
@@ -538,10 +628,10 @@ def test_ordinary_position_is_one_fixed_fourteen_axis_frame(product_factory) -> 
     ]
 
 
-def test_ordinary_position_default_is_selected_by_native_product(product_factory) -> None:
+def test_ordinary_position_defaults_to_fifty(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
     robot.set_joint_mit(left=(0,) * 7, right=(0,) * 7)
-    assert robot._runtime.calls == [("mit-position", (0.0,) * 14, 100.0)]
+    assert robot._runtime.calls == [("mit-position", (0.0,) * 14, 50.0)]
 
 
 def test_pv_position_forwards_per_command_speed(product_factory) -> None:
@@ -551,6 +641,7 @@ def test_pv_position_forwards_per_command_speed(product_factory) -> None:
         ("pv", (0.0,) * 7 + (1.0,) * 7, 50.0)
     ]
     assert not hasattr(robot, "submit_raw_pv")
+    assert not hasattr(robot, "set_realtime_pv")
     robot.set_joint_pv(
         left=(0,) * 7,
         right=(1,) * 7,
@@ -608,10 +699,11 @@ def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) 
 
 def test_product_joint_trajectory_is_one_native_submission(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
+    assert not hasattr(robot, "start_trajectory")
     left = [(0.0,) * 7, (0.1,) * 7]
     right = [(0.0,) * 7, (-0.1,) * 7]
 
-    trajectory_id = robot.start_trajectory(
+    trajectory_id = robot.move_joint_trajectory(
         timestamps=[0.0, 2.0],
         left_positions=left,
         right_positions=right,
@@ -619,7 +711,7 @@ def test_product_joint_trajectory_is_one_native_submission(product_factory) -> N
 
     assert trajectory_id == 31
     call = robot._runtime.calls[0]
-    assert call[0] == "start_trajectory"
+    assert call[0] == "move_joint_trajectory"
     assert call[1]["timestamps"] == [0.0, 2.0]
     assert call[1]["left_positions"] is left
     assert call[1]["right_positions"] is right
@@ -629,11 +721,23 @@ def test_product_joint_trajectory_is_one_native_submission(product_factory) -> N
     assert robot._runtime.calls[-1] == ("cancel_motion", 31)
 
 
+def test_joint_trajectory_limit_matches_runtime_abi_30000() -> None:
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    positions = [(0.0,) * 7] * 30_001
+
+    with pytest.raises(ValueError, match="at most 30000"):
+        runtime.move_joint_trajectory(
+            timestamps=[float(index) for index in range(30_001)],
+            left_positions=positions,
+            right_positions=positions,
+        )
+
+
 def test_mit_joint_trajectory_requires_explicit_gains(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
 
     with pytest.raises(ValueError, match="explicit kp and kd"):
-        robot.start_trajectory(
+        robot.move_joint_trajectory(
             timestamps=[0.0, 1.0],
             left_positions=[(0.0,) * 7] * 2,
             right_positions=[(0.0,) * 7] * 2,
@@ -664,10 +768,10 @@ def test_ctypes_joint_trajectory_copies_complete_native_request() -> None:
     runtime._ptr = 1
     runtime._control_mode = RuntimeControlMode.PV
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
-        articore_runtime_start_trajectory=start,
+        articore_runtime_move_joint_trajectory=start,
     ))
 
-    trajectory_id = runtime.start_trajectory(
+    trajectory_id = runtime.move_joint_trajectory(
         timestamps=[0.0, 2.0],
         left_positions=[(0.0,) * 7, (0.1,) * 7],
         right_positions=[(0.0,) * 7, (-0.1,) * 7],
@@ -788,20 +892,37 @@ def test_tcp_offset_is_forwarded_to_the_native_runtime(product_factory) -> None:
 def test_cartesian_motion_is_forwarded_as_native_operation(
     product_factory,
 ) -> None:
-    robot = ArxDCanDualArm(control_mode="mit")
+    robot = ArxDCanDualArm(control_mode="pv")
     target = (0.3, 0.2, 0.4, 0.0, 0.1, 0.2)
     start = (0.2, 0.1, 0.3, 0.0, 0.0, 0.1)
     via = (0.25, 0.15, 0.35, 0.0, 0.05, 0.1)
 
-    assert robot.move_pose(
+    assert robot.solve_ik(
+        left_target_pose=target,
+        right_target_pose=via,
+    ) == (
+        tuple(float(index) for index in range(7)),
+        tuple(float(index) for index in range(7, 14)),
+    )
+    assert robot.set_pose(
         left_target_pose=target,
         right_target_pose=via,
         speed_percent=25,
     ) is None
-    assert robot.move_linear(
-        side="right", start_pose=start, end_pose=target, duration_s=20
+    assert robot.move_linear_trajectory(
+        side="right", start_pose=start, end_pose=target, duration_s=20,
     ) == 11
-    assert robot.move_circular(
+    assert robot.move_linear_trajectory(
+        side="left", poses=(start, via, target), duration_s=10,
+    ) == 13
+    with pytest.raises(ValueError, match="cannot be combined"):
+        robot.move_linear_trajectory(
+            side="left", start_pose=start, end_pose=target,
+            poses=(start, via, target), duration_s=10,
+        )
+    with pytest.raises(ValueError, match="required when poses is omitted"):
+        robot.move_linear_trajectory(side="left", duration_s=10)
+    assert robot.move_circular_trajectory(
         side="left", start_pose=start, via_pose=via, end_pose=target,
         duration_s=30,
     ) == 12
@@ -810,57 +931,90 @@ def test_cartesian_motion_is_forwarded_as_native_operation(
     robot.cancel_all_motions()
 
     assert robot._runtime.calls == [
-        ("move_pose", target, via, 25),
-        ("move_linear", 1, start, target, 20),
-        ("move_circular", 0, start, via, target, 30),
+        ("solve_ik", target, via),
+        ("set_pose", target, via, 25),
+        ("move_linear_trajectory", 1, start, target, 20),
+        ("move_linear_path_trajectory", 0, (start, via, target), 10),
+        ("move_circular_trajectory", 0, start, via, target, 30),
         ("get_motion_status", 10),
         ("cancel_motion", 10),
         ("cancel_all_motions",),
     ]
 
 
-def test_cartesian_sdk_exposes_no_python_path_or_interpolation_arguments(
+def test_cartesian_sdk_keeps_one_linear_method_and_native_path_planning(
     product_factory,
 ) -> None:
     import inspect
 
     robot = ArxDCanDualArm(control_mode="pv")
-    ptp = inspect.signature(robot.move_pose)
-    assert not hasattr(robot, "move_poses")
-    linear = inspect.signature(robot.move_linear)
-    circular = inspect.signature(robot.move_circular)
+    solve_ik = inspect.signature(robot.solve_ik)
+    ptp = inspect.signature(robot.set_pose)
+    assert not hasattr(robot, "set_poses")
+    assert not hasattr(robot, "move_pose")
+    assert not hasattr(robot, "move_linear")
+    assert not hasattr(robot, "move_circular")
+    linear = inspect.signature(robot.move_linear_trajectory)
+    circular = inspect.signature(robot.move_circular_trajectory)
     joint_pv = inspect.signature(robot.set_joint_pv)
 
     assert tuple(joint_pv.parameters) == ("left", "right", "velocity")
     assert joint_pv.parameters["velocity"].default == 50.0
+    joint_mit = inspect.signature(robot.set_joint_mit)
+    assert tuple(joint_mit.parameters) == ("left", "right", "velocity")
+    assert joint_mit.parameters["velocity"].default == 50.0
+
+    assert tuple(solve_ik.parameters) == (
+        "left_target_pose", "right_target_pose",
+    )
 
     assert tuple(ptp.parameters) == (
         "left_target_pose", "right_target_pose", "speed_percent",
     )
     assert ptp.parameters["speed_percent"].default == 50.0
     assert tuple(linear.parameters) == (
-        "side", "start_pose", "end_pose", "duration_s",
+        "side", "start_pose", "end_pose", "poses", "duration_s",
     )
     assert tuple(circular.parameters) == (
         "side", "start_pose", "via_pose", "end_pose", "duration_s",
     )
 
 
+def test_linear_path_rejects_pose_counts_outside_native_2_to_64() -> None:
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    pose = (0.1, 0.2, 0.3, 0.0, 0.1, 0.2)
+
+    for poses in ((pose,), (pose,) * 65):
+        with pytest.raises(ValueError, match="2..64 poses"):
+            runtime.move_linear_path_trajectory(0, poses, 3.0)
+
+
 def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     calls: list[tuple] = []
 
-    def move_pose(_runtime, left, right, speed) -> int:
+    def set_pose(_runtime, left, right, speed) -> int:
         calls.append(("ptp", tuple(left), tuple(right), float(speed)))
         return 0
 
-    def move_linear(_runtime, side, start, end, speed, output) -> int:
+    def move_linear_trajectory(_runtime, side, start, end, speed, output) -> int:
         calls.append((
             "linear", side, tuple(start), tuple(end), float(speed),
         ))
         ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 21
         return 0
 
-    def move_circular(
+    def move_linear_path_trajectory(
+        _runtime, side, poses, pose_count, duration, output
+    ) -> int:
+        calls.append((
+            "linear_path", side,
+            tuple(poses[index] for index in range(pose_count * 6)),
+            pose_count, float(duration),
+        ))
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 23
+        return 0
+
+    def move_circular_trajectory(
         _runtime, side, start, via, end, speed, output
     ) -> int:
         calls.append((
@@ -874,17 +1028,21 @@ def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     runtime._lock = RLock()
     runtime._ptr = 1
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
-        articore_runtime_move_pose=move_pose,
-        articore_runtime_move_linear=move_linear,
-        articore_runtime_move_circular=move_circular,
+        articore_runtime_set_pose=set_pose,
+        articore_runtime_move_linear_trajectory=move_linear_trajectory,
+        articore_runtime_move_linear_path_trajectory=(
+            move_linear_path_trajectory
+        ),
+        articore_runtime_move_circular_trajectory=move_circular_trajectory,
     ))
     start = (0.1, 0.2, 0.3, 0.0, 0.1, 0.2)
     via = (0.2, 0.3, 0.4, 0.1, 0.2, 0.3)
     end = (0.3, 0.4, 0.5, 0.2, 0.3, 0.4)
 
-    assert runtime.move_pose(start, end, 7) is None
-    assert runtime.move_linear(0, start, end, 10) == 21
-    assert runtime.move_circular(1, start, via, end, 20) == 22
+    assert runtime.set_pose(start, end, 7) is None
+    assert runtime.move_linear_trajectory(0, start, end, 10) == 21
+    assert runtime.move_linear_path_trajectory(0, (start, via, end), 10) == 23
+    assert runtime.move_circular_trajectory(1, start, via, end, 20) == 22
     assert calls[0][0] == "ptp"
     assert calls[0][1] == pytest.approx(start)
     assert calls[0][2] == pytest.approx(end)
@@ -893,24 +1051,172 @@ def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     assert calls[1][2] == pytest.approx(start)
     assert calls[1][3] == pytest.approx(end)
     assert calls[1][4] == 10.0
-    assert calls[2][:2] == ("circular", 1)
-    assert calls[2][2] == pytest.approx(start)
-    assert calls[2][3] == pytest.approx(via)
-    assert calls[2][4] == pytest.approx(end)
-    assert calls[2][5] == 20.0
+    assert calls[2][:2] == ("linear_path", 0)
+    assert calls[2][2] == pytest.approx(start + via + end)
+    assert calls[2][3:] == (3, 10.0)
+    assert calls[3][:2] == ("circular", 1)
+    assert calls[3][2] == pytest.approx(start)
+    assert calls[3][3] == pytest.approx(via)
+    assert calls[3][4] == pytest.approx(end)
+    assert calls[3][5] == 20.0
+
+
+def test_ctypes_solve_ik_forwards_two_poses_and_returns_fourteen_joints() -> None:
+    calls: list[tuple] = []
+
+    def solve_ik(_runtime, left, right, output, count) -> int:
+        calls.append((tuple(left), tuple(right), int(count)))
+        for index in range(int(count)):
+            output[index] = float(index) / 10.0
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(
+        lib=SimpleNamespace(articore_runtime_solve_ik=solve_ik)
+    )
+    left = (0.1, 0.2, 0.3, 0.0, 0.1, 0.2)
+    right = (0.1, -0.2, 0.3, 0.0, 0.1, -0.2)
+
+    result = runtime.solve_ik(left, right)
+
+    assert result == pytest.approx(tuple(index / 10.0 for index in range(14)))
+    assert len(calls) == 1
+    assert calls[0][0] == pytest.approx(left)
+    assert calls[0][1] == pytest.approx(right)
+    assert calls[0][2] == 14
+
+
+@pytest.mark.parametrize(
+    "invalid_pose",
+    (
+        (0.0,) * 5,
+        (0.0,) * 7,
+        (0.0, 0.0, 0.0, 0.0, 0.0, float("nan")),
+        (0.0, 0.0, 0.0, 0.0, float("inf"), 0.0),
+    ),
+)
+def test_solve_ik_rejects_invalid_pose_before_native_call(
+    invalid_pose,
+) -> None:
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(
+        lib=SimpleNamespace(
+            articore_runtime_solve_ik=lambda *_args: pytest.fail(
+                "native solve_ik must not be called"
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match="pose"):
+        runtime.solve_ik(invalid_pose, (0.0,) * 6)
+
+
+def test_product_solve_ik_requires_exactly_fourteen_native_positions(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+    robot._runtime.solve_ik = lambda _left, _right: (0.0,) * 13
+
+    with pytest.raises(RuntimeError, match="returned 13 IK positions; expected 14"):
+        robot.solve_ik(
+            left_target_pose=(0.0,) * 6,
+            right_target_pose=(0.0,) * 6,
+        )
+
+
+def test_product_solve_ik_only_forwards_one_non_motion_call(
+    product_factory,
+) -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+    left = (0.4, 0.2, 0.3, 0.0, -1.5, 0.0)
+    right = (0.4, -0.2, 0.3, 0.0, -1.5, 0.0)
+
+    left_q, right_q = robot.solve_ik(
+        left_target_pose=left,
+        right_target_pose=right,
+    )
+
+    assert left_q == tuple(float(index) for index in range(7))
+    assert right_q == tuple(float(index) for index in range(7, 14))
+    assert robot._runtime.calls == [("solve_ik", left, right)]
+
+
+def test_native_motion_fifo_states_need_no_python_planning_token() -> None:
+    next_motion_id = 30
+    states = {
+        31: (1, 2),
+        32: (5, 2),
+        33: (5, 2),
+        34: (2, 3),
+    }
+
+    def move_linear_trajectory(_runtime, _side, _start, _end, _duration, output) -> int:
+        nonlocal next_motion_id
+        next_motion_id += 1
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = (
+            next_motion_id
+        )
+        return 0
+
+    def move_circular_trajectory(
+        _runtime, _side, _start, _via, _end, _duration, output
+    ) -> int:
+        nonlocal next_motion_id
+        next_motion_id += 1
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = (
+            next_motion_id
+        )
+        return 0
+
+    def get_status(_runtime, motion_id, output) -> int:
+        state, motion_type = states[int(motion_id)]
+        native = ctypes.cast(output, ctypes.POINTER(CMotionStatus)).contents
+        native.motion_id = int(motion_id)
+        native.motion_type = motion_type
+        native.state = state
+        native.progress = 1.0 if state == 2 else 0.0
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_move_linear_trajectory=move_linear_trajectory,
+        articore_runtime_move_circular_trajectory=move_circular_trajectory,
+        articore_runtime_get_motion_status=get_status,
+    ))
+    start = (0.1, 0.2, 0.3, 0.0, 0.1, 0.2)
+    via = (0.2, 0.3, 0.4, 0.1, 0.2, 0.3)
+    end = (0.3, 0.4, 0.5, 0.2, 0.3, 0.4)
+
+    linear_ids = [runtime.move_linear_trajectory(0, start, end, 10.0) for _ in range(3)]
+    linear_states = [runtime.get_motion_status(item).state for item in linear_ids]
+    circular_id = runtime.move_circular_trajectory(1, start, via, end, 20.0)
+
+    assert linear_ids == [31, 32, 33]
+    assert linear_states == [
+        MotionState.RUNNING,
+        MotionState.QUEUED,
+        MotionState.QUEUED,
+    ]
+    assert runtime.get_motion_status(circular_id).state is MotionState.COMPLETED
 
 
 def test_cartesian_motion_does_not_duplicate_native_mode_or_speed_checks(
     product_factory,
 ) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.move_pose(
+    robot.set_pose(
         left_target_pose=(0.0,) * 6,
         right_target_pose=(0.0,) * 6,
         speed_percent=0,
     )
     assert robot._runtime.calls == [
-        ("move_pose", (0.0,) * 6, (0.0,) * 6, 0),
+        ("set_pose", (0.0,) * 6, (0.0,) * 6, 0),
     ]
 
 

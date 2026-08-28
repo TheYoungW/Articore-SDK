@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real-hardware check for native TCP FK/IK across PTP, Linear and Circular."""
+"""Real-hardware check for native TCP FK/IK across set_pose, Linear and Circular."""
 from __future__ import annotations
 
 import json
@@ -50,7 +50,7 @@ def wait_pose(robot: ArxDCanDualArm, target, timeout: float = 15.0) -> dict:
         if position_error <= 0.005 and speed <= 0.05:
             return {"actual": actual, "position_error_m": position_error}
         time.sleep(0.005)
-    raise TimeoutError("Cartesian PTP target did not settle")
+    raise TimeoutError("set_pose target did not settle")
 
 
 def wait_motion(robot: ArxDCanDualArm, motion_id: int, timeout: float = 20.0) -> dict:
@@ -93,14 +93,14 @@ def main() -> None:
         start = robot.get_pose("left")
         up = list(start)
         up[2] += 0.01
-        robot.move_pose(
+        robot.set_pose(
             left_target_pose=up,
             right_target_pose=robot.get_pose("right"),
             speed_percent=20.0,
         )
         report["ptp"] = wait_pose(robot, up)
 
-        linear_id = robot.move_linear(
+        linear_id = robot.move_linear_trajectory(
             side="left", start_pose=up, end_pose=start, duration_s=10.0
         )
         report["linear"] = wait_motion(robot, linear_id)
@@ -111,14 +111,14 @@ def main() -> None:
         via[1] += 0.005
         via[2] += 0.005
         end[2] += 0.01
-        circular_id = robot.move_circular(
+        circular_id = robot.move_circular_trajectory(
             side="left", start_pose=start, via_pose=via, end_pose=end,
             duration_s=10.0,
         )
         report["circular"] = wait_motion(robot, circular_id)
         report["circular_end"] = wait_pose(robot, end)
 
-        return_id = robot.move_linear(
+        return_id = robot.move_linear_trajectory(
             side="left", start_pose=end, end_pose=start, duration_s=10.0
         )
         report["return"] = wait_motion(robot, return_id)

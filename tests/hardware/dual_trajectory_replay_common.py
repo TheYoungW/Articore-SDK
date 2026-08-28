@@ -10,7 +10,7 @@ import sys
 from typing import Literal
 
 from arx_d_can import ArxDCanDualArm, SafetyState
-from arx_d_can.examples.control import example_10_replay_trajectory as replay_example
+from arx_d_can.examples.control import example_14_replay_trajectory as replay_example
 from arx_d_can.service_tools.dual_trajectory_recording import (
     DualArmTrajectorySample,
     load_trajectory,
@@ -26,9 +26,8 @@ TRAJECTORY_PATH = (
 JOINT_NAMES = tuple(f"joint{index}" for index in range(1, 8))
 EXPECTED_SAMPLE_COUNT = 200
 DISCONTINUITY_RATE_RAD_S = 10.0
-PV_START_SPEED_PERCENT = 50.0
+REPLAY_VELOCITY_PERCENT = 50.0
 PV_MAX_ACCELERATION_RAD_S2 = 4.0
-MIT_START_VELOCITY_RAD_S = math.radians(30.0)
 START_TIMEOUT_S = 30.0
 POSITION_TOLERANCE_RAD = math.radians(1.0)
 VELOCITY_TOLERANCE_RAD_S = math.radians(2.0)
@@ -162,8 +161,7 @@ def _run_hardware(
             replay_example._move_to_start(
                 robot,
                 samples[0],
-                start_velocity=MIT_START_VELOCITY_RAD_S,
-                start_speed_percent=PV_START_SPEED_PERCENT,
+                velocity=REPLAY_VELOCITY_PERCENT,
                 max_acceleration_rad_s2=PV_MAX_ACCELERATION_RAD_S2,
                 timeout=START_TIMEOUT_S,
                 position_tolerance=POSITION_TOLERANCE_RAD,
@@ -175,7 +173,7 @@ def _run_hardware(
                 robot,
                 timestamps=timestamps,
                 samples=samples,
-                interpolation="quintic",
+                velocity=REPLAY_VELOCITY_PERCENT,
             )
             _require_healthy(robot)
         print(f"[{mode.upper()}] trajectory replay completed", flush=True)

@@ -2,14 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from arx_d_can import MotionState
-
 from arx_d_can.service_tools.dual_trajectory_recording import (
-    DEFAULT_MIT_FEEDFORWARD_TORQUES,
-    DEFAULT_MIT_KD,
-    DEFAULT_MIT_KP,
-    DEFAULT_PV_VELOCITY_LIMITS,
     DualArmTrajectorySample,
+    MAX_RECORDING_HZ,
     load_trajectory,
     record,
     replay,
@@ -72,105 +67,137 @@ def test_dual_trajectory_rejects_wrong_product_joints(tmp_path) -> None:
         )
 
 
-def test_dual_replay_submits_once_to_native_runtime(monkeypatch) -> None:
+def test_dual_pv_replay_sends_each_sample_at_its_recorded_timestamp(
+    monkeypatch,
+) -> None:
     commands: list[tuple] = []
+    now = 10.0
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
 
     class Robot:
         has_grippers = True
         control_mode = "pv"
 
-        def __init__(self) -> None:
-            self.status_reads = 0
-
         def set_grippers(self, **kwargs) -> None:
-            commands.append(("grippers", kwargs))
+            commands.append(("grippers", now, kwargs))
 
-        def start_trajectory(self, **kwargs) -> int:
-            commands.append(("trajectory", kwargs))
-            return 7
-
-        def get_motion_status(self, motion_id: int):
-            assert motion_id == 7
-            self.status_reads += 1
-            state = (
-                MotionState.RUNNING
-                if self.status_reads == 1
-                else MotionState.COMPLETED
-            )
-            return type("Status", (), {"state": state, "error": None})()
-
-        def cancel_motion(self, motion_id: int) -> None:
-            commands.append(("cancel", motion_id))
+        def set_joint_pv(self, **kwargs) -> None:
+            commands.append(("pv", now, kwargs))
 
     monkeypatch.setattr(
+        "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
+        lambda: now,
+    )
+    monkeypatch.setattr(
         "arx_d_can.service_tools.dual_trajectory_recording.time.sleep",
-        lambda _seconds: None,
+        fake_sleep,
     )
     samples = [
         DualArmTrajectorySample((0.1,), (0.2,), 1000.0, 500.0),
-        DualArmTrajectorySample((0.3,), (0.4,), 1000.0, 500.0),
+        DualArmTrajectorySample((0.3,), (0.4,), 900.0, 400.0),
     ]
     replay(Robot(), timestamps=[5.0, 5.35], samples=samples)
 
-    assert commands[0] == (
-        "grippers",
+    pv_commands = [command for command in commands if command[0] == "pv"]
+    assert [command[1] for command in pv_commands] == pytest.approx([10.0, 10.35])
+    assert pv_commands[0][2] == {
+        "left": (0.1,), "right": (0.2,), "velocity": 50.0,
+    }
+    assert pv_commands[1][2] == {
+        "left": (0.3,), "right": (0.4,), "velocity": 50.0,
+    }
+    gripper_commands = [command for command in commands if command[0] == "grippers"]
+    assert [command[2] for command in gripper_commands] == [
         {"left": 1000.0, "right": 500.0, "gripper_level": 5},
-    )
-    assert commands[1][0] == "trajectory"
-    request = commands[1][1]
-    assert request["timestamps"] == pytest.approx([0.0, 0.35])
-    assert request["left_positions"] == [(0.1,), (0.3,)]
-    assert request["right_positions"] == [(0.2,), (0.4,)]
-    assert request["pv_velocity_limits"] == DEFAULT_PV_VELOCITY_LIMITS
-    assert not any(command[0] == "arms" for command in commands)
+        {"left": 900.0, "right": 400.0, "gripper_level": 5},
+    ]
 
 
-def test_dual_mit_replay_submits_native_gains_once(monkeypatch) -> None:
+def test_dual_mit_replay_uses_only_normal_mit_commands(monkeypatch) -> None:
     commands = []
+    now = 0.0
+
+    def fake_sleep(seconds: float) -> None:
+        nonlocal now
+        now += seconds
 
     class Robot:
         has_grippers = False
         control_mode = "mit"
 
-        def start_trajectory(self, **kwargs) -> int:
-            commands.append(kwargs)
-            return 8
+        def set_joint_mit(self, **kwargs) -> None:
+            commands.append((now, kwargs))
 
-        def get_motion_status(self, motion_id: int):
-            assert motion_id == 8
-            return type(
-                "Status", (),
-                {"state": MotionState.COMPLETED, "error": None},
-            )()
+    monkeypatch.setattr(
+        "arx_d_can.service_tools.dual_trajectory_recording.time.perf_counter",
+        lambda: now,
+    )
+    monkeypatch.setattr(
+        "arx_d_can.service_tools.dual_trajectory_recording.time.sleep",
+        fake_sleep,
+    )
 
     replay(
         Robot(),
-        timestamps=[0.0, 1.0],
+        timestamps=[2.0, 2.5],
         samples=[
             DualArmTrajectorySample((0.1,), (-0.2,), None, None),
             DualArmTrajectorySample((0.2,), (-0.1,), None, None),
         ],
+        velocity=75.0,
     )
 
-    assert len(commands) == 1
-    assert commands[0]["kp"] == DEFAULT_MIT_KP
-    assert commands[0]["kd"] == DEFAULT_MIT_KD
-    assert commands[0]["feedforward_torque"] == DEFAULT_MIT_FEEDFORWARD_TORQUES
+    assert [command[0] for command in commands] == pytest.approx([0.0, 0.5])
+    assert commands[0][1] == {
+        "left": (0.1,), "right": (-0.2,), "velocity": 75.0,
+    }
+    assert commands[1][1] == {
+        "left": (0.2,), "right": (-0.1,), "velocity": 75.0,
+    }
 
 
-def test_dual_replay_rejects_python_interpolation_and_dynamic_grippers() -> None:
+def test_dual_replay_rejects_invalid_timestamps_velocity_and_grippers() -> None:
     class Robot:
         has_grippers = True
         control_mode = "pv"
 
-    samples = [
-        DualArmTrajectorySample((0.1,), (0.2,), 1000.0, 500.0),
-        DualArmTrajectorySample((0.3,), (0.4,), 900.0, 500.0),
-    ]
-    with pytest.raises(ValueError, match="only supports quintic"):
-        replay(Robot(), timestamps=[0.0, 1.0], samples=samples, interpolation="linear")
-    with pytest.raises(ValueError, match="time-varying gripper"):
-        replay(Robot(), timestamps=[0.0, 1.0], samples=samples)
+        def set_joint_pv(self, **_kwargs) -> None:
+            raise AssertionError("invalid replay must fail before sending")
+
+    valid = DualArmTrajectorySample((0.1,), (0.2,), None, None)
+    partial_gripper = DualArmTrajectorySample((0.1,), (0.2,), 500.0, None)
+    with pytest.raises(ValueError, match="strictly increasing"):
+        replay(Robot(), timestamps=[0.0, 0.0], samples=[valid, valid])
+    with pytest.raises(ValueError, match="velocity"):
+        replay(Robot(), timestamps=[0.0], samples=[valid], velocity=100.1)
+    with pytest.raises(ValueError, match="both sides"):
+        replay(Robot(), timestamps=[0.0], samples=[partial_gripper])
+
+
+def test_recording_frequency_is_limited_to_500_hz(tmp_path) -> None:
+    sample = DualArmTrajectorySample((0.0,), (0.0,), None, None)
+    save_trajectory(
+        tmp_path / "at_limit.json",
+        hz=MAX_RECORDING_HZ,
+        timestamps=[0.0],
+        samples=[sample],
+        left_joint_names=("l1",),
+        right_joint_names=("r1",),
+    )
+    with pytest.raises(ValueError, match="must not exceed 500"):
+        save_trajectory(
+            tmp_path / "too_fast.json",
+            hz=500.01,
+            timestamps=[0.0],
+            samples=[sample],
+            left_joint_names=("l1",),
+            right_joint_names=("r1",),
+        )
+    with pytest.raises(ValueError, match="must not exceed 500"):
+        record(object(), seconds=1.0, hz=500.01)
 
 
 def test_dual_record_uses_cached_runtime_state_and_grippers(

@@ -174,7 +174,7 @@ def main() -> None:
         report["end_pose"] = end
         report["via_pose"] = via
 
-        motion_id = robot.move_linear(
+        motion_id = robot.move_linear_trajectory(
             side="left",
             start_pose=start,
             end_pose=end,
@@ -183,7 +183,7 @@ def main() -> None:
         report["linear_up"] = wait_motion(robot, motion_id)
         report["linear_up_pose"] = pose_report(robot, end)
 
-        motion_id = robot.move_linear(
+        motion_id = robot.move_linear_trajectory(
             side="left",
             start_pose=end,
             end_pose=start,
@@ -192,7 +192,7 @@ def main() -> None:
         report["linear_return"] = wait_motion(robot, motion_id)
         report["linear_return_pose"] = pose_report(robot, start)
 
-        motion_id = robot.move_circular(
+        motion_id = robot.move_circular_trajectory(
             side="left",
             start_pose=start,
             via_pose=via,
@@ -202,7 +202,7 @@ def main() -> None:
         report["circular_up"] = wait_motion(robot, motion_id)
         report["circular_up_pose"] = pose_report(robot, end)
 
-        motion_id = robot.move_linear(
+        motion_id = robot.move_linear_trajectory(
             side="left",
             start_pose=end,
             end_pose=start,

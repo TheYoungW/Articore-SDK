@@ -35,7 +35,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--velocity",
         type=speed_percent,
-        default=30.0,
-        help="统一速度档位，范围 0～100；默认 30",
+        default=50.0,
+        help="统一速度档位，范围 0～100；默认 50",
     )
     main(parser.parse_args())

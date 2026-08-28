@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from arx_d_can import GravityCompensationPhase
-from arx_d_can.examples.control.example_08_gravity_compensation import (
+from arx_d_can.examples.control.example_12_gravity_compensation import (
     _stop_and_close,
 )
 
