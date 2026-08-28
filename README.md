@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-当前版本严格依赖 `motor-drive-layer==0.22.3`，并严格要求 Runtime ABI 11.3
+当前版本严格依赖 `motor-drive-layer==0.22.5`，并严格要求 Runtime ABI 11.3
 (`0x000B0003`)；ABI 不一致时直接拒绝加载，不执行旧 ABI 兼容。x86_64 与
 AArch64 由 pip 自动选择对应 wheel。Runtime 只通过三参数
 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建。PV reference、
@@ -117,8 +117,8 @@ robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
   指定任务，`cancel_all_motions()` 取消全部任务。Python 不生成 ID、不维护 FIFO，也不推断
   完成状态。
 - 双臂关节轨迹使用 `move_joint_trajectory()` 一次提交全部时间戳和 14 关节路点并直接返回
-  motion ID。PV 模式由 Runtime 把有限路点转换为内部 100 Hz 实时 PV 序列；不会再生成
-  第二层执行端步进，也不会把实时 PV 暴露给 Python。2 ms worker 继续执行安全调度，Python
+  motion ID。PV 模式由 Runtime 生成内部 100 Hz 规划关键点，并在相邻关键点间连续重采样，
+  以 500 Hz 下发 PV 轨迹命令；不会把实时 PV 暴露给 Python。2 ms worker 同时执行安全调度，Python
   不重采样或逐帧发送。用户只提交位置和时间戳，不能填写轨迹速度、加速度、jerk 或 PV
   速度限制；MIT 关节轨迹仍直接按五次曲线执行。
 - Python 录制回放工具与上述原生轨迹 API 相互独立：录制频率最大为 500 Hz，回放按
@@ -148,16 +148,16 @@ robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
 求解。没有规划参考时，Runtime 使用连接后的新鲜完整反馈作为种子；没有可用反馈时
 调用失败并透传原生错误。
 `set_pose()` 的 `speed_percent` 范围为 `[0, 100]`；Linear/Circular 使用正数
-`duration_s` 按固定 10 ms 周期控制执行点数：`duration_s=3` 通常生成 300 段、
-301 点，参考序列约运行 3 秒；真实到位可能因 PV 限速、加速度限制和反馈稳定
+`duration_s` 按固定 10 ms 周期控制规划关键点数：`duration_s=3` 通常生成 300 段、
+301 个 100 Hz 关键点，Runtime 再以 500 Hz 连续重采样执行；真实到位可能因 PV 限速、加速度限制和反馈稳定
 确认而更晚。Linear 和 Circular 都保证 2 mm / 0.1 rad 或更细的笛卡尔几何离散；
 Circular 的位置圆弧经过 via 点，姿态以最短路 SLERP 经过 via 姿态。SDK 只提交
 完整目标，不在 Python 中求 IK、插值或逐帧发送。
 `set_pose()` 由 Runtime 基于当前规划参考求最近种子 IK，再按当前普通 PV 或 MIT 模式执行；
 双臂目标使用同一份参考并一次提交完整 14 关节目标，不在 Python 中依次发送两个单臂目标。
 默认 `speed_percent=50`。Linear/Circular 在底层用一条全局五次时间律生成连续
-100 Hz PV 参考，中间点不再逐点刹停，只有整段最终点制动。内部实时 PV 每 10 ms
-发送一个参考点且每点只发送一次；500 Hz Runtime 调度继续承担 watchdog、安全和反馈工作。
+100 Hz 规划关键点，中间点不再逐点刹停，只有整段最终点制动。Runtime 在相邻关键点间
+连续重采样并以 500 Hz 下发 PV 轨迹命令，同时承担 watchdog、安全和反馈工作。
 `move_linear_trajectory()` 仍是唯一的 Linear 方法：传 `start_pose/end_pose` 时执行
 一条直线；传 `poses=[...]` 时将 2～64 个 Pose 原子规划为一个 Motion ID，并对内部
 角点默认使用 10 mm 笛卡尔圆角。短线段由 Runtime 自动缩小圆角，SDK 不计算圆弧、
@@ -186,7 +186,7 @@ PV 跟随，并且只在当前 Runtime 实例内保持；它不作用于 Joint/L
 运动术语必须严格区分：`set_joint_pv()` 是输入关节角度的普通 PV 关节点到点；
 `set_pose()` 只对末端终点求一次 IK，得到关节角后交给当前普通 PV 或 MIT 模式；
 Linear/Circular 才规划笛卡尔路径。`move_joint_trajectory()` 表示带时间戳的
-14 关节路点；PV 由 Runtime 内部实时 PV 按 100 Hz 执行，MIT 关节轨迹仍按 MIT
+14 关节路点；PV 轨迹由 Runtime 生成 100 Hz 规划关键点并以 500 Hz 连续重采样执行，MIT 关节轨迹仍按 MIT
 五次曲线执行。
 
 ```python

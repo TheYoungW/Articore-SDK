@@ -9,7 +9,7 @@ description = "Yunyi V1.0 dual-arm Python SDK backed by Motor Drive Layer Runtim
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "motor-drive-layer==0.22.3",
+    "motor-drive-layer==0.22.5",
 ]
 
 [project.optional-dependencies]

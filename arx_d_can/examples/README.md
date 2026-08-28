@@ -140,7 +140,8 @@ Linear 和 Circular 均可用命令行参数覆盖默认位姿。
 Linear 的 `--duration` 表示每条原始边的参考时间：`3` 秒的三角形总参考时间约
 9 秒，通常共 900 段、901 点。Runtime 对两个内部运行角点默认加入 10 mm 圆角，
 整条路径只使用一条全局五次时间律和一个 Motion ID；起点/最终点仍正常减速到停。
-Runtime 先保证笛卡尔几何精度，再生成固定 10 ms 的内部实时 PV 参考。
+Runtime 先保证笛卡尔几何精度，再生成固定 10 ms 的规划关键点，并在相邻关键点间
+连续重采样，以 500 Hz 下发内部 PV 轨迹命令。
 真实到位可能晚于参考时间。自动接近起点同样使用普通 PV。Linear、Circular 要求
 PV 产品模式；`set_pose()` 按 Runtime 当前普通 PV 或 MIT 模式执行。
 `example_11_cartesian_orientation_ptp` 在相同双臂基准姿态上，用 `set_pose()`

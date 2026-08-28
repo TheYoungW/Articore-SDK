@@ -29,7 +29,7 @@ from arx_d_can._motor_abi.errors import RuntimeCallError
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
     assert importlib.util.find_spec("motor_drive_layer") is None
     package = distribution("motor-drive-layer")
-    assert package.version == "0.22.3"
+    assert package.version == "0.22.5"
     package_files = {entry.as_posix() for entry in package.files or ()}
     native_payload = {
         entry for entry in package_files
@@ -173,11 +173,11 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert CSafetyHealth.gripper_count.offset == 5064
 
 
-def test_sdk_dependency_is_strictly_pinned_to_motor_0_22_3() -> None:
+def test_sdk_dependency_is_strictly_pinned_to_motor_0_22_5() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
 
-    assert '"motor-drive-layer==0.22.3"' in text
+    assert '"motor-drive-layer==0.22.5"' in text
     assert '"motor-drive-layer>=' not in text
 
 

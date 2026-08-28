@@ -383,7 +383,7 @@ class ArxDCanDualArm:
         end_pose: Sequence[float],
         duration_s: float,
     ) -> int:
-        """按 duration 生成固定 10 ms 圆弧参考，由 Runtime 内部实时 PV 执行。"""
+        """提交圆弧时间参数；100 Hz 规划和 500 Hz 重采样均由 Runtime 完成。"""
         return self._runtime.move_circular_trajectory(
             _side(side), start_pose, via_pose, end_pose, duration_s
         )

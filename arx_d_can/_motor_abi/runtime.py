@@ -734,7 +734,7 @@ class ArticoreRuntime:
         end_pose: Sequence[float],
         duration_s: float,
     ) -> int:
-        """Submit Linear motion for native 100 Hz internal real-time PV."""
+        """Submit Linear motion for native 100 Hz planning and 500 Hz execution."""
         start = _pose(start_pose)
         end = _pose(end_pose)
         motion_id = ctypes.c_uint64()
