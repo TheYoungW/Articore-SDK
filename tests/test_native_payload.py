@@ -17,6 +17,8 @@ from arx_d_can._motor_abi._runtime_abi import (
     CProductJointAngleVelLimits,
     CProductState,
     CSafetyHealth,
+    CTrajectoryConfig,
+    CTrajectoryWaypoint,
     RUNTIME_ABI_VERSION,
     RuntimeAbi,
     runtime_library_path,
@@ -27,7 +29,7 @@ from arx_d_can._motor_abi.errors import RuntimeCallError
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
     assert importlib.util.find_spec("motor_drive_layer") is None
     package = distribution("motor-drive-layer")
-    assert package.version == "0.22.0"
+    assert package.version == "0.22.3"
     package_files = {entry.as_posix() for entry in package.files or ()}
     native_payload = {
         entry for entry in package_files
@@ -121,6 +123,8 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
         ctypes.POINTER(CMotionStatus)
     )
     assert ctypes.sizeof(CMotionStatus) == 568
+    assert ctypes.sizeof(CTrajectoryWaypoint) == 192
+    assert ctypes.sizeof(CTrajectoryConfig) == 236
     assert {
         name: getattr(CMotionStatus, name).offset
         for name, _ctype in CMotionStatus._fields_
@@ -169,11 +173,11 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert CSafetyHealth.gripper_count.offset == 5064
 
 
-def test_sdk_dependency_is_strictly_pinned_to_motor_0_22_0() -> None:
+def test_sdk_dependency_is_strictly_pinned_to_motor_0_22_3() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
 
-    assert '"motor-drive-layer==0.22.0"' in text
+    assert '"motor-drive-layer==0.22.3"' in text
     assert '"motor-drive-layer>=' not in text
 
 

@@ -57,9 +57,7 @@ def _start(
         left_positions=[start_left, end_left],
         right_positions=[start_right, end_right],
     )
-    if mode == "pv":
-        arguments["pv_velocity_limits"] = 2.5
-    else:
+    if mode != "pv":
         arguments.update(
             kp=MIT_KP,
             kd=MIT_KD,

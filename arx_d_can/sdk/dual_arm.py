@@ -245,19 +245,11 @@ class ArxDCanDualArm:
         timestamps: Sequence[float],
         left_positions: Sequence[Sequence[float]],
         right_positions: Sequence[Sequence[float]],
-        interpolation: str = "quintic",
-        left_velocities: Sequence[Sequence[float]] | None = None,
-        right_velocities: Sequence[Sequence[float]] | None = None,
-        left_accelerations: Sequence[Sequence[float]] | None = None,
-        right_accelerations: Sequence[Sequence[float]] | None = None,
         kp: float | Sequence[float] | None = None,
         kd: float | Sequence[float] | None = None,
         feedforward_torque: float | Sequence[float] | None = None,
-        pv_velocity_limits: float | Sequence[float] = 2.5,
     ) -> int:
-        """一次提交有限双臂轨迹；PV 由 Runtime 内部按 100 Hz 实时执行。"""
-        if str(interpolation).strip().lower() != "quintic":
-            raise ValueError("native joint trajectories only support 'quintic'")
+        """提交位置与时间；Runtime 内部规划速度、加速度和 jerk。"""
         mode = self._runtime.control_mode
         if mode is RuntimeControlMode.MIT and (kp is None or kd is None):
             raise ValueError("MIT trajectories require explicit kp and kd")
@@ -265,18 +257,9 @@ class ArxDCanDualArm:
             timestamps=timestamps,
             left_positions=left_positions,
             right_positions=right_positions,
-            left_velocities=left_velocities,
-            right_velocities=right_velocities,
-            left_accelerations=left_accelerations,
-            right_accelerations=right_accelerations,
             mit_kp=_trajectory_frame(kp),
             mit_kd=_trajectory_frame(kd),
             mit_feedforward_torques=_trajectory_frame(feedforward_torque),
-            pv_velocity_limits=(
-                _trajectory_frame(pv_velocity_limits)
-                if mode is RuntimeControlMode.PV
-                else None
-            ),
         )
 
     def read_state(self) -> ArxDCanDualArmState:
@@ -362,7 +345,7 @@ class ArxDCanDualArm:
         right_target_pose: Sequence[float],
         speed_percent: float = 50.0,
     ) -> None:
-        """兼容快捷入口：两侧终点 IK 后原子安装一个普通双臂 PV 目标。"""
+        """兼容快捷入口：两侧终点 IK 后按当前普通 PV 或 MIT 模式执行。"""
         self._runtime.set_pose(
             left_target_pose, right_target_pose, speed_percent
         )

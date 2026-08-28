@@ -698,8 +698,18 @@ def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) 
 
 
 def test_product_joint_trajectory_is_one_native_submission(product_factory) -> None:
+    import inspect
+
     robot = ArxDCanDualArm(control_mode="pv")
     assert not hasattr(robot, "start_trajectory")
+    assert tuple(inspect.signature(robot.move_joint_trajectory).parameters) == (
+        "timestamps",
+        "left_positions",
+        "right_positions",
+        "kp",
+        "kd",
+        "feedforward_torque",
+    )
     left = [(0.0,) * 7, (0.1,) * 7]
     right = [(0.0,) * 7, (-0.1,) * 7]
 
@@ -715,7 +725,9 @@ def test_product_joint_trajectory_is_one_native_submission(product_factory) -> N
     assert call[1]["timestamps"] == [0.0, 2.0]
     assert call[1]["left_positions"] is left
     assert call[1]["right_positions"] is right
-    assert call[1]["pv_velocity_limits"] == (2.5,) * 14
+    assert "left_velocities" not in call[1]
+    assert "left_accelerations" not in call[1]
+    assert "pv_velocity_limits" not in call[1]
     assert robot.get_motion_status(trajectory_id).state is MotionState.RUNNING
     robot.cancel_motion(trajectory_id)
     assert robot._runtime.calls[-1] == ("cancel_motion", 31)
@@ -754,7 +766,17 @@ def test_ctypes_joint_trajectory_copies_complete_native_request() -> None:
         )
         captured["times"] = tuple(native_waypoints[i].time_s for i in range(count))
         captured["left_end"] = tuple(native_waypoints[1].left_positions)
-        captured["velocity_mask"] = int(native_waypoints[0].velocity_valid_mask)
+        captured["reserved_waypoint_fields"] = tuple(
+            (
+                tuple(waypoint.left_velocities),
+                tuple(waypoint.right_velocities),
+                tuple(waypoint.left_accelerations),
+                tuple(waypoint.right_accelerations),
+                int(waypoint.velocity_valid_mask),
+                int(waypoint.acceleration_valid_mask),
+            )
+            for waypoint in native_waypoints[:count]
+        )
         native_config = ctypes.cast(
             config, ctypes.POINTER(CTrajectoryConfig)
         ).contents
@@ -775,7 +797,6 @@ def test_ctypes_joint_trajectory_copies_complete_native_request() -> None:
         timestamps=[0.0, 2.0],
         left_positions=[(0.0,) * 7, (0.1,) * 7],
         right_positions=[(0.0,) * 7, (-0.1,) * 7],
-        pv_velocity_limits=(2.5,) * 14,
     )
 
     assert trajectory_id == 42
@@ -783,9 +804,12 @@ def test_ctypes_joint_trajectory_copies_complete_native_request() -> None:
         "count": 2,
         "times": (0.0, 2.0),
         "left_end": pytest.approx((0.1,) * 7),
-        "velocity_mask": 0,
+        "reserved_waypoint_fields": (
+            ((0.0,) * 7, (0.0,) * 7, (0.0,) * 7, (0.0,) * 7, 0, 0),
+            ((0.0,) * 7, (0.0,) * 7, (0.0,) * 7, (0.0,) * 7, 0, 0),
+        ),
         "mode": int(RuntimeControlMode.PV),
-        "limits": pytest.approx((2.5,) * 14),
+        "limits": pytest.approx((0.0,) * 14),
     }
 
 

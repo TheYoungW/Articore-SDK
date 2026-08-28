@@ -11,7 +11,7 @@ conda activate at
 pip install -e .
 ```
 
-当前版本严格依赖 `motor-drive-layer==0.22.0`，并严格要求 Runtime ABI 11.3
+当前版本严格依赖 `motor-drive-layer==0.22.3`，并严格要求 Runtime ABI 11.3
 (`0x000B0003`)；ABI 不一致时直接拒绝加载，不执行旧 ABI 兼容。x86_64 与
 AArch64 由 pip 自动选择对应 wheel。Runtime 只通过三参数
 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建。PV reference、
@@ -61,13 +61,13 @@ Python 不公开单独的 `close()` 或 `free()`。
 
 - 普通 PV 位置：调用
   `set_joint_pv(left=..., right=..., velocity=0..100)` 设置本次命令速度；默认值为
-  50。速度百分比直接按 `0..100` 映射到 `0..2 rad/s`，不再存在另一层全局最大速度；
+  50。速度百分比控制 Runtime 500 Hz 在线 `P` 步进的参考速度；
   `set_max_acceleration()` 范围为 `0.01..8.00 rad/s²`、精度 `0.01`、默认
-  `6.00 rad/s²`。达妙 POS_VEL 独立的驱动速度上限仍为 `3 rad/s`。SDK 不计算
-  `a × dt`、不生成速度斜坡，也不公开 Raw PV 直发。
-  Linear/Circular 统一生成有限的 100 Hz 关节参考序列，并由 Runtime 内部实时 PV
-  以 speed 50 执行；它们与
-  `set_pose()` 一样要求 PV 产品模式。
+  `6.00 rad/s²`，只作用于普通 PV。达妙 POS_VEL 独立的驱动速度上限仍为
+  `3 rad/s`。SDK 不计算 `a × dt`、不生成速度斜坡，也不公开 Raw PV 直发。
+  Joint/Linear/Circular 的速度、加速度和 jerk 完全由 Runtime 按用户给定时间内部规划，
+  不读取普通 PV 设置，也不向用户暴露轨迹加速度。Linear/Circular 要求 PV 产品模式；
+  `set_pose()` 跟随当前普通 PV 或 MIT 模式。
 - 普通 MIT 位置继续使用 `set_joint_mit()` 的显式 `velocity`；Raw MIT 保留给明确需要
   Kp、Kd、目标速度和前馈力矩的高级控制。
 - 电机电源：`enable()` / `disable()` 操作整机；传入
@@ -97,8 +97,8 @@ Python 不公开单独的 `close()` 或 `free()`。
 - 状态：`read_state()` 的关节与夹爪快照包含位置、速度、力矩、使能状态以及
   MOS/转子温度；没有有效温度反馈时对应值为 `None`。
 - `set_pose(left_target_pose, right_target_pose)` 是末端位姿便捷命令：底层只对
-  两侧目标各求一次终点 IK，再像 `set_joint_pv(left, right)` 一样安装一份普通
-  PV 的 14 关节目标。它返回 `None`，没有 motion ID、状态查询或取消接口，也
+  两侧目标各求一次终点 IK，再按照 Runtime 当前普通 PV 或 MIT 模式安装一份
+  14 关节目标。它返回 `None`，没有 motion ID、状态查询或取消接口，也
   不属于 Linear/Circular 路径规划。关节点到点专指输入关节角度的
   `set_joint_pv()`。该入口保留兼容；新代码推荐显式使用 `solve_ik()` 和
   `set_joint_pv()`，以便直接查看和复用关节解。
@@ -119,7 +119,8 @@ robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
 - 双臂关节轨迹使用 `move_joint_trajectory()` 一次提交全部时间戳和 14 关节路点并直接返回
   motion ID。PV 模式由 Runtime 把有限路点转换为内部 100 Hz 实时 PV 序列；不会再生成
   第二层执行端步进，也不会把实时 PV 暴露给 Python。2 ms worker 继续执行安全调度，Python
-  不重采样或逐帧发送。MIT 关节轨迹仍直接按五次曲线执行。
+  不重采样或逐帧发送。用户只提交位置和时间戳，不能填写轨迹速度、加速度、jerk 或 PV
+  速度限制；MIT 关节轨迹仍直接按五次曲线执行。
 - Python 录制回放工具与上述原生轨迹 API 相互独立：录制频率最大为 500 Hz，回放按
   文件时间戳逐点调用普通 `set_joint_pv()` 或 `set_joint_mit()`，不重采样、不插值，
   也不调用 `move_joint_trajectory()`。
@@ -152,7 +153,7 @@ robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
 确认而更晚。Linear 和 Circular 都保证 2 mm / 0.1 rad 或更细的笛卡尔几何离散；
 Circular 的位置圆弧经过 via 点，姿态以最短路 SLERP 经过 via 姿态。SDK 只提交
 完整目标，不在 Python 中求 IK、插值或逐帧发送。
-`set_pose()` 由 Runtime 基于当前规划参考求最近种子 IK，再按普通 PV reference 步进；
+`set_pose()` 由 Runtime 基于当前规划参考求最近种子 IK，再按当前普通 PV 或 MIT 模式执行；
 双臂目标使用同一份参考并一次提交完整 14 关节目标，不在 Python 中依次发送两个单臂目标。
 默认 `speed_percent=50`。Linear/Circular 在底层用一条全局五次时间律生成连续
 100 Hz PV 参考，中间点不再逐点刹停，只有整段最终点制动。内部实时 PV 每 10 ms
@@ -168,9 +169,10 @@ IK 或插值。`duration_s` 表示每条原始线段的参考时间，因此四�
 路径运行期间调用 `set_pose()` 会失败，必须先等待路径
 完成或取消相关 motion。
 产品限位、速度约束和真实反馈到位判断全部由 Runtime 完成。
-普通 PV 的加速度配置作用于 `set_joint_pv()`、`set_pose()`、PV 模式下的
-关节轨迹、Linear/Circular 和双臂普通 PV 跟随，并且只在当前 Runtime 实例内保持；
-它不作用于 MIT 命令或 MIT 关节轨迹，也不会写入电机 Flash。`set_joint_pv()` 与 `set_pose()` 的 `speed_percent` 始终保持
+普通 PV 的加速度配置只作用于 `set_joint_pv()`、PV 模式下的 `set_pose()` 和双臂普通
+PV 跟随，并且只在当前 Runtime 实例内保持；它不作用于 Joint/Linear/Circular 或 MIT，
+也不会写入电机 Flash。完整轨迹只接受位置/路径和时间参数，轨迹速度、加速度与 jerk
+由 Runtime 内部生成且不作为用户接口暴露。`set_joint_pv()` 与 `set_pose()` 的 `speed_percent` 始终保持
 `0..100` 百分比语义，并直接映射为 `0..2 rad/s`。
 对 Linear/Circular，只有 `status.state == "completed"` 表示真实反馈已经稳定到位；`state == "queued"` 表示
 任务已完成底层规划并正在等待前序任务，`state == "running"` 且
@@ -181,9 +183,9 @@ IK 或插值。`duration_s` 表示每条原始线段的参考时间，因此四�
 与 FIFO 项执行。起点确认阈值为 5 mm / 0.035 rad。Runtime 在运动前校验完整接近与路径；
 规划期间队尾发生变化或任一路径校验失败时，新任务不会入队，当前任务和已有队列保持不变。
 
-运动术语必须严格区分：`set_joint_pv()` 是输入关节角度的关节点到点；
-`set_pose()` 只对末端终点求一次 IK，得到关节角后执行同一种普通 PV reference
-步进；Linear/Circular 才规划笛卡尔路径。`move_joint_trajectory()` 表示带时间戳的
+运动术语必须严格区分：`set_joint_pv()` 是输入关节角度的普通 PV 关节点到点；
+`set_pose()` 只对末端终点求一次 IK，得到关节角后交给当前普通 PV 或 MIT 模式；
+Linear/Circular 才规划笛卡尔路径。`move_joint_trajectory()` 表示带时间戳的
 14 关节路点；PV 由 Runtime 内部实时 PV 按 100 Hz 执行，MIT 关节轨迹仍按 MIT
 五次曲线执行。
 

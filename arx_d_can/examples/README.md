@@ -19,7 +19,7 @@ cd ~/Articore-SDK
 | 用户方法 | Runtime C ABI | 类型 | motion ID / 状态 / 取消 | 对应示例 |
 | --- | --- | --- | --- | --- |
 | `solve_ik()` + `set_joint_pv()` | `articore_runtime_solve_ik()` + `articore_runtime_set_joint_pv()` | 推荐 Pose-to-Pose：只求一次整机 IK，再提交普通 PV | 无 | `example_07_cartesian_ptp` |
-| `set_pose()` | `articore_runtime_set_pose()` | 兼容快捷入口：一次终点 IK 后提交普通 PV | 无 | — |
+| `set_pose()` | `articore_runtime_set_pose()` | 兼容快捷入口：一次终点 IK 后按当前普通 PV 或 MIT 模式执行 | 无 | — |
 | `move_joint_trajectory()` | `articore_runtime_move_joint_trajectory()` | 原生双臂关节轨迹 | 有 | `example_08_joint_trajectory` |
 | `move_linear_trajectory()` | `articore_runtime_move_linear_trajectory()` / `articore_runtime_move_linear_path_trajectory()` | 原生直线或默认 10 mm 圆角融合路径 | 有 | `example_09_cartesian_linear_trajectory` |
 | `move_circular_trajectory()` | `articore_runtime_move_circular_trajectory()` | 原生圆弧轨迹 | 有 | `example_10_cartesian_circular_trajectory` |
@@ -141,8 +141,8 @@ Linear 的 `--duration` 表示每条原始边的参考时间：`3` 秒的三角�
 9 秒，通常共 900 段、901 点。Runtime 对两个内部运行角点默认加入 10 mm 圆角，
 整条路径只使用一条全局五次时间律和一个 Motion ID；起点/最终点仍正常减速到停。
 Runtime 先保证笛卡尔几何精度，再生成固定 10 ms 的内部实时 PV 参考。
-真实到位可能晚于参考时间。自动接近起点同样使用普通 PV。Linear、Circular 与
-`set_pose()` 均要求 PV 产品模式。
+真实到位可能晚于参考时间。自动接近起点同样使用普通 PV。Linear、Circular 要求
+PV 产品模式；`set_pose()` 按 Runtime 当前普通 PV 或 MIT 模式执行。
 `example_11_cartesian_orientation_ptp` 在相同双臂基准姿态上，用 `set_pose()`
 依次演示 Pitch、Roll、Yaw 约 90° 的双向摆动。基准姿态的 `pitch=-90°` 是 RPY
 奇异点，因此示例按真实旋转矩阵定义三个 base_link 旋转轴，而不是直接对奇异点处的

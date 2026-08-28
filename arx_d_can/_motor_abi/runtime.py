@@ -492,16 +492,11 @@ class ArticoreRuntime:
         timestamps: Sequence[float],
         left_positions: Sequence[Sequence[float]],
         right_positions: Sequence[Sequence[float]],
-        left_velocities: Sequence[Sequence[float]] | None = None,
-        right_velocities: Sequence[Sequence[float]] | None = None,
-        left_accelerations: Sequence[Sequence[float]] | None = None,
-        right_accelerations: Sequence[Sequence[float]] | None = None,
         mit_kp: Sequence[float] | None = None,
         mit_kd: Sequence[float] | None = None,
         mit_feedforward_torques: Sequence[float] | None = None,
-        pv_velocity_limits: Sequence[float] | None = None,
     ) -> int:
-        """Copy a complete trajectory into the native planner and FIFO."""
+        """Copy positions and timestamps into the native planner and FIFO."""
         times = tuple(float(value) for value in timestamps)
         left_q = tuple(tuple(float(value) for value in row) for row in left_positions)
         right_q = tuple(tuple(float(value) for value in row) for row in right_positions)
@@ -514,29 +509,8 @@ class ArticoreRuntime:
         if count > 30_000:
             raise ValueError("trajectory supports at most 30000 waypoints")
 
-        def rows(
-            name: str,
-            source: Sequence[Sequence[float]] | None,
-        ) -> tuple[tuple[float, ...], ...] | None:
-            if source is None:
-                return None
-            values = tuple(tuple(float(value) for value in row) for row in source)
-            if len(values) != count or any(len(row) != 7 for row in values):
-                raise ValueError(f"{name} must contain {count} rows of 7 values")
-            return values
-
         if any(len(row) != 7 for row in (*left_q, *right_q)):
             raise ValueError("each trajectory arm position must contain 7 values")
-        left_dq = rows("left_velocities", left_velocities)
-        right_dq = rows("right_velocities", right_velocities)
-        left_ddq = rows("left_accelerations", left_accelerations)
-        right_ddq = rows("right_accelerations", right_accelerations)
-        if (left_dq is None) != (right_dq is None):
-            raise ValueError("left and right trajectory velocities must be supplied together")
-        if (left_ddq is None) != (right_ddq is None):
-            raise ValueError(
-                "left and right trajectory accelerations must be supplied together"
-            )
 
         native_waypoints = (CTrajectoryWaypoint * count)()
         for index, waypoint in enumerate(native_waypoints):
@@ -544,14 +518,6 @@ class ArticoreRuntime:
             waypoint.time_s = times[index]
             waypoint.left_positions[:] = left_q[index]
             waypoint.right_positions[:] = right_q[index]
-            if left_dq is not None and right_dq is not None:
-                waypoint.left_velocities[:] = left_dq[index]
-                waypoint.right_velocities[:] = right_dq[index]
-                waypoint.velocity_valid_mask = 0x3FFF
-            if left_ddq is not None and right_ddq is not None:
-                waypoint.left_accelerations[:] = left_ddq[index]
-                waypoint.right_accelerations[:] = right_ddq[index]
-                waypoint.acceleration_valid_mask = 0x3FFF
 
         def vector(name: str, source: Sequence[float] | None) -> tuple[float, ...]:
             if source is None:
@@ -569,9 +535,6 @@ class ArticoreRuntime:
         native_config.mit_kd[:] = vector("mit_kd", mit_kd)
         native_config.mit_feedforward_torque[:] = vector(
             "mit_feedforward_torques", mit_feedforward_torques
-        )
-        native_config.pv_velocity_limits[:] = vector(
-            "pv_velocity_limits", pv_velocity_limits
         )
         motion_id = ctypes.c_uint64()
         self._call(
@@ -753,7 +716,7 @@ class ArticoreRuntime:
         right_target_pose: Sequence[float],
         speed_percent: float = 50.0,
     ) -> None:
-        """Solve both endpoint poses and atomically install one dual-arm PV target."""
+        """Solve both endpoint poses and install one target in the current mode."""
         left_target = _pose(left_target_pose)
         right_target = _pose(right_target_pose)
         self._call(
