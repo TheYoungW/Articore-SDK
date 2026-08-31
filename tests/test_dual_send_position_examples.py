@@ -19,6 +19,20 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         def enable(self):
             captured["calls"].append("enable")
 
+        def set_max_speed(self, value):
+            captured["calls"].append(("set_max_speed", value))
+
+        def get_max_speed(self):
+            captured["calls"].append("get_max_speed")
+            return 1.25
+
+        def set_max_acceleration(self, value):
+            captured["calls"].append(("set_max_acceleration", value))
+
+        def get_max_acceleration(self):
+            captured["calls"].append("get_max_acceleration")
+            return 2.5
+
         def set_joint_pv(self, **kwargs):
             captured.update(kwargs)
 
@@ -37,11 +51,25 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         "builtins.input",
         lambda prompt: captured["calls"].append("input") or "",
     )
-    args = pv_example.build_parser().parse_args(["--velocity", "70"])
+    args = pv_example.build_parser().parse_args([
+        "--velocity", "70",
+        "--max-speed", "1.25",
+        "--max-acceleration", "2.5",
+    ])
     pv_example.main(args)
 
     assert captured["mode"] == "pv"
-    assert captured["calls"] == ["connect", "enable", "input", "disable", "disconnect"]
+    assert captured["calls"] == [
+        "connect",
+        ("set_max_speed", 1.25),
+        "get_max_speed",
+        ("set_max_acceleration", 2.5),
+        "get_max_acceleration",
+        "enable",
+        "input",
+        "disable",
+        "disconnect",
+    ]
     assert captured["left"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0))
     )
@@ -51,14 +79,14 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
     assert captured["velocity"] == 70.0
 
 
-def test_pv_example_uses_runtime_acceleration_default() -> None:
+def test_pv_example_uses_runtime_limit_defaults() -> None:
     parser = pv_example.build_parser()
     defaults = parser.parse_args([])
 
     assert defaults.left == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert defaults.right == pv_example.DEFAULT_JOINT_TARGET_DEGREES
-    assert not hasattr(defaults, "max_speed")
-    assert not hasattr(defaults, "max_acceleration")
+    assert defaults.max_speed is None
+    assert defaults.max_acceleration is None
     assert defaults.velocity == pytest.approx(50.0)
     assert parser.parse_args(["--velocity", "100"]).velocity == 100.0
     with pytest.raises(SystemExit):

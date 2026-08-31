@@ -30,8 +30,6 @@ from arx_d_can._motor_abi._runtime_abi import (
     CMotionStatus,
     CProductState,
     CSafetyHealth,
-    CTrajectoryConfig,
-    CTrajectoryWaypoint,
 )
 from arx_d_can._motor_abi.runtime import ArticoreRuntime
 
@@ -134,6 +132,9 @@ class FakeRuntime:
             JointLimit(-float(index + 1), float(index + 1), 5.0)
             for index in range(14)
         )
+        self.max_speed = 0.0
+        self.max_acceleration = 0.0
+
     def get_motion_status(self, motion_id: int) -> MotionStatus:
         self.calls.append(("get_motion_status", motion_id))
         return MotionStatus(
@@ -188,6 +189,22 @@ class FakeRuntime:
     def set_joint_pv(self, positions, velocity) -> None:
         self.calls.append(("pv", tuple(positions), velocity))
 
+    def set_max_speed(self, value: float) -> None:
+        self.calls.append(("set_max_speed", value))
+        self.max_speed = value
+
+    def get_max_speed(self) -> float:
+        self.calls.append(("get_max_speed",))
+        return self.max_speed
+
+    def set_max_acceleration(self, value: float) -> None:
+        self.calls.append(("set_max_acceleration", value))
+        self.max_acceleration = value
+
+    def get_max_acceleration(self) -> float:
+        self.calls.append(("get_max_acceleration",))
+        return self.max_acceleration
+
     def set_joint_mit_direct(self, positions) -> None:
         self.calls.append(("mit-direct", tuple(positions)))
 
@@ -196,10 +213,6 @@ class FakeRuntime:
 
     def submit_mit_frame(self, *values) -> None:
         self.calls.append(("mit", *values))
-
-    def move_joint_trajectory(self, **kwargs) -> int:
-        self.calls.append(("move_joint_trajectory", kwargs))
-        return 31
 
     def set_product_grippers(self, *, left, right, gripper_level, mode) -> None:
         self.calls.append(("grippers", left, right, gripper_level, mode))
@@ -557,19 +570,27 @@ def test_get_fps_returns_latest_runtime_sample(product_factory) -> None:
     assert robot.get_fps() == 8120.0
 
 
-def test_removed_pv_acceleration_limit_is_not_public(product_factory) -> None:
+def test_pv_global_limits_are_forwarded_without_sdk_scaling(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
 
-    assert not hasattr(robot, "set_max_speed")
-    assert not hasattr(robot, "get_max_speed")
-    assert not hasattr(robot, "set_max_acceleration")
-    assert not hasattr(robot, "get_max_acceleration")
+    robot.set_max_speed(1.25)
+    assert robot.get_max_speed() == 1.25
+    robot.set_max_acceleration(2.5)
+    assert robot.get_max_acceleration() == 2.5
+    robot.set_max_speed(0.0)
+    robot.set_max_acceleration(0.0)
+
+    assert robot._runtime.calls == [
+        ("set_max_speed", 1.25),
+        ("get_max_speed",),
+        ("set_max_acceleration", 2.5),
+        ("get_max_acceleration",),
+        ("set_max_speed", 0.0),
+        ("set_max_acceleration", 0.0),
+    ]
     assert not hasattr(robot, "set_speed")
     assert not hasattr(robot, "get_speed")
-    assert not hasattr(ArticoreRuntime, "set_max_acceleration")
-    assert not hasattr(ArticoreRuntime, "get_max_acceleration")
     assert not hasattr(ArticoreRuntime, "set_joint_mit")
-    assert robot._runtime.calls == []
 
 
 def test_joint_limits_use_fixed_product_names_and_native_values(
@@ -671,6 +692,46 @@ def test_ctypes_ordinary_position_uses_explicit_pv_and_new_mit_symbols() -> None
     ]
 
 
+def test_ctypes_pv_global_limits_use_scalar_setters_and_float_outputs() -> None:
+    values = {"speed": 0.0, "acceleration": 0.0}
+
+    def set_max_speed(_runtime, value) -> int:
+        values["speed"] = float(value)
+        return 0
+
+    def get_max_speed(_runtime, output) -> int:
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_float)).contents.value = (
+            values["speed"]
+        )
+        return 0
+
+    def set_max_acceleration(_runtime, value) -> int:
+        values["acceleration"] = float(value)
+        return 0
+
+    def get_max_acceleration(_runtime, output) -> int:
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_float)).contents.value = (
+            values["acceleration"]
+        )
+        return 0
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_set_max_speed=set_max_speed,
+        articore_runtime_get_max_speed=get_max_speed,
+        articore_runtime_set_max_acceleration=set_max_acceleration,
+        articore_runtime_get_max_acceleration=get_max_acceleration,
+    ))
+
+    runtime.set_max_speed(1.25)
+    runtime.set_max_acceleration(2.5)
+
+    assert runtime.get_max_speed() == pytest.approx(1.25)
+    assert runtime.get_max_acceleration() == pytest.approx(2.5)
+
+
 def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
     robot.submit_raw_mit(
@@ -690,120 +751,14 @@ def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) 
     assert call[5] == (0.5,) * 14
 
 
-def test_product_joint_trajectory_is_one_native_submission(product_factory) -> None:
-    import inspect
-
+def test_joint_trajectory_interfaces_are_not_public(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
+
     assert not hasattr(robot, "start_trajectory")
-    assert tuple(inspect.signature(robot.move_joint_trajectory).parameters) == (
-        "timestamps",
-        "left_positions",
-        "right_positions",
-        "kp",
-        "kd",
-        "feedforward_torque",
-    )
-    left = [(0.0,) * 7, (0.1,) * 7]
-    right = [(0.0,) * 7, (-0.1,) * 7]
-
-    trajectory_id = robot.move_joint_trajectory(
-        timestamps=[0.0, 2.0],
-        left_positions=left,
-        right_positions=right,
-    )
-
-    assert trajectory_id == 31
-    call = robot._runtime.calls[0]
-    assert call[0] == "move_joint_trajectory"
-    assert call[1]["timestamps"] == [0.0, 2.0]
-    assert call[1]["left_positions"] is left
-    assert call[1]["right_positions"] is right
-    assert "left_velocities" not in call[1]
-    assert "left_accelerations" not in call[1]
-    assert "pv_velocity_limits" not in call[1]
-    assert robot.get_motion_status(trajectory_id).state is MotionState.RUNNING
-    robot.cancel_motion(trajectory_id)
-    assert robot._runtime.calls[-1] == ("cancel_motion", 31)
-
-
-def test_joint_trajectory_limit_matches_runtime_abi_30000() -> None:
-    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
-    positions = [(0.0,) * 7] * 30_001
-
-    with pytest.raises(ValueError, match="at most 30000"):
-        runtime.move_joint_trajectory(
-            timestamps=[float(index) for index in range(30_001)],
-            left_positions=positions,
-            right_positions=positions,
-        )
-
-
-def test_mit_joint_trajectory_requires_explicit_gains(product_factory) -> None:
-    robot = ArxDCanDualArm(control_mode="mit")
-
-    with pytest.raises(ValueError, match="explicit kp and kd"):
-        robot.move_joint_trajectory(
-            timestamps=[0.0, 1.0],
-            left_positions=[(0.0,) * 7] * 2,
-            right_positions=[(0.0,) * 7] * 2,
-        )
-
-
-def test_ctypes_joint_trajectory_copies_complete_native_request() -> None:
-    captured = {}
-
-    def start(_runtime, waypoints, count, config, output) -> int:
-        captured["count"] = count
-        native_waypoints = ctypes.cast(
-            waypoints, ctypes.POINTER(CTrajectoryWaypoint)
-        )
-        captured["times"] = tuple(native_waypoints[i].time_s for i in range(count))
-        captured["left_end"] = tuple(native_waypoints[1].left_positions)
-        captured["reserved_waypoint_fields"] = tuple(
-            (
-                tuple(waypoint.left_velocities),
-                tuple(waypoint.right_velocities),
-                tuple(waypoint.left_accelerations),
-                tuple(waypoint.right_accelerations),
-                int(waypoint.velocity_valid_mask),
-                int(waypoint.acceleration_valid_mask),
-            )
-            for waypoint in native_waypoints[:count]
-        )
-        native_config = ctypes.cast(
-            config, ctypes.POINTER(CTrajectoryConfig)
-        ).contents
-        captured["mode"] = int(native_config.control_mode)
-        captured["limits"] = tuple(native_config.pv_velocity_limits)
-        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 42
-        return 0
-
-    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
-    runtime._lock = RLock()
-    runtime._ptr = 1
-    runtime._control_mode = RuntimeControlMode.PV
-    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
-        articore_runtime_move_joint_trajectory=start,
-    ))
-
-    trajectory_id = runtime.move_joint_trajectory(
-        timestamps=[0.0, 2.0],
-        left_positions=[(0.0,) * 7, (0.1,) * 7],
-        right_positions=[(0.0,) * 7, (-0.1,) * 7],
-    )
-
-    assert trajectory_id == 42
-    assert captured == {
-        "count": 2,
-        "times": (0.0, 2.0),
-        "left_end": pytest.approx((0.1,) * 7),
-        "reserved_waypoint_fields": (
-            ((0.0,) * 7, (0.0,) * 7, (0.0,) * 7, (0.0,) * 7, 0, 0),
-            ((0.0,) * 7, (0.0,) * 7, (0.0,) * 7, (0.0,) * 7, 0, 0),
-        ),
-        "mode": int(RuntimeControlMode.PV),
-        "limits": pytest.approx((0.0,) * 14),
-    }
+    assert not hasattr(robot, "move_joint_trajectory")
+    assert not hasattr(robot, "get_trajectory_status")
+    assert not hasattr(robot, "cancel_trajectory")
+    assert not hasattr(ArticoreRuntime, "move_joint_trajectory")
 
 
 def test_read_state_uses_one_native_product_snapshot(product_factory) -> None:
@@ -1048,7 +1003,7 @@ def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
         articore_runtime_set_pose=set_pose,
         articore_runtime_move_linear_trajectory=move_linear_trajectory,
-        articore_runtime_move_linear_path_trajectory=(
+        articore_runtime_move_linear_trajectory_with_point_count=(
             move_linear_path_trajectory
         ),
         articore_runtime_move_circular_trajectory=move_circular_trajectory,

@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-RUNTIME_ABI_VERSION = 0x000B0004
+RUNTIME_ABI_VERSION = 0x000C0000
 
 
 def _runtime_library_name() -> str:
@@ -226,33 +226,6 @@ class CTcpOffset(Structure):
     ]
 
 
-class CTrajectoryWaypoint(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("time_s", ctypes.c_double),
-        ("left_positions", c_float * 7),
-        ("right_positions", c_float * 7),
-        ("left_velocities", c_float * 7),
-        ("right_velocities", c_float * 7),
-        ("left_accelerations", c_float * 7),
-        ("right_accelerations", c_float * 7),
-        ("velocity_valid_mask", c_uint32),
-        ("acceleration_valid_mask", c_uint32),
-    ]
-
-
-class CTrajectoryConfig(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("interpolation", c_int32),
-        ("control_mode", c_int32),
-        ("mit_kp", c_float * 14),
-        ("mit_kd", c_float * 14),
-        ("mit_feedforward_torque", c_float * 14),
-        ("pv_velocity_limits", c_float * 14),
-    ]
-
-
 class CMotionStatus(Structure):
     _fields_ = [
         ("struct_size", c_uint32),
@@ -300,7 +273,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI exactly 11.4; "
+                "Articore-SDK requires Runtime ABI exactly 12.0; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.abi_version = version
@@ -343,6 +316,20 @@ class RuntimeAbi:
             c_void_p, float_pointer, c_uint32, c_float,
         ]
         lib.articore_runtime_set_joint_pv.restype = c_int32
+        lib.articore_runtime_set_max_speed.argtypes = [c_void_p, c_float]
+        lib.articore_runtime_set_max_speed.restype = c_int32
+        lib.articore_runtime_get_max_speed.argtypes = [
+            c_void_p, float_pointer,
+        ]
+        lib.articore_runtime_get_max_speed.restype = c_int32
+        lib.articore_runtime_set_max_acceleration.argtypes = [
+            c_void_p, c_float,
+        ]
+        lib.articore_runtime_set_max_acceleration.restype = c_int32
+        lib.articore_runtime_get_max_acceleration.argtypes = [
+            c_void_p, float_pointer,
+        ]
+        lib.articore_runtime_get_max_acceleration.restype = c_int32
         lib.articore_runtime_set_joint_mit_direct.argtypes = [
             c_void_p, float_pointer, c_uint32,
         ]
@@ -356,14 +343,6 @@ class RuntimeAbi:
             float_pointer, float_pointer, c_uint32,
         ]
         lib.articore_runtime_submit_mit_frame.restype = c_int32
-        lib.articore_runtime_move_joint_trajectory.argtypes = [
-            c_void_p,
-            POINTER(CTrajectoryWaypoint),
-            c_uint32,
-            POINTER(CTrajectoryConfig),
-            POINTER(c_uint64),
-        ]
-        lib.articore_runtime_move_joint_trajectory.restype = c_int32
         lib.articore_runtime_set_grippers.argtypes = [
             c_void_p, c_float, c_float, c_int32, c_int32,
         ]
@@ -406,11 +385,14 @@ class RuntimeAbi:
             ctypes.c_double, POINTER(c_uint64),
         ]
         lib.articore_runtime_move_linear_trajectory.restype = c_int32
-        lib.articore_runtime_move_linear_path_trajectory.argtypes = [
+        linear_with_point_count = (
+            lib.articore_runtime_move_linear_trajectory_with_point_count
+        )
+        linear_with_point_count.argtypes = [
             c_void_p, c_uint32, float_pointer, c_uint32,
             ctypes.c_double, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_linear_path_trajectory.restype = c_int32
+        linear_with_point_count.restype = c_int32
         lib.articore_runtime_move_circular_trajectory.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer, float_pointer,
             ctypes.c_double, POINTER(c_uint64),

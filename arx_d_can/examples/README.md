@@ -14,14 +14,13 @@ cd ~/Articore-SDK
 
 ### 必须区分：关节点到点、一次终点 IK 与路径轨迹
 
-底层提供普通 PV 关节点到点、整机 IK、兼容 Pose 快捷命令和三个原生轨迹提交接口：
+底层提供普通 PV 关节点到点、整机 IK、兼容 Pose 快捷命令和两个笛卡尔轨迹提交接口：
 
 | 用户方法 | Runtime C ABI | 类型 | motion ID / 状态 / 取消 | 对应示例 |
 | --- | --- | --- | --- | --- |
 | `solve_ik()` + `set_joint_pv()` | `articore_runtime_solve_ik()` + `articore_runtime_set_joint_pv()` | 推荐 Pose-to-Pose：只求一次整机 IK，再提交普通 PV | 无 | `example_07_cartesian_ptp` |
 | `set_pose()` | `articore_runtime_set_pose()` | 兼容快捷入口：一次终点 IK 后按当前普通 PV 或 MIT 模式执行 | 无 | — |
-| `move_joint_trajectory()` | `articore_runtime_move_joint_trajectory()` | 原生双臂关节轨迹 | 有 | `example_08_joint_trajectory` |
-| `move_linear_trajectory()` | `articore_runtime_move_linear_trajectory()` / `articore_runtime_move_linear_path_trajectory()` | 原生直线或默认 10 mm 圆角融合路径 | 有 | `example_09_cartesian_linear_trajectory` |
+| `move_linear_trajectory()` | `articore_runtime_move_linear_trajectory()` / `articore_runtime_move_linear_trajectory_with_point_count()` | 原生直线或默认 10 mm 圆角融合路径 | 有 | `example_09_cartesian_linear_trajectory` |
 | `move_circular_trajectory()` | `articore_runtime_move_circular_trajectory()` | 原生圆弧轨迹 | 有 | `example_10_cartesian_circular_trajectory` |
 
 `example_11_cartesian_orientation_ptp` 只是 `set_pose()` 的姿态演示，不是第四种
@@ -36,7 +35,9 @@ python -m arx_d_can.examples.control.example_02_enable_disable
 python -m arx_d_can.examples.control.example_03_send_position_pv \
   --left "0,0,0,90,0,0,0" \
   --right "0,0,0,90,0,0,0" \
-  --velocity 50
+  --velocity 50 \
+  --max-speed 1.5 \
+  --max-acceleration 3.0
 
 python -m arx_d_can.examples.control.example_04_send_position_mit \
   --left "0,0,0,90,0,0,0" \
@@ -55,8 +56,6 @@ python -m arx_d_can.examples.control.example_05_set_gripper_openings \
 
 python -m arx_d_can.examples.control.example_06_return_zero
 python -m arx_d_can.examples.control.example_07_cartesian_ptp
-python -m arx_d_can.examples.control.example_08_joint_trajectory \
-  --mode pv --duration 5
 python -m arx_d_can.examples.control.example_11_cartesian_orientation_ptp \
   --speed 50
 python -m arx_d_can.examples.control.example_09_cartesian_linear_trajectory \
@@ -98,10 +97,9 @@ python -m arx_d_can.examples.control.example_14_replay_trajectory \
 ```
 
 录制频率范围为 `(0, 500] Hz`。Python 回放按文件中的原始时间戳逐点调用普通
-`set_joint_pv()` 或 `set_joint_mit()`，不会重采样、插值或调用原生
-`move_joint_trajectory()`。`--velocity` 范围为 `1..100`，只影响普通 PV；普通 MIT
+`set_joint_pv()` 或 `set_joint_mit()`，不会重采样或插值。`--velocity` 范围为 `1..100`，只影响普通 PV；普通 MIT
 没有用户速度参数。
-底层独立提供的关节轨迹、Linear 和 Circular API 不受这个录制回放工具影响。
+底层独立提供的 Linear 和 Circular API 不受这个录制回放工具影响。
 
 ## diagnostics：读取和诊断
 
@@ -128,8 +126,10 @@ PV 单点控制使用 `velocity=1..100` 的 `set_joint_pv()`；默认 50。调�
 目标，新目标替换旧目标并保留 Runtime 的逐关节 V 爬坡状态。100% 速度上限为
 `[180,180,180,225,225,225,225] deg/s`，100% 加速度上限为
 `[450,450,900,900,900,900,900] deg/s²`；速度按 `s`、加速度按 `s²` 缩放。
-SDK 不公开 Raw/流式 PV，也不公开 `set_max_acceleration()` / `get_max_acceleration()`，
-不生成 P 步进、速度包络或轨迹重采样。
+`set_max_speed()` / `get_max_speed()` 与 `set_max_acceleration()` /
+`get_max_acceleration()` 配置 100% 时共同作用于 14 关节的普通 PV 全局基础上限；0 表示恢复
+Runtime 逐关节默认值。SDK 不对 `velocity` 重复缩放，也不静默裁剪 Runtime 拒绝的配置。
+SDK 不公开 Raw/流式 PV，不生成 P 步进、速度包络或轨迹重采样。
 
 普通 MIT 使用 `set_joint_mit(left=..., right=...)`，只传角度；快速跟随 MIT 使用
 `set_joint_mit_fast_follow(left=..., right=...)`，也只传角度。两者固定关节顺序均为

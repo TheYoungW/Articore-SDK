@@ -16,6 +16,15 @@ def main(args: argparse.Namespace) -> None:
     robot.connect()
     print("机器人连接成功")
     try:
+        if args.max_speed is not None:
+            robot.set_max_speed(args.max_speed)
+            print(f"普通 PV 最大速度基础上限：{robot.get_max_speed():g} rad/s")
+        if args.max_acceleration is not None:
+            robot.set_max_acceleration(args.max_acceleration)
+            print(
+                "普通 PV 最大加速度基础上限："
+                f"{robot.get_max_acceleration():g} rad/s²"
+            )
         robot.enable()
         print("已进入 PV 模式")
         robot.set_joint_pv(
@@ -50,6 +59,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=speed_percent,
         default=50.0,
         help="本次 PV 命令速度百分比，范围 1～100，默认 50",
+    )
+    parser.add_argument(
+        "--max-speed",
+        type=float,
+        help="可选：普通 PV 在 100%% 时的全局速度基础上限，rad/s；0 恢复默认",
+    )
+    parser.add_argument(
+        "--max-acceleration",
+        type=float,
+        help="可选：普通 PV 在 100%% 时的全局加速度基础上限，rad/s²；0 恢复默认",
     )
     return parser
 

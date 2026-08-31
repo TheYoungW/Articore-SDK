@@ -86,17 +86,6 @@ def _gain_frame(value: float | Sequence[float] | None) -> tuple[float, ...] | No
     return values * 2 if len(values) == 7 else values
 
 
-def _trajectory_frame(
-    value: float | Sequence[float] | None,
-) -> tuple[float, ...] | None:
-    if value is None:
-        return None
-    if isinstance(value, Real):
-        return (float(value),) * 14
-    values = tuple(float(item) for item in value)
-    return values * 2 if len(values) == 7 else values
-
-
 class ArxDCanDualArm:
     """只转发整机业务数据的 Yunyi V1.0 双臂客户端。"""
 
@@ -216,6 +205,22 @@ class ArxDCanDualArm:
             raise RuntimeError("set_joint_pv() requires PV mode")
         self._runtime.set_joint_pv(_frame(left, right), velocity)
 
+    def set_max_speed(self, rad_s: float) -> None:
+        """设置普通 PV 在 100% 时的全局速度基础上限，0 表示恢复默认值。"""
+        self._runtime.set_max_speed(rad_s)
+
+    def get_max_speed(self) -> float:
+        """读取普通 PV 全局速度基础上限；0 表示当前使用逐关节默认值。"""
+        return self._runtime.get_max_speed()
+
+    def set_max_acceleration(self, rad_s2: float) -> None:
+        """设置普通 PV 在 100% 时的全局加速度基础上限，0 表示恢复默认值。"""
+        self._runtime.set_max_acceleration(rad_s2)
+
+    def get_max_acceleration(self) -> float:
+        """读取普通 PV 全局加速度基础上限；0 表示当前使用逐关节默认值。"""
+        return self._runtime.get_max_acceleration()
+
     def submit_raw_mit(
         self,
         *,
@@ -236,29 +241,6 @@ class ArxDCanDualArm:
             ),
             _gain_frame(kp),
             _gain_frame(kd),
-        )
-
-    def move_joint_trajectory(
-        self,
-        *,
-        timestamps: Sequence[float],
-        left_positions: Sequence[Sequence[float]],
-        right_positions: Sequence[Sequence[float]],
-        kp: float | Sequence[float] | None = None,
-        kd: float | Sequence[float] | None = None,
-        feedforward_torque: float | Sequence[float] | None = None,
-    ) -> int:
-        """提交位置与时间；Runtime 内部规划速度、加速度和 jerk。"""
-        mode = self._runtime.control_mode
-        if mode is RuntimeControlMode.MIT and (kp is None or kd is None):
-            raise ValueError("MIT trajectories require explicit kp and kd")
-        return self._runtime.move_joint_trajectory(
-            timestamps=timestamps,
-            left_positions=left_positions,
-            right_positions=right_positions,
-            mit_kp=_trajectory_frame(kp),
-            mit_kd=_trajectory_frame(kd),
-            mit_feedforward_torques=_trajectory_frame(feedforward_torque),
         )
 
     def read_state(self) -> ArxDCanDualArmState:
@@ -388,7 +370,7 @@ class ArxDCanDualArm:
         )
 
     def get_motion_status(self, motion_id: int) -> MotionStatus:
-        """按统一 Motion ID 查询关节、Linear 或 Circular 任务。"""
+        """按统一 Motion ID 查询 Linear 或 Circular 任务。"""
         return self._runtime.get_motion_status(motion_id)
 
     def cancel_motion(self, motion_id: int) -> None:
@@ -396,7 +378,7 @@ class ArxDCanDualArm:
         self._runtime.cancel_motion(motion_id)
 
     def cancel_all_motions(self) -> None:
-        """取消全部关节和笛卡尔轨迹任务。"""
+        """取消全部笛卡尔轨迹任务。"""
         self._runtime.cancel_all_motions()
 
     def set_grippers(

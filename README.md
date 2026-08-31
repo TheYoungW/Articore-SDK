@@ -11,8 +11,8 @@ conda activate at
 pip install -e .
 ```
 
-当前版本严格依赖 `motor-drive-layer==0.23.0`，并严格要求 Runtime ABI 11.4
-(`0x000B0004`)；ABI 不一致时直接拒绝加载，不执行旧 ABI 兼容。x86_64 与
+当前版本严格依赖 `motor-drive-layer==0.24.0`，并严格要求 Runtime ABI 12.0
+(`0x000C0000`)；ABI 不一致时直接拒绝加载，不执行旧 ABI 兼容。x86_64 与
 AArch64 由 pip 自动选择对应 wheel。Runtime 只通过三参数
 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建。PV reference、
 500 Hz 安全循环、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理；SDK 只传递
@@ -62,12 +62,19 @@ Python 不公开单独的 `close()` 或 `free()`。
   `set_joint_pv(left=..., right=..., velocity=1..100)` 直接提交最新最终目标；默认值为
   50。新目标替换旧目标并保留各关节当前 V 爬坡状态。100% 速度上限为
   `[180,180,180,225,225,225,225] deg/s`，100% 加速度上限为
-  `[450,450,900,900,900,900,900] deg/s²`；速度按比例 `s` 缩放，加速度按
-  `s²` 缩放。位置累积、V 包络、反馈量化补偿和最终端点精确到达全部由 Runtime
+  `[450,450,900,900,900,900,900] deg/s²`。也可通过
+  `set_max_speed(rad_s)` 和 `set_max_acceleration(rad_s2)` 为左右两臂共 14 关节设置
+  100% 时的全局基础上限；设置 0 恢复逐关节默认值，对应 get 返回 0。速度按比例
+  `s` 缩放，加速度按 `s²` 缩放。位置累积、V 包络、反馈量化补偿和最终端点精确到达全部由 Runtime
   负责。SDK 不生成 P 步进、速度斜坡或轨迹重采样，也不公开 Raw PV 直发。
-  Joint/Linear/Circular 的速度、加速度和 jerk 完全由 Runtime 按用户给定时间内部规划，
+  Linear/Circular 的速度、加速度和 jerk 完全由 Runtime 按用户给定时间内部规划，
   不读取普通 PV 设置，也不向用户暴露轨迹加速度。Linear/Circular 要求 PV 产品模式；
   `set_pose()` 跟随当前普通 PV 或 MIT 模式。
+
+普通 PV 的全局速度/加速度配置保存在当前 Runtime 实例中，运动过程中修改时由 Runtime
+平滑应用，不需要在每条目标命令前重复设置。正数控制值的实际下发分辨率为 `0.01`。
+这些配置约束发送给电机 POS_VEL 模式的 V/A 参数，不是对实测物理速度的安全级硬钳位；
+受电机内部控制和机械惯性影响，瞬时实测速度可能高于配置的 V。
 - 普通 MIT 位置使用 `set_joint_mit(left=..., right=...)`，只接收角度并采用
   latest-target-wins；Runtime 以 500 Hz 持续下发，固定 `dq=0`、`tau_ff=0`。
   遥操和高频控制使用 `set_joint_mit_fast_follow(left=..., right=...)`，同样只接收
@@ -140,19 +147,15 @@ left_q, right_q = robot.solve_ik(
 )
 robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
 ```
-- 关节轨迹、Linear 和 Circular 都由 Runtime 返回统一命名空间中的 motion ID，并进入同一个
+- Linear 和 Circular 都由 Runtime 返回统一命名空间中的 motion ID，并进入同一个
   原生 FIFO。`get_motion_status(motion_id)` 查询任一任务，`cancel_motion(motion_id)` 只取消
   指定任务，`cancel_all_motions()` 取消全部任务。Python 不生成 ID、不维护 FIFO，也不推断
   完成状态。
-- 双臂关节轨迹使用 `move_joint_trajectory()` 一次提交全部时间戳和 14 关节路点并直接返回
-  motion ID。PV 模式由 Runtime 生成内部 100 Hz 规划关键点，并在相邻关键点间连续重采样，
-  以 500 Hz 下发 PV 轨迹命令；不会把实时 PV 暴露给 Python。2 ms worker 同时执行安全调度，Python
-  不重采样或逐帧发送。用户只提交位置和时间戳，不能填写轨迹速度、加速度、jerk 或 PV
-  速度限制；MIT 关节轨迹仍直接按五次曲线执行。
-- Python 录制回放工具与上述原生轨迹 API 相互独立：录制频率最大为 500 Hz，回放按
+- 关节点到点轨迹已从 Runtime ABI 和 SDK 删除；关节目标使用普通
+  `set_joint_pv()`、`set_joint_mit()` 或 `set_joint_mit_fast_follow()`。
+- Python 录制回放工具与笛卡尔轨迹 API 相互独立：录制频率最大为 500 Hz，回放按
   文件时间戳逐点调用普通 `set_joint_pv()` 或 `set_joint_mit()`，不在 Python
-  重采样、不插值，
-  也不调用 `move_joint_trajectory()`。
+  重采样或插值。
 - 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。
 - 急停：调用无参数 `estop()` 后底层立即停止控制并失能整机；固定原因从
   `get_health().fault_reason` 读取，且只能通过 `recover()` 解除锁存。
@@ -193,14 +196,15 @@ Circular 的位置圆弧经过 via 点，姿态以最短路 SLERP 经过 via 姿
 角点默认使用 10 mm 笛卡尔圆角。短线段由 Runtime 自动缩小圆角，SDK 不计算圆弧、
 IK 或插值。`duration_s` 表示每条原始线段的参考时间，因此四个闭环三角形 Pose、
 `duration_s=3` 对应总参考时间约 9 秒。
-关节轨迹、Linear 和 Circular 进入同一个原生 FIFO。连续的 Linear/Circular 在公共端点且
+Linear 和 Circular 进入同一个原生 FIFO。连续的 Linear/Circular 在公共端点且
 跟踪误差不超过 0.04 rad 时按计划时刻直接切换下一条，不再额外等待 200 ms 稳定窗口；误差
 超出门槛或最后一条运动仍按真实反馈确认到位。Python 不实现轨迹插值、实时回放或队列调度。
 路径运行期间调用 `set_pose()` 会失败，必须先等待路径
 完成或取消相关 motion。
 产品限位、速度约束和真实反馈到位判断全部由 Runtime 完成。
-普通 PV 的速度与加速度包络只由 Runtime 根据本次 `speed_percent` 管理；SDK 不公开
-`set_max_acceleration()` / `get_max_acceleration()`。完整轨迹只接受位置/路径和时间参数，
+普通 PV 的速度与加速度包络由 Runtime 根据全局基础上限和本次 `speed_percent` 管理；SDK
+只原样传递两类参数，不重复计算百分比。全局速度最大约 `3.14159 rad/s`，全局加速度最大约
+`7.85398 rad/s²`；负数、NaN、无穷大或超限值由 Runtime 拒绝，SDK 不静默裁剪。笛卡尔轨迹只接受路径和时间参数，
 轨迹速度、加速度与 jerk 由 Runtime 内部生成且不作为用户接口暴露。
 `set_joint_pv()` 与 PV 模式下 `set_pose()` 的 `speed_percent` 始终保持 `1..100`
 百分比语义。
@@ -215,21 +219,18 @@ IK 或插值。`duration_s` 表示每条原始线段的参考时间，因此四�
 
 运动术语必须严格区分：`set_joint_pv()` 是输入关节角度的普通 PV 关节点到点；
 `set_pose()` 只对末端终点求一次 IK，得到关节角后交给当前普通 PV 或 MIT 模式；
-Linear/Circular 才规划笛卡尔路径。`move_joint_trajectory()` 表示带时间戳的
-14 关节路点；PV 轨迹由 Runtime 生成 100 Hz 规划关键点并以 500 Hz 连续重采样执行，MIT 关节轨迹仍按 MIT
-五次曲线执行。
+Linear/Circular 才规划笛卡尔路径。SDK 不再提供带时间戳的关节点到点轨迹接口。
 
 ```python
-motion_id = robot.move_joint_trajectory(
-    timestamps=[0.0, 2.0],
-    left_positions=[[0, 0, 0, 1.5708, 0, 0, 0]] * 2,
-    right_positions=[
-        [0, 0, 0, 1.5708, 0, 0, 0],
-        [-0.7854, -0.7854, 0, 1.5708, 0, 0, 0],
-    ],
-)
-status = robot.get_motion_status(motion_id)
-robot.cancel_motion(motion_id)
+robot.set_max_speed(1.5)          # rad/s，100% 时的全局基础上限
+robot.set_max_acceleration(3.0)   # rad/s²，100% 时的全局基础上限
+robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
+
+assert robot.get_max_speed() == 1.5
+assert robot.get_max_acceleration() == 3.0
+
+robot.set_max_speed(0)            # 清除配置，恢复逐关节默认值
+robot.set_max_acceleration(0)
 ```
 
 夹爪默认使用保护模式。只有明确需要持续追踪开合度时才使用直驱：

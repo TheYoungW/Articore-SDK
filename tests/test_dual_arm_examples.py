@@ -23,7 +23,6 @@ def test_product_examples_are_grouped_into_three_purpose_directories() -> None:
         "example_05_set_gripper_openings.py",
         "example_06_return_zero.py",
         "example_07_cartesian_ptp.py",
-        "example_08_joint_trajectory.py",
         "example_09_cartesian_linear_trajectory.py",
         "example_10_cartesian_circular_trajectory.py",
         "example_11_cartesian_orientation_ptp.py",

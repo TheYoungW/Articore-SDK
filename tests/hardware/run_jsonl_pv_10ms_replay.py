@@ -16,7 +16,7 @@ from arx_d_can.examples.common import speed_percent
 
 DEFAULT_INPUT = Path(
     "/home/ubuntu/vr-pico/logs/yunyi_v1_0_sessions/"
-    "20260828_143500_073682_pid3260619_control_100hz.jsonl"
+    "20260831_142859_923277_pid5143_control_100hz.jsonl"
 )
 PERIOD_S = 0.010
 JOINT_COUNT_PER_ARM = 7
@@ -236,7 +236,7 @@ def _print_summary(path: Path, frames: list[ReplayFrame]) -> None:
     )
     print(
         "执行方式：逐点调用普通 set_joint_pv()，固定调度周期10ms；"
-        "不调用 move_joint_trajectory()，不插值，不跳点。"
+        "不调用轨迹接口，不插值，不跳点。"
     )
 
 
@@ -288,8 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--velocity",
         type=speed_percent,
-        default=50.0,
-        help="普通PV速度百分比，范围1～100，默认50",
+        default=100.0,
+        help="普通PV速度百分比，范围1～100，默认100",
     )
     parser.add_argument(
         "--inspect-only",

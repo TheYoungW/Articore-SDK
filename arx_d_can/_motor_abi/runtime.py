@@ -17,8 +17,6 @@ from ._runtime_abi import (
     CProductState,
     CRuntimeTransportHealth,
     CSafetyHealth,
-    CTrajectoryConfig,
-    CTrajectoryWaypoint,
     CTcpOffset,
     get_runtime_abi,
 )
@@ -437,6 +435,38 @@ class ArticoreRuntime:
             "set_joint_pv", native, len(values), float(speed_percent),
         )
 
+    def set_max_speed(self, max_speed_rad_s: float) -> None:
+        """Set the ordinary-PV 100-percent global speed base limit."""
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_max_speed,
+            "set_max_speed", float(max_speed_rad_s),
+        )
+
+    def get_max_speed(self) -> float:
+        """Return zero when no ordinary-PV global speed override is set."""
+        output = ctypes.c_float()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_max_speed,
+            "get_max_speed", ctypes.byref(output),
+        )
+        return float(output.value)
+
+    def set_max_acceleration(self, max_acceleration_rad_s2: float) -> None:
+        """Set the ordinary-PV 100-percent global acceleration base limit."""
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_max_acceleration,
+            "set_max_acceleration", float(max_acceleration_rad_s2),
+        )
+
+    def get_max_acceleration(self) -> float:
+        """Return zero when no ordinary-PV global acceleration override is set."""
+        output = ctypes.c_float()
+        self._call(
+            self._runtime_abi.lib.articore_runtime_get_max_acceleration,
+            "get_max_acceleration", ctypes.byref(output),
+        )
+        return float(output.value)
+
     def set_joint_mit_direct(self, positions: Sequence[float]) -> None:
         values = tuple(float(value) for value in positions)
         native = (ctypes.c_float * len(values))(*values)
@@ -473,67 +503,6 @@ class ArticoreRuntime:
             "submit_mit_frame", native_q, optional(velocities),
             optional(feedforward_torques), optional(kp), optional(kd), len(q),
         )
-
-    def move_joint_trajectory(
-        self,
-        *,
-        timestamps: Sequence[float],
-        left_positions: Sequence[Sequence[float]],
-        right_positions: Sequence[Sequence[float]],
-        mit_kp: Sequence[float] | None = None,
-        mit_kd: Sequence[float] | None = None,
-        mit_feedforward_torques: Sequence[float] | None = None,
-    ) -> int:
-        """Copy positions and timestamps into the native planner and FIFO."""
-        times = tuple(float(value) for value in timestamps)
-        left_q = tuple(tuple(float(value) for value in row) for row in left_positions)
-        right_q = tuple(tuple(float(value) for value in row) for row in right_positions)
-        count = len(times)
-        if count < 2 or len(left_q) != count or len(right_q) != count:
-            raise ValueError(
-                "trajectory timestamps and both position arrays must contain "
-                "the same 2..30000 waypoint count"
-            )
-        if count > 30_000:
-            raise ValueError("trajectory supports at most 30000 waypoints")
-
-        if any(len(row) != 7 for row in (*left_q, *right_q)):
-            raise ValueError("each trajectory arm position must contain 7 values")
-
-        native_waypoints = (CTrajectoryWaypoint * count)()
-        for index, waypoint in enumerate(native_waypoints):
-            waypoint.struct_size = ctypes.sizeof(CTrajectoryWaypoint)
-            waypoint.time_s = times[index]
-            waypoint.left_positions[:] = left_q[index]
-            waypoint.right_positions[:] = right_q[index]
-
-        def vector(name: str, source: Sequence[float] | None) -> tuple[float, ...]:
-            if source is None:
-                return (0.0,) * 14
-            values = tuple(float(value) for value in source)
-            if len(values) != 14:
-                raise ValueError(f"{name} must contain 14 values")
-            return values
-
-        native_config = CTrajectoryConfig()
-        native_config.struct_size = ctypes.sizeof(CTrajectoryConfig)
-        native_config.interpolation = 1
-        native_config.control_mode = int(self._control_mode)
-        native_config.mit_kp[:] = vector("mit_kp", mit_kp)
-        native_config.mit_kd[:] = vector("mit_kd", mit_kd)
-        native_config.mit_feedforward_torque[:] = vector(
-            "mit_feedforward_torques", mit_feedforward_torques
-        )
-        motion_id = ctypes.c_uint64()
-        self._call(
-            self._runtime_abi.lib.articore_runtime_move_joint_trajectory,
-            "move_joint_trajectory",
-            native_waypoints,
-            count,
-            ctypes.byref(native_config),
-            ctypes.byref(motion_id),
-        )
-        return int(motion_id.value)
 
     def set_product_grippers(
         self, *, left: float, right: float, gripper_level: int, mode: int
@@ -752,8 +721,12 @@ class ArticoreRuntime:
             *flattened_values
         )
         motion_id = ctypes.c_uint64()
+        function = getattr(
+            self._runtime_abi.lib,
+            "articore_runtime_move_linear_trajectory_with_point_count",
+        )
         self._call(
-            self._runtime_abi.lib.articore_runtime_move_linear_path_trajectory,
+            function,
             "move_linear_trajectory", int(side), flattened, len(values),
             float(segment_duration_s), ctypes.byref(motion_id),
         )
