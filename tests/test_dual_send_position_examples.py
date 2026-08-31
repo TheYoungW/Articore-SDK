@@ -4,6 +4,9 @@ import pytest
 
 from arx_d_can.examples.control import example_03_send_position_pv as pv_example
 from arx_d_can.examples.control import example_04_send_position_mit as mit_example
+from arx_d_can.examples.control import (
+    example_17_send_position_mit_fast_follow as fast_follow_example,
+)
 
 
 def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) -> None:
@@ -15,9 +18,6 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
 
         def enable(self):
             captured["calls"].append("enable")
-
-        def set_max_acceleration(self, value):
-            captured["max_acceleration"] = value
 
         def set_joint_pv(self, **kwargs):
             captured.update(kwargs)
@@ -37,10 +37,7 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
         "builtins.input",
         lambda prompt: captured["calls"].append("input") or "",
     )
-    args = pv_example.build_parser().parse_args([
-        "--velocity", "70",
-        "--max-acceleration", "4.56",
-    ])
+    args = pv_example.build_parser().parse_args(["--velocity", "70"])
     pv_example.main(args)
 
     assert captured["mode"] == "pv"
@@ -51,28 +48,33 @@ def test_pv_example_sets_default_positions_then_waits_to_disable(monkeypatch) ->
     assert captured["right"] == pytest.approx(
         tuple(math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0))
     )
-    assert captured["max_acceleration"] == pytest.approx(4.56)
     assert captured["velocity"] == 70.0
 
 
-def test_pv_example_defaults_to_native_acceleration_limit() -> None:
+def test_pv_example_uses_runtime_acceleration_default() -> None:
     parser = pv_example.build_parser()
     defaults = parser.parse_args([])
 
     assert defaults.left == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert defaults.right == pv_example.DEFAULT_JOINT_TARGET_DEGREES
     assert not hasattr(defaults, "max_speed")
-    assert defaults.max_acceleration == pytest.approx(6.0)
+    assert not hasattr(defaults, "max_acceleration")
     assert defaults.velocity == pytest.approx(50.0)
-    assert parser.parse_args(
-        ["--max-acceleration", "4.565"]
-    ).max_acceleration == pytest.approx(4.565)
     assert parser.parse_args(["--velocity", "100"]).velocity == 100.0
     with pytest.raises(SystemExit):
-        parser.parse_args(["--velocity", "-0.1"])
+        parser.parse_args(["--velocity", "0"])
 
 
-def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("example", "method"),
+    (
+        (mit_example, "set_joint_mit"),
+        (fast_follow_example, "set_joint_mit_fast_follow"),
+    ),
+)
+def test_mit_examples_forward_positions_without_speed(
+    monkeypatch, example, method: str
+) -> None:
     captured = {"calls": []}
 
     class FakeRobot:
@@ -82,7 +84,7 @@ def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:
         def enable(self):
             captured["calls"].append("enable")
 
-        def set_joint_mit(self, **kwargs):
+        def command(self, **kwargs):
             captured.update(kwargs)
             raise KeyboardInterrupt
 
@@ -93,15 +95,15 @@ def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:
         captured["mode"] = kwargs["control_mode"]
         return FakeRobot()
 
-    monkeypatch.setattr(mit_example, "ArxDCanDualArm", fake_robot)
-    args = mit_example.build_parser().parse_args(
+    setattr(FakeRobot, method, FakeRobot.command)
+    monkeypatch.setattr(example, "ArxDCanDualArm", fake_robot)
+    args = example.build_parser().parse_args(
         [
             "--left", "0,0,0,90,0,0,0",
             "--right", "0,0,0,90,0,0,0",
-            "--velocity", "10",
         ]
     )
-    mit_example.main(args)
+    example.main(args)
 
     expected_positions = tuple(
         math.radians(value) for value in (0, 0, 0, 90, 0, 0, 0)
@@ -110,28 +112,28 @@ def test_mit_example_forwards_positions_and_speed(monkeypatch) -> None:
     assert captured["calls"] == ["connect", "enable", "disconnect"]
     assert captured["left"] == pytest.approx(expected_positions)
     assert captured["right"] == pytest.approx(expected_positions)
-    assert captured["velocity"] == 10.0
+    assert "velocity" not in captured
 
 
-def test_mit_example_requires_a_zero_to_one_hundred_speed() -> None:
-    parser = mit_example.build_parser()
+@pytest.mark.parametrize("example", (mit_example, fast_follow_example))
+def test_mit_examples_require_positions_and_expose_no_speed(example) -> None:
+    parser = example.build_parser()
     base = ["--left", "0,0,0,0,0,0,0", "--right", "0,0,0,0,0,0,0"]
 
+    assert not hasattr(parser.parse_args(base), "velocity")
     with pytest.raises(SystemExit):
-        parser.parse_args(base)
-    assert parser.parse_args([*base, "--velocity", "0"]).velocity == 0.0
-    with pytest.raises(SystemExit):
-        parser.parse_args([*base, "--velocity", "100.1"])
+        parser.parse_args([*base, "--velocity", "10"])
 
 
-@pytest.mark.parametrize("example", (pv_example, mit_example))
+@pytest.mark.parametrize("example", (pv_example, mit_example, fast_follow_example))
 def test_dual_position_example_has_no_mode_option(example) -> None:
     destinations = {action.dest for action in example.build_parser()._actions}
     assert "mode" not in destinations
 
 
-def test_mit_example_requires_positions_and_exposes_ordinary_speed() -> None:
-    parser = mit_example.build_parser()
+@pytest.mark.parametrize("example", (mit_example, fast_follow_example))
+def test_mit_example_requires_positions_only(example) -> None:
+    parser = example.build_parser()
     destinations = {action.dest for action in parser._actions}
 
     with pytest.raises(SystemExit):
@@ -140,5 +142,4 @@ def test_mit_example_requires_positions_and_exposes_ordinary_speed() -> None:
         "help",
         "left",
         "right",
-        "velocity",
     }

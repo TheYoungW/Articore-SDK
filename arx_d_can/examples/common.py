@@ -38,10 +38,10 @@ def joint_velocity_degrees(text: str) -> tuple[float, ...]:
 
 
 def speed_percent(text: str) -> float:
-    """解析普通位置控制的 0～100 速度档位。"""
+    """解析普通 PV 控制的 1～100 速度百分比。"""
     value = float(text)
-    if not math.isfinite(value) or not 0.0 <= value <= 100.0:
-        raise ValueError("速度档位必须在 0～100 范围内")
+    if not math.isfinite(value) or not 1.0 <= value <= 100.0:
+        raise ValueError("速度百分比必须在 1～100 范围内")
     return value
 
 

@@ -147,18 +147,6 @@ class ArxDCanDualArm:
         """非阻塞返回最近 0.1 秒窗口内的双通道 CAN 总帧率。"""
         return self._runtime.get_fps()
 
-    def set_max_acceleration(self, max_acceleration_rad_s2: float) -> None:
-        """设置普通 PV 最大加速度，单位为 rad/s²。"""
-        if self._runtime.control_mode is not RuntimeControlMode.PV:
-            raise RuntimeError("set_max_acceleration() requires PV mode")
-        self._runtime.set_max_acceleration(max_acceleration_rad_s2)
-
-    def get_max_acceleration(self) -> float:
-        """返回普通 PV 最大加速度，单位为 rad/s²。"""
-        if self._runtime.control_mode is not RuntimeControlMode.PV:
-            raise RuntimeError("get_max_acceleration() requires PV mode")
-        return self._runtime.get_max_acceleration()
-
     def get_joint_limits(self) -> dict[str, JointLimit]:
         """返回 Runtime 实际使用的14关节产品逻辑限位。"""
         limits = self._runtime.get_joint_limits()
@@ -199,11 +187,22 @@ class ArxDCanDualArm:
         *,
         left: Sequence[float],
         right: Sequence[float],
-        velocity: float = 50.0,
     ) -> None:
+        """提交普通 MIT 最新关节角目标；Runtime 以 500 Hz 持续下发。"""
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
             raise RuntimeError("set_joint_mit() requires MIT mode")
-        self._runtime.set_joint_mit(_frame(left, right), velocity)
+        self._runtime.set_joint_mit_direct(_frame(left, right))
+
+    def set_joint_mit_fast_follow(
+        self,
+        *,
+        left: Sequence[float],
+        right: Sequence[float],
+    ) -> None:
+        """提交快速跟随 MIT 关节角目标，用于遥操和高频控制。"""
+        if self._runtime.control_mode is not RuntimeControlMode.MIT:
+            raise RuntimeError("set_joint_mit_fast_follow() requires MIT mode")
+        self._runtime.set_joint_mit_fast_follow(_frame(left, right))
 
     def set_joint_pv(
         self,
@@ -212,7 +211,7 @@ class ArxDCanDualArm:
         right: Sequence[float],
         velocity: float = 50.0,
     ) -> None:
-        """提交用户普通 PV 步进/点到点目标；不提供实时 PV 流式直发。"""
+        """提交普通 PV 最终目标；速度包络与轨迹执行由 Runtime 负责。"""
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_joint_pv() requires PV mode")
         self._runtime.set_joint_pv(_frame(left, right), velocity)

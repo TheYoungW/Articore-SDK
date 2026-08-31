@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 04（普通 MIT）：提交 latest-target-wins 双臂关节角目标。"""
+"""控制示例 17（快速跟随 MIT）：以高频最新目标驱动双臂。"""
 from __future__ import annotations
 
 import argparse
@@ -10,19 +10,22 @@ from arx_d_can.examples.common import joint_degrees
 
 
 def main(args: argparse.Namespace) -> None:
+    print(
+        "安全警告：快速跟随 MIT 只适合小角度连续目标；请勿一次提交与当前姿态"
+        "差异过大的目标，否则机械臂可能快速、大幅运动。"
+    )
     robot = ArxDCanDualArm(control_mode="mit")
     robot.connect()
     print("机器人连接成功")
     try:
         robot.enable()
-        print("已进入普通 MIT 模式")
-        robot.set_joint_mit(
+        print("已进入快速跟随 MIT 模式")
+        robot.set_joint_mit_fast_follow(
             left=joint_degrees(args.left),
             right=joint_degrees(args.right),
         )
         print(
-            "目标已提交；Runtime 将以 500 Hz 持续下发最新目标，"
-            "按 Ctrl+C 失能并退出"
+            "快速跟随目标已提交；按 Ctrl+C 失能并退出"
         )
         while True:
             time.sleep(1.0)

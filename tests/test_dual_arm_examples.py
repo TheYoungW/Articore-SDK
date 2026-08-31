@@ -32,6 +32,7 @@ def test_product_examples_are_grouped_into_three_purpose_directories() -> None:
         "example_14_replay_trajectory.py",
         "example_15_bimanual_follow.py",
         "example_16_tcp_offset.py",
+        "example_17_send_position_mit_fast_follow.py",
     ]
     assert sorted(
         path.name for path in (root / "diagnostics").glob("example_*.py")

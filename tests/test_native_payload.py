@@ -29,7 +29,7 @@ from arx_d_can._motor_abi.errors import RuntimeCallError
 def test_motor_distribution_contains_native_payload_without_python_module() -> None:
     assert importlib.util.find_spec("motor_drive_layer") is None
     package = distribution("motor-drive-layer")
-    assert package.version == "0.22.5"
+    assert package.version == "0.23.0"
     package_files = {entry.as_posix() for entry in package.files or ()}
     native_payload = {
         entry for entry in package_files
@@ -54,6 +54,8 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert not hasattr(runtime_abi.lib, "articore_runtime_submit_raw_pv")
     assert not hasattr(runtime_abi.lib, "articore_runtime_set_realtime_pv")
     assert hasattr(runtime_abi.lib, "articore_runtime_set_joint_mit")
+    assert hasattr(runtime_abi.lib, "articore_runtime_set_joint_mit_direct")
+    assert hasattr(runtime_abi.lib, "articore_runtime_set_joint_mit_fast_follow")
     assert not hasattr(runtime_abi.lib, "articore_runtime_set_max_speed")
     assert not hasattr(runtime_abi.lib, "articore_runtime_get_max_speed")
     assert hasattr(runtime_abi.lib, "articore_runtime_set_max_acceleration")
@@ -84,12 +86,19 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert not hasattr(runtime_abi.lib, "articore_runtime_get_cartesian_motion_status")
     assert not hasattr(runtime_abi.lib, "articore_runtime_cancel_cartesian_motion")
     assert not hasattr(runtime_abi.lib, "articore_runtime_set_joint_positions_v2")
-    assert runtime_abi.lib.articore_runtime_set_max_acceleration.argtypes == [
-        ctypes.c_void_p, ctypes.c_float,
+    assert runtime_abi.lib.articore_runtime_set_joint_mit_direct.argtypes == [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_uint32,
     ]
-    assert runtime_abi.lib.articore_runtime_get_max_acceleration.argtypes == [
-        ctypes.c_void_p, ctypes.POINTER(ctypes.c_float),
+    assert runtime_abi.lib.articore_runtime_set_joint_mit_fast_follow.argtypes == [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_uint32,
     ]
+    assert runtime_abi.lib.articore_runtime_set_joint_mit.argtypes is None
+    assert runtime_abi.lib.articore_runtime_set_max_acceleration.argtypes is None
+    assert runtime_abi.lib.articore_runtime_get_max_acceleration.argtypes is None
     assert runtime_abi.lib.articore_runtime_solve_ik.argtypes == [
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_float),
@@ -173,11 +182,11 @@ def test_motor_distribution_contains_native_payload_without_python_module() -> N
     assert CSafetyHealth.gripper_count.offset == 5064
 
 
-def test_sdk_dependency_is_strictly_pinned_to_motor_0_22_5() -> None:
+def test_sdk_dependency_is_strictly_pinned_to_motor_0_23_0() -> None:
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
 
-    assert '"motor-drive-layer==0.22.5"' in text
+    assert '"motor-drive-layer==0.23.0"' in text
     assert '"motor-drive-layer>=' not in text
 
 
@@ -224,9 +233,9 @@ def test_runtime_library_override_is_explicit(monkeypatch, tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    "version", (0x000A0000, 0x000B0001, 0x000B0002, 0x000C0000)
+    "version", (0x000A0000, 0x000B0001, 0x000B0002, 0x000B0003, 0x000C0000)
 )
-def test_runtime_abi_requires_exact_eleven_three(
+def test_runtime_abi_requires_exact_eleven_four(
     monkeypatch, version: int
 ) -> None:
     class VersionFunction:
@@ -245,53 +254,17 @@ def test_runtime_abi_requires_exact_eleven_three(
         lambda: "/tmp/fake-libarticore-runtime.so",
     )
 
-    with pytest.raises(RuntimeError, match="exactly 11.3"):
+    with pytest.raises(RuntimeError, match="exactly 11.4"):
         RuntimeAbi()
 
 
-def test_native_ordinary_pv_acceleration_default_range_and_resolution() -> None:
+def test_native_pv_command_requires_connected_motion_state() -> None:
     runtime = ArticoreRuntime.create_yunyi(
         RuntimeControlMode.PV, with_grippers=False
     )
     try:
-        assert runtime.get_max_acceleration() == pytest.approx(6.0)
-        runtime.set_max_acceleration(0.01)
-        assert runtime.get_max_acceleration() == pytest.approx(0.01)
-        runtime.set_max_acceleration(8.0)
-        assert runtime.get_max_acceleration() == pytest.approx(8.0)
-        runtime.set_max_acceleration(4.56)
-        assert runtime.get_max_acceleration() == pytest.approx(4.56)
-        for value in (0.0, 8.01, float("nan"), float("inf")):
-            with pytest.raises(RuntimeCallError, match="within"):
-                runtime.set_max_acceleration(value)
-        with pytest.raises(RuntimeCallError, match="0.01 physical-unit resolution"):
-            runtime.set_max_acceleration(4.565)
-    finally:
-        runtime.disconnect()
-
-
-def test_native_ordinary_pv_acceleration_is_not_a_mit_setting() -> None:
-    runtime = ArticoreRuntime.create_yunyi(
-        RuntimeControlMode.MIT, with_grippers=False
-    )
-    try:
-        with pytest.raises(RuntimeCallError, match="only in product PV mode"):
-            runtime.set_max_acceleration(4.0)
-        with pytest.raises(RuntimeCallError, match="only in product PV mode"):
-            runtime.get_max_acceleration()
-    finally:
-        runtime.disconnect()
-
-
-def test_native_pv_command_speed_is_separate_from_acceleration_limit() -> None:
-    runtime = ArticoreRuntime.create_yunyi(
-        RuntimeControlMode.PV, with_grippers=False
-    )
-    try:
-        runtime.set_max_acceleration(4.56)
         with pytest.raises(RuntimeCallError, match="not accepting motion commands"):
             runtime.set_joint_pv((0.0,) * 14, 80)
-        assert runtime.get_max_acceleration() == pytest.approx(4.56)
     finally:
         runtime.disconnect()
 

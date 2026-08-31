@@ -7,6 +7,7 @@ import math
 import time
 
 from arx_d_can import ArxDCanDualArm, BimanualFollowPhase
+from arx_d_can.examples.common import speed_percent
 
 
 SAFE_POSE = (0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0)
@@ -26,7 +27,7 @@ def _send(
     if mode == "pv":
         robot.set_joint_pv(left=left, right=right, velocity=speed)
     else:
-        robot.set_joint_mit(left=left, right=right, velocity=speed)
+        robot.set_joint_mit(left=left, right=right)
 
 
 def _wait_target(
@@ -69,15 +70,12 @@ def main(args: argparse.Namespace) -> None:
         robot.connect()
         robot.enable()
         if args.mode == "pv":
-            robot.set_max_acceleration(args.max_acceleration)
-
-        if args.mode == "pv":
             robot.set_joint_pv(
                 left=SAFE_POSE, right=SAFE_POSE, velocity=args.speed
             )
         else:
             robot.set_joint_mit(
-                left=SAFE_POSE, right=SAFE_POSE, velocity=args.speed
+                left=SAFE_POSE, right=SAFE_POSE
             )
         tolerance = 0.05 if args.mode == "pv" else 0.06
         _wait_target(robot, args.leader, SAFE_POSE, tolerance)
@@ -121,10 +119,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("pv", "mit"), default="pv")
     parser.add_argument("--leader", choices=("left", "right"), default="right")
-    parser.add_argument("--speed", type=float, default=50.0)
     parser.add_argument(
-        "--max-acceleration", type=float, default=6.0,
-        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略；默认 6.00",
+        "--speed",
+        type=speed_percent,
+        default=50.0,
+        help="普通 PV 速度百分比，范围 1～100；MIT 模式忽略",
     )
     parser.add_argument("--delta-deg", type=float, default=8.0)
     return parser

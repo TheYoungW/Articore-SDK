@@ -24,13 +24,11 @@ def _move_to_start(
     target: DualArmTrajectorySample,
     *,
     velocity: float,
-    max_acceleration_rad_s2: float,
     timeout: float,
     position_tolerance: float,
     velocity_tolerance: float,
 ) -> None:
     if robot.control_mode == "pv":
-        robot.set_max_acceleration(max_acceleration_rad_s2)
         robot.set_joint_pv(
             left=target.left_positions,
             right=target.right_positions,
@@ -40,7 +38,6 @@ def _move_to_start(
         robot.set_joint_mit(
             left=target.left_positions,
             right=target.right_positions,
-            velocity=velocity,
         )
 
     deadline = time.monotonic() + timeout
@@ -99,12 +96,12 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
     try:
         robot.enable()
-        print(f"正以普通 {args.mode.upper()} 速度 {args.velocity:g} 移动到轨迹起点……")
+        detail = f"，速度 {args.velocity:g}%" if args.mode == "pv" else ""
+        print(f"正以普通 {args.mode.upper()}{detail} 移动到轨迹起点……")
         _move_to_start(
             robot,
             first,
             velocity=args.velocity,
-            max_acceleration_rad_s2=args.max_acceleration,
             timeout=args.start_timeout,
             position_tolerance=args.position_tolerance,
             velocity_tolerance=args.velocity_tolerance,
@@ -141,13 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--velocity",
         type=speed_percent,
         default=50.0,
-        help="普通 PV/MIT 回放统一速度档位，范围 0–100；默认 50",
-    )
-    parser.add_argument(
-        "--max-acceleration",
-        type=float,
-        default=6.0,
-        help="普通 PV 最大加速度，单位 rad/s²；MIT 模式忽略；默认 6.00",
+        help="普通 PV 速度百分比，范围 1–100；MIT 模式忽略；默认 50",
     )
     parser.add_argument("--start-timeout", type=float, default=30.0)
     parser.add_argument(

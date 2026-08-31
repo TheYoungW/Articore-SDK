@@ -37,8 +37,8 @@ def _frequency(value: float) -> float:
 
 def _speed_percent(value: float) -> float:
     speed = float(value)
-    if not math.isfinite(speed) or not 0.0 <= speed <= 100.0:
-        raise ValueError("velocity must be finite and in the range 0..100")
+    if not math.isfinite(speed) or not 1.0 <= speed <= 100.0:
+        raise ValueError("velocity must be finite and in the range 1..100")
     return speed
 
 
@@ -238,16 +238,17 @@ def replay(
         if remaining > 0.0:
             time.sleep(remaining)
 
-        command = (
-            robot.set_joint_pv
-            if mode == "pv"
-            else robot.set_joint_mit
-        )
-        command(
-            left=sample.left_positions,
-            right=sample.right_positions,
-            velocity=speed,
-        )
+        if mode == "pv":
+            robot.set_joint_pv(
+                left=sample.left_positions,
+                right=sample.right_positions,
+                velocity=speed,
+            )
+        else:
+            robot.set_joint_mit(
+                left=sample.left_positions,
+                right=sample.right_positions,
+            )
 
         left_gripper, right_gripper = grippers
         if left_gripper is not None and right_gripper is not None:

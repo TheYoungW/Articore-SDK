@@ -152,10 +152,10 @@ def test_dual_mit_replay_uses_only_normal_mit_commands(monkeypatch) -> None:
 
     assert [command[0] for command in commands] == pytest.approx([0.0, 0.5])
     assert commands[0][1] == {
-        "left": (0.1,), "right": (-0.2,), "velocity": 75.0,
+        "left": (0.1,), "right": (-0.2,),
     }
     assert commands[1][1] == {
-        "left": (0.2,), "right": (-0.1,), "velocity": 75.0,
+        "left": (0.2,), "right": (-0.1,),
     }
 
 

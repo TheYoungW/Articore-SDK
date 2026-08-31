@@ -260,7 +260,6 @@ def main(args: argparse.Namespace) -> None:
         if not robot.enable():
             raise RuntimeError("whole-robot enable was not confirmed")
         enabled = True
-        robot.set_max_acceleration(args.max_acceleration)
         print(
             f"开始逐点发送{len(frames)}个普通PV目标："
             f"velocity={args.velocity:g}，周期=10ms"
@@ -290,13 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--velocity",
         type=speed_percent,
         default=50.0,
-        help="普通PV速度百分比，默认50（约1 rad/s）",
-    )
-    parser.add_argument(
-        "--max-acceleration",
-        type=float,
-        default=6.0,
-        help="普通PV最大加速度rad/s²，默认6.0",
+        help="普通PV速度百分比，范围1～100，默认50",
     )
     parser.add_argument(
         "--inspect-only",

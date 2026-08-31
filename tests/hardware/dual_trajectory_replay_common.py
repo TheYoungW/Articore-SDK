@@ -27,7 +27,6 @@ JOINT_NAMES = tuple(f"joint{index}" for index in range(1, 8))
 EXPECTED_SAMPLE_COUNT = 200
 DISCONTINUITY_RATE_RAD_S = 10.0
 REPLAY_VELOCITY_PERCENT = 50.0
-PV_MAX_ACCELERATION_RAD_S2 = 4.0
 START_TIMEOUT_S = 30.0
 POSITION_TOLERANCE_RAD = math.radians(1.0)
 VELOCITY_TOLERANCE_RAD_S = math.radians(2.0)
@@ -162,7 +161,6 @@ def _run_hardware(
                 robot,
                 samples[0],
                 velocity=REPLAY_VELOCITY_PERCENT,
-                max_acceleration_rad_s2=PV_MAX_ACCELERATION_RAD_S2,
                 timeout=START_TIMEOUT_S,
                 position_tolerance=POSITION_TOLERANCE_RAD,
                 velocity_tolerance=VELOCITY_TOLERANCE_RAD_S,

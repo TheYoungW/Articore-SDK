@@ -34,13 +34,18 @@ python -m arx_d_can.examples.control.example_01_switch_control_mode --mode mit
 python -m arx_d_can.examples.control.example_02_enable_disable
 
 python -m arx_d_can.examples.control.example_03_send_position_pv \
-  --velocity 50 \
-  --max-acceleration 6.00
+  --left "0,0,0,90,0,0,0" \
+  --right "0,0,0,90,0,0,0" \
+  --velocity 50
 
 python -m arx_d_can.examples.control.example_04_send_position_mit \
   --left "0,0,0,90,0,0,0" \
-  --right "0,0,0,90,0,0,0" \
-  --velocity 10
+  --right "0,0,0,90,0,0,0"
+
+# 安全警告：只使用小角度连续目标；请勿提交与当前姿态差异过大的目标
+python -m arx_d_can.examples.control.example_17_send_position_mit_fast_follow \
+  --left "0,0,0,90,0,0,0" \
+  --right "0,0,0,90,0,0,0"
 
 python -m arx_d_can.examples.control.example_05_set_gripper_openings \
   --left-gripper 1000 \
@@ -48,7 +53,7 @@ python -m arx_d_can.examples.control.example_05_set_gripper_openings \
   --gripper-level 5 \
   --mode protected
 
-python -m arx_d_can.examples.control.example_06_return_zero --velocity 50
+python -m arx_d_can.examples.control.example_06_return_zero
 python -m arx_d_can.examples.control.example_07_cartesian_ptp
 python -m arx_d_can.examples.control.example_08_joint_trajectory \
   --mode pv --duration 5
@@ -70,7 +75,7 @@ python -m arx_d_can.examples.control.example_16_tcp_offset \
 
 # 受控真机演示：先到 J4=90°、其余0°，右手主导并用普通 MIT 往返8°
 python -m arx_d_can.examples.control.example_15_bimanual_follow \
-  --mode mit --leader right --speed 30 --delta-deg 8
+  --mode mit --leader right --delta-deg 8
 ```
 
 `set_tcp_offset()` 的偏移由 C++ Runtime 保存到当前 Runtime 会话，并同时用于
@@ -89,12 +94,13 @@ python -m arx_d_can.examples.control.example_14_replay_trajectory \
   --input trajectories/dual.json --mode pv --velocity 50
 
 python -m arx_d_can.examples.control.example_14_replay_trajectory \
-  --input trajectories/dual.json --mode mit --velocity 50
+  --input trajectories/dual.json --mode mit
 ```
 
 录制频率范围为 `(0, 500] Hz`。Python 回放按文件中的原始时间戳逐点调用普通
 `set_joint_pv()` 或 `set_joint_mit()`，不会重采样、插值或调用原生
-`move_joint_trajectory()`。`--velocity` 使用对应普通 PV/MIT 命令的 `0..100` 速度档位。
+`move_joint_trajectory()`。`--velocity` 范围为 `1..100`，只影响普通 PV；普通 MIT
+没有用户速度参数。
 底层独立提供的关节轨迹、Linear 和 Circular API 不受这个录制回放工具影响。
 
 ## diagnostics：读取和诊断
@@ -118,14 +124,21 @@ python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 python -m arx_d_can.examples.maintenance.example_03_set_zero_current_position
 ```
 
-PV 单点控制使用带单次 `velocity=0..100` 的 `set_joint_pv()`；默认单次速度为 50。
-该百分比直接映射为 `0..2 rad/s`；`set_max_acceleration()` 使用
-`0.01..8.00 rad/s²`，默认 `6.00 rad/s²`，使用 `0.01` 分辨率并由 Runtime 校验，
-SDK 不取整。达妙 POS_VEL 独立的驱动速度上限仍为 3 rad/s。SDK 不公开 Raw/流式 PV，
-`set_joint_pv()` 是用户普通步进/点到点接口；实时 PV 只由 Runtime 的有限轨迹内部使用，
-SDK 不生成 reference 或速度斜坡。MIT 仍可通过
-`set_joint_mit()` 的显式速度或高级 Raw MIT 参数控制。产品限位、参数合法性、通信看门狗
-及安全状态仍由 C++ Runtime 负责。
+PV 单点控制使用 `velocity=1..100` 的 `set_joint_pv()`；默认 50。调用只提交最终
+目标，新目标替换旧目标并保留 Runtime 的逐关节 V 爬坡状态。100% 速度上限为
+`[180,180,180,225,225,225,225] deg/s`，100% 加速度上限为
+`[450,450,900,900,900,900,900] deg/s²`；速度按 `s`、加速度按 `s²` 缩放。
+SDK 不公开 Raw/流式 PV，也不公开 `set_max_acceleration()` / `get_max_acceleration()`，
+不生成 P 步进、速度包络或轨迹重采样。
+
+普通 MIT 使用 `set_joint_mit(left=..., right=...)`，只传角度；快速跟随 MIT 使用
+`set_joint_mit_fast_follow(left=..., right=...)`，也只传角度。两者固定关节顺序均为
+`left J1...J7, right J1...J7`。普通模式的 `(Kp, Kd)` 依次为
+`[(15,0.8),(15,0.8),(12,0.7),(12,0.7),(8,0.5),(7,0.5),(6,0.4)]`；
+快速跟随模式依次为
+`[(190,4.55),(190,4.50),(100,2.50),(100,2.50),(70,0.70),(60,0.60),(50,0.50)]`，
+增益、`dq=0`、
+`tau_ff=0`、产品限位、通信看门狗及安全状态均由 C++ Runtime 负责。
 
 末端位姿控制包含四个 PV 示例：`example_07_cartesian_ptp`、
 `example_09_cartesian_linear_trajectory`、`example_10_cartesian_circular_trajectory` 和

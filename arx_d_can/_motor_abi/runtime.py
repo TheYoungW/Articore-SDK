@@ -403,22 +403,6 @@ class ArticoreRuntime:
             if failure is not None:
                 raise RuntimeCallError(f"disconnect failed: {failure}")
 
-    def set_max_acceleration(self, max_acceleration_rad_s2: float) -> None:
-        """Set the ordinary-PV maximum acceleration in rad/s²."""
-        self._call(
-            self._runtime_abi.lib.articore_runtime_set_max_acceleration,
-            "set_max_acceleration", float(max_acceleration_rad_s2),
-        )
-
-    def get_max_acceleration(self) -> float:
-        """Return the ordinary-PV maximum acceleration in rad/s²."""
-        value = ctypes.c_float()
-        self._call(
-            self._runtime_abi.lib.articore_runtime_get_max_acceleration,
-            "get_max_acceleration", ctypes.byref(value),
-        )
-        return float(value.value)
-
     def get_joint_limits(self) -> tuple[JointLimit, ...]:
         """Return the fixed 14-joint logical product limit table."""
         native = CProductJointAngleVelLimits()
@@ -453,16 +437,20 @@ class ArticoreRuntime:
             "set_joint_pv", native, len(values), float(speed_percent),
         )
 
-    def set_joint_mit(
-        self,
-        positions: Sequence[float],
-        speed_percent: float = 50.0,
-    ) -> None:
+    def set_joint_mit_direct(self, positions: Sequence[float]) -> None:
         values = tuple(float(value) for value in positions)
         native = (ctypes.c_float * len(values))(*values)
         self._call(
-            self._runtime_abi.lib.articore_runtime_set_joint_mit,
-            "set_joint_mit", native, len(values), float(speed_percent),
+            self._runtime_abi.lib.articore_runtime_set_joint_mit_direct,
+            "set_joint_mit_direct", native, len(values),
+        )
+
+    def set_joint_mit_fast_follow(self, positions: Sequence[float]) -> None:
+        values = tuple(float(value) for value in positions)
+        native = (ctypes.c_float * len(values))(*values)
+        self._call(
+            self._runtime_abi.lib.articore_runtime_set_joint_mit_fast_follow,
+            "set_joint_mit_fast_follow", native, len(values),
         )
 
     def submit_mit_frame(

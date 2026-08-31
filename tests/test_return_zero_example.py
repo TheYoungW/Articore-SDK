@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import argparse
-
 import pytest
 
 from arx_d_can.examples.control import example_06_return_zero as example
@@ -25,8 +23,8 @@ def test_return_zero_submits_every_installed_product_target_before_waiting(
         def enable(self) -> None:
             calls.append("enable")
 
-        def set_joint_mit(self, *, left, right, velocity) -> None:
-            calls.append(("arms", tuple(left), tuple(right), velocity))
+        def set_joint_mit(self, *, left, right) -> None:
+            calls.append(("arms", tuple(left), tuple(right)))
 
         def set_grippers(self, *, left, right, gripper_level) -> None:
             calls.append(("grippers", left, right, gripper_level))
@@ -47,12 +45,12 @@ def test_return_zero_submits_every_installed_product_target_before_waiting(
     monkeypatch.setattr(example, "ArxDCanDualArm", FakeRobot)
     monkeypatch.setattr("builtins.input", confirm)
 
-    example.main(argparse.Namespace(velocity=20.0))
+    example.main()
 
     expected: list[object] = [
         "connect",
         "enable",
-        ("arms", (0.0,) * 7, (0.0,) * 7, 20.0),
+        ("arms", (0.0,) * 7, (0.0,) * 7),
     ]
     if has_grippers:
         expected.append(("grippers", 0, 0, 5))

@@ -31,7 +31,7 @@ def set_joint_positions(
     right: tuple[float, ...],
 ) -> None:
     if mode == "mit":
-        robot.set_joint_mit(left=left, right=right, velocity=SPEED_PERCENT)
+        robot.set_joint_mit(left=left, right=right)
     else:
         robot.set_joint_pv(left=left, right=right, velocity=SPEED_PERCENT)
 

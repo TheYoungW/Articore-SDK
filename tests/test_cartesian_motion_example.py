@@ -90,11 +90,12 @@ def test_ptp_example_submits_mirrored_dual_arm_targets(monkeypatch) -> None:
     assert ptp.DEFAULT_RIGHT_TARGET_POSE[1] < 0.0
 
 
-def test_ptp_example_defaults_to_fifty_and_accepts_zero_speed() -> None:
+def test_ptp_example_defaults_to_fifty_and_requires_positive_speed() -> None:
     parser = ptp.build_parser()
 
     assert parser.parse_args([]).speed == pytest.approx(50.0)
-    assert parser.parse_args(["--speed", "0"]).speed == pytest.approx(0.0)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--speed", "0"])
     with pytest.raises(SystemExit):
         parser.parse_args(["--speed", "100.1"])
 
@@ -156,7 +157,8 @@ def test_orientation_error_handles_equivalent_rpy_at_singularity() -> None:
 
     assert orientation._orientation_error(first, equivalent) == pytest.approx(0.0)
     assert orientation.build_parser().parse_args([]).speed == pytest.approx(50.0)
-    assert orientation.build_parser().parse_args(["--speed", "0"]).speed == 0.0
+    with pytest.raises(SystemExit):
+        orientation.build_parser().parse_args(["--speed", "0"])
 
 
 @pytest.mark.parametrize(

@@ -130,7 +130,6 @@ class FakeRuntime:
             error=None,
         )
         self.fps = 8120.0
-        self.max_acceleration = 6.0
         self.joint_limits = tuple(
             JointLimit(-float(index + 1), float(index + 1), 5.0)
             for index in range(14)
@@ -182,16 +181,6 @@ class FakeRuntime:
         self.calls.append(("configure_mode", mode))
         self._mode = mode
 
-    def set_max_acceleration(self, max_acceleration_rad_s2) -> None:
-        self.max_acceleration = float(max_acceleration_rad_s2)
-        self.calls.append(
-            ("set_max_acceleration", float(max_acceleration_rad_s2))
-        )
-
-    def get_max_acceleration(self) -> float:
-        self.calls.append(("get_max_acceleration",))
-        return self.max_acceleration
-
     def get_joint_limits(self) -> tuple[JointLimit, ...]:
         self.calls.append(("get_joint_limits",))
         return self.joint_limits
@@ -199,8 +188,11 @@ class FakeRuntime:
     def set_joint_pv(self, positions, velocity) -> None:
         self.calls.append(("pv", tuple(positions), velocity))
 
-    def set_joint_mit(self, positions, velocity) -> None:
-        self.calls.append(("mit-position", tuple(positions), velocity))
+    def set_joint_mit_direct(self, positions) -> None:
+        self.calls.append(("mit-direct", tuple(positions)))
+
+    def set_joint_mit_fast_follow(self, positions) -> None:
+        self.calls.append(("mit-fast-follow", tuple(positions)))
 
     def submit_mit_frame(self, *values) -> None:
         self.calls.append(("mit", *values))
@@ -565,39 +557,18 @@ def test_get_fps_returns_latest_runtime_sample(product_factory) -> None:
     assert robot.get_fps() == 8120.0
 
 
-def test_ordinary_pv_acceleration_limit_uses_physical_units(
-    product_factory,
-) -> None:
-    import inspect
-
+def test_removed_pv_acceleration_limit_is_not_public(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
 
     assert not hasattr(robot, "set_max_speed")
     assert not hasattr(robot, "get_max_speed")
-    assert tuple(inspect.signature(robot.set_max_acceleration).parameters) == (
-        "max_acceleration_rad_s2",
-    )
-    assert tuple(inspect.signature(robot.get_max_acceleration).parameters) == ()
-
-    assert robot.get_max_acceleration() == pytest.approx(6.0)
-    robot.set_max_acceleration(4.56)
-    assert robot.get_max_acceleration() == pytest.approx(4.56)
+    assert not hasattr(robot, "set_max_acceleration")
+    assert not hasattr(robot, "get_max_acceleration")
     assert not hasattr(robot, "set_speed")
     assert not hasattr(robot, "get_speed")
-    assert robot._runtime.calls == [
-        ("get_max_acceleration",),
-        ("set_max_acceleration", 4.56),
-        ("get_max_acceleration",),
-    ]
-
-
-def test_ordinary_pv_motion_limits_do_not_apply_to_mit(product_factory) -> None:
-    robot = ArxDCanDualArm(control_mode="mit")
-
-    with pytest.raises(RuntimeError, match="requires PV mode"):
-        robot.set_max_acceleration(4.0)
-    with pytest.raises(RuntimeError, match="requires PV mode"):
-        robot.get_max_acceleration()
+    assert not hasattr(ArticoreRuntime, "set_max_acceleration")
+    assert not hasattr(ArticoreRuntime, "get_max_acceleration")
+    assert not hasattr(ArticoreRuntime, "set_joint_mit")
     assert robot._runtime.calls == []
 
 
@@ -622,16 +593,28 @@ def test_joint_limits_use_fixed_product_names_and_native_values(
 
 def test_ordinary_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.set_joint_mit(left=range(7), right=range(7, 14), velocity=50)
+    robot.set_joint_mit(left=range(7), right=range(7, 14))
     assert robot._runtime.calls == [
-        ("mit-position", tuple(float(i) for i in range(14)), 50)
+        ("mit-direct", tuple(float(i) for i in range(14)))
     ]
 
 
-def test_ordinary_position_defaults_to_fifty(product_factory) -> None:
+def test_fast_follow_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.set_joint_mit(left=(0,) * 7, right=(0,) * 7)
-    assert robot._runtime.calls == [("mit-position", (0.0,) * 14, 50.0)]
+    robot.set_joint_mit_fast_follow(left=(0,) * 7, right=(1,) * 7)
+    assert robot._runtime.calls == [
+        ("mit-fast-follow", (0.0,) * 7 + (1.0,) * 7)
+    ]
+
+
+@pytest.mark.parametrize("method", ("set_joint_mit", "set_joint_mit_fast_follow"))
+def test_public_mit_modes_require_mit_control_mode(product_factory, method) -> None:
+    robot = ArxDCanDualArm(control_mode="pv")
+
+    with pytest.raises(RuntimeError, match="requires MIT mode"):
+        getattr(robot, method)(left=(0.0,) * 7, right=(0.0,) * 7)
+
+    assert robot._runtime.calls == []
 
 
 def test_pv_position_forwards_per_command_speed(product_factory) -> None:
@@ -652,15 +635,19 @@ def test_pv_position_forwards_per_command_speed(product_factory) -> None:
     )
 
 
-def test_ctypes_ordinary_position_uses_explicit_pv_and_mit_symbols() -> None:
+def test_ctypes_ordinary_position_uses_explicit_pv_and_new_mit_symbols() -> None:
     calls: list[tuple] = []
 
     def set_joint_pv(_runtime, positions, count, speed) -> int:
         calls.append(("pv", tuple(positions[:count]), float(speed)))
         return 0
 
-    def set_joint_mit(_runtime, positions, count, speed) -> int:
-        calls.append(("mit", tuple(positions[:count]), float(speed)))
+    def set_joint_mit_direct(_runtime, positions, count) -> int:
+        calls.append(("mit-direct", tuple(positions[:count])))
+        return 0
+
+    def set_joint_mit_fast_follow(_runtime, positions, count) -> int:
+        calls.append(("mit-fast-follow", tuple(positions[:count])))
         return 0
 
     runtime = ArticoreRuntime.__new__(ArticoreRuntime)
@@ -668,14 +655,20 @@ def test_ctypes_ordinary_position_uses_explicit_pv_and_mit_symbols() -> None:
     runtime._ptr = 1
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
         articore_runtime_set_joint_pv=set_joint_pv,
-        articore_runtime_set_joint_mit=set_joint_mit,
+        articore_runtime_set_joint_mit_direct=set_joint_mit_direct,
+        articore_runtime_set_joint_mit_fast_follow=set_joint_mit_fast_follow,
     ))
 
     runtime.set_joint_pv(range(14), 37)
-    runtime.set_joint_mit(range(14), 62)
+    runtime.set_joint_mit_direct(range(14))
+    runtime.set_joint_mit_fast_follow(range(14))
 
     expected = tuple(float(value) for value in range(14))
-    assert calls == [("pv", expected, 37.0), ("mit", expected, 62.0)]
+    assert calls == [
+        ("pv", expected, 37.0),
+        ("mit-direct", expected),
+        ("mit-fast-follow", expected),
+    ]
 
 
 def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) -> None:
@@ -985,8 +978,9 @@ def test_cartesian_sdk_keeps_one_linear_method_and_native_path_planning(
     assert tuple(joint_pv.parameters) == ("left", "right", "velocity")
     assert joint_pv.parameters["velocity"].default == 50.0
     joint_mit = inspect.signature(robot.set_joint_mit)
-    assert tuple(joint_mit.parameters) == ("left", "right", "velocity")
-    assert joint_mit.parameters["velocity"].default == 50.0
+    assert tuple(joint_mit.parameters) == ("left", "right")
+    joint_mit_fast_follow = inspect.signature(robot.set_joint_mit_fast_follow)
+    assert tuple(joint_mit_fast_follow.parameters) == ("left", "right")
 
     assert tuple(solve_ik.parameters) == (
         "left_target_pose", "right_target_pose",

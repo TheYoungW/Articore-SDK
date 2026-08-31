@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-RUNTIME_ABI_VERSION = 0x000B0003
+RUNTIME_ABI_VERSION = 0x000B0004
 
 
 def _runtime_library_name() -> str:
@@ -300,7 +300,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI exactly 11.3; "
+                "Articore-SDK requires Runtime ABI exactly 11.4; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.abi_version = version
@@ -339,22 +339,18 @@ class RuntimeAbi:
         lib.articore_runtime_get_control_mode.restype = c_int32
 
         float_pointer = POINTER(c_float)
-        lib.articore_runtime_set_max_acceleration.argtypes = [
-            c_void_p, c_float,
-        ]
-        lib.articore_runtime_set_max_acceleration.restype = c_int32
-        lib.articore_runtime_get_max_acceleration.argtypes = [
-            c_void_p, POINTER(c_float),
-        ]
-        lib.articore_runtime_get_max_acceleration.restype = c_int32
         lib.articore_runtime_set_joint_pv.argtypes = [
             c_void_p, float_pointer, c_uint32, c_float,
         ]
         lib.articore_runtime_set_joint_pv.restype = c_int32
-        lib.articore_runtime_set_joint_mit.argtypes = [
-            c_void_p, float_pointer, c_uint32, c_float,
+        lib.articore_runtime_set_joint_mit_direct.argtypes = [
+            c_void_p, float_pointer, c_uint32,
         ]
-        lib.articore_runtime_set_joint_mit.restype = c_int32
+        lib.articore_runtime_set_joint_mit_direct.restype = c_int32
+        lib.articore_runtime_set_joint_mit_fast_follow.argtypes = [
+            c_void_p, float_pointer, c_uint32,
+        ]
+        lib.articore_runtime_set_joint_mit_fast_follow.restype = c_int32
         lib.articore_runtime_submit_mit_frame.argtypes = [
             c_void_p, float_pointer, float_pointer, float_pointer,
             float_pointer, float_pointer, c_uint32,

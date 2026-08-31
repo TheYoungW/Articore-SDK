@@ -50,7 +50,7 @@ def test_replay_parser_exposes_only_normal_command_settings() -> None:
 
     assert args.velocity == pytest.approx(50.0)
     assert not hasattr(args, "max_speed")
-    assert args.max_acceleration == pytest.approx(6.0)
+    assert not hasattr(args, "max_acceleration")
     assert args.mode == "pv"
     assert not hasattr(args, "interpolation")
     assert not hasattr(args, "mit_kp")
@@ -85,11 +85,7 @@ def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
     class Robot:
         def __init__(self):
             self.control_mode = "pv"
-            self.max_accelerations = []
             self.position_commands = []
-
-        def set_max_acceleration(self, value):
-            self.max_accelerations.append(value)
 
         def set_joint_pv(self, **kwargs):
             self.position_commands.append(kwargs)
@@ -106,14 +102,12 @@ def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
         robot,
         target,
         velocity=70.0,
-        max_acceleration_rad_s2=4.5,
         timeout=1.0,
         position_tolerance=0.01,
         velocity_tolerance=0.01,
     )
 
     assert now >= 0.5
-    assert robot.max_accelerations == [4.5]
     assert robot.position_commands == [
         {"left": (0.0,), "right": (0.0,), "velocity": 70.0}
     ]

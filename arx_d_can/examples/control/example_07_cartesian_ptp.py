@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--speed",
         type=speed_percent,
         default=50.0,
-        help="普通 PV 速度百分比，范围 [0, 100]，默认 50（1 rad/s）",
+        help="普通 PV 速度百分比，范围 [1, 100]，默认 50",
     )
     return parser
 
