@@ -1,7 +1,0 @@
-[Unit]
-Description=Configure ARX SocketCAN-FD interface %i
-After=systemd-udevd.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/arx-configure-canfd %i

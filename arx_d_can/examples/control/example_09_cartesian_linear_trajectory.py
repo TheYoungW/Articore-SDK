@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 09（PV）：用精确经过尖角的 Linear 轨迹画等边三角形。"""
+"""控制示例 09（PV）：用四次板端 Linear 运动画等边三角形。"""
 from __future__ import annotations
 
 import argparse
@@ -64,38 +64,32 @@ def main(args: argparse.Namespace) -> None:
         robot.connect()
         robot.set_speed_percent(args.speed)
         robot.enable()
-        try:
-            robot.move_linear(
-                side=args.side,
-                poses=path,
-            )
+        deadline = time.monotonic() + args.timeout
+        for target in path:
+            robot.move_linear(side=args.side, end_pose=target)
             submitted = True
-        except Exception:
-            if submitted:
-                robot.stop_motion()
-            raise
+            time.sleep(0.01)
+            while time.monotonic() < deadline:
+                state = robot.read_state()
+                if state.motion_arrived:
+                    break
+                health = robot.get_health()
+                if health.state in {SafetyState.FAULT, SafetyState.SAFE_STOP}:
+                    detail = (
+                        health.last_operation_error
+                        or health.safety_reason
+                        or health.fault_reason
+                        or "未知错误"
+                    )
+                    raise RuntimeError(f"三角形运动失败：{detail}")
+                time.sleep(0.05)
+            else:
+                raise TimeoutError(f"三角形运动在 {args.timeout:g} 秒内未完成")
         print(
-            f"{args.side} 等边三角形已提交："
-            f"模式=PV，速度={args.speed:g}%，尖角精确停靠，"
+            f"\n{args.side} 三角形执行完成：模式=PV，速度={args.speed:g}%，"
             f"边长={TRIANGLE_SIDE_M * 100:.1f} cm"
         )
-        deadline = time.monotonic() + args.timeout
-        while time.monotonic() < deadline:
-            state = robot.read_state()
-            if state.motion_arrived:
-                print("\n三角形执行完成，机械臂已回到第一个顶点")
-                return
-            health = robot.get_health()
-            if health.state in {SafetyState.FAULT, SafetyState.SAFE_STOP}:
-                detail = (
-                    health.last_operation_error
-                    or health.safety_reason
-                    or health.fault_reason
-                    or "未知错误"
-                )
-                raise RuntimeError(f"三角形运动失败：{detail}")
-            time.sleep(0.05)
-        raise TimeoutError(f"三角形运动在 {args.timeout:g} 秒内未完成")
+        return
     except Exception:
         if submitted:
             robot.stop_motion()

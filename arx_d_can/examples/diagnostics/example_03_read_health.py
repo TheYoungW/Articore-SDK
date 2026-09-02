@@ -31,7 +31,7 @@ def main() -> None:
             print("最近操作失败电机：", ", ".join(health.operation_failed_motors))
         error = health.last_operation_error or health.fault_reason or health.safety_reason
         print("具体错误：", error or "无")
-        print(f"最近 CAN 帧率：{robot.get_fps():.0f} Hz")
+        print(f"最近 DDS 状态接收频率：{robot.get_fps():.0f} Hz")
     finally:
         robot.disconnect()
 

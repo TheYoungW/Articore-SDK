@@ -273,21 +273,50 @@ def run(args: argparse.Namespace) -> tuple[list[dict[str, object]], dict[str, ob
         enabled = True
 
         robot.set_speed_percent(args.linear_speed)
-        samples, metrics = _capture_motion(
+        approach_samples, approach_metrics = _capture_motion(
             robot,
-            name="linear_triangle",
+            name="linear_triangle_approach",
             start_pose=triangle_path[0],
-            final_pose=triangle_path[-1],
-            path_error=_triangle_path_error,
-            submit=lambda: robot.move_linear(side="left", poses=triangle_path),
+            final_pose=triangle_path[0],
+            path_error=lambda _pose: 0.0,
+            submit=lambda: robot.move_linear(
+                side="left", end_pose=triangle_path[0]
+            ),
             sample_hz=args.sample_hz,
             timeout_s=args.timeout,
         )
-        all_samples.extend(samples)
-        report["linear_triangle"] = metrics
+        all_samples.extend(approach_samples)
+        segment_metrics = []
+        for index, (start, end) in enumerate(
+            zip(triangle_path[:-1], triangle_path[1:], strict=True), start=1
+        ):
+            samples, metrics = _capture_motion(
+                robot,
+                name=f"linear_triangle_edge_{index}",
+                start_pose=start,
+                final_pose=end,
+                path_error=_triangle_path_error,
+                submit=lambda target=end: robot.move_linear(
+                    side="left", end_pose=target
+                ),
+                sample_hz=args.sample_hz,
+                timeout_s=args.timeout,
+            )
+            all_samples.extend(samples)
+            segment_metrics.append(metrics)
+        report["linear_triangle"] = {
+            "approach": approach_metrics,
+            "segments": segment_metrics,
+        }
+        total_elapsed = approach_metrics["total_elapsed_s"] + sum(
+            metrics["total_elapsed_s"] for metrics in segment_metrics
+        )
+        maximum_error = max(
+            metrics["path_error_max_mm"] or 0.0 for metrics in segment_metrics
+        )
         print(
-            f"Linear 完成：{metrics['total_elapsed_s']:.3f}s，"
-            f"路径最大误差={metrics['path_error_max_mm']:.2f}mm",
+            f"Linear 完成：{total_elapsed:.3f}s，"
+            f"路径最大误差={maximum_error:.2f}mm",
             flush=True,
         )
 

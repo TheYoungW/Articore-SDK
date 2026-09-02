@@ -1,5 +1,0 @@
-# The used channel of each dual-channel adapter is selected by USB serial and dev_port.
-# Restart explicitly because SYSTEMD_WANTS only acts when the device unit first becomes active;
-# a quick driver rebind can recreate the netdev without reactivating that unit.
-SUBSYSTEM=="net", ACTION=="add", KERNEL=="can*", ATTR{dev_port}=="@LEFT_PORT@", ATTRS{serial}=="@LEFT_SERIAL@", NAME="can-left", TAG+="systemd", RUN+="/usr/bin/systemctl --no-block restart arx-canfd@can-left.service"
-SUBSYSTEM=="net", ACTION=="add", KERNEL=="can*", ATTR{dev_port}=="@RIGHT_PORT@", ATTRS{serial}=="@RIGHT_SERIAL@", NAME="can-right", TAG+="systemd", RUN+="/usr/bin/systemctl --no-block restart arx-canfd@can-right.service"

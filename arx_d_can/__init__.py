@@ -1,7 +1,7 @@
 """Yunyi V1.0 双臂 Python SDK。"""
 from __future__ import annotations
 
-from ._motor_abi import (
+from ._dds import (
     GravityCompensationPhase,
     GravityCompensationStatus,
     BimanualFollowPhase,
@@ -12,6 +12,7 @@ from ._motor_abi import (
     FeedbackIssueScope,
     ProductPose,
     RuntimeCallError,
+    RuntimeErrorCode,
     RuntimeTransactionError,
     RuntimeTransportHealth,
     SafetyHealth,
@@ -43,6 +44,7 @@ __all__ = [
     "JointLimit",
     "ProductPose",
     "RuntimeCallError",
+    "RuntimeErrorCode",
     "RuntimeTransactionError",
     "RuntimeTransportHealth",
     "SafetyHealth",

@@ -92,7 +92,7 @@ def _load_test_trajectory() -> tuple[
         expected_left_joint_names=JOINT_NAMES,
         expected_right_joint_names=JOINT_NAMES,
     )
-    # The product trajectory ABI covers the fixed 14 arm joints. This
+    # The DDS stream command covers the fixed 14 arm joints. This
     # diagnostic intentionally excludes recorded gripper motion instead of
     # reintroducing a Python real-time gripper replay loop.
     samples = [

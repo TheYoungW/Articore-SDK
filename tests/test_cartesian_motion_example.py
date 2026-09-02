@@ -168,7 +168,7 @@ def test_orientation_error_handles_equivalent_rpy_at_singularity() -> None:
         ),
     ),
 )
-def test_linear_example_uses_one_exact_corner_path_for_a_mirrored_triangle(
+def test_linear_example_submits_runtime_segments_for_a_mirrored_triangle(
     monkeypatch, side, center, outward_sign,
 ) -> None:
     calls: list[tuple] = []
@@ -213,10 +213,11 @@ def test_linear_example_uses_one_exact_corner_path_for_a_mirrored_triangle(
     assert calls[-1] == ("disconnect",)
     assert calls[0] == ("create", "pv")
     move_calls = [call[1] for call in calls if call[0] == "move_linear"]
-    assert len(move_calls) == 1
-    assert "duration_s" not in move_calls[0]
+    assert len(move_calls) == 4
+    assert all("duration_s" not in call for call in move_calls)
+    assert all("poses" not in call for call in move_calls)
     assert ("set_speed_percent", 40.0) in calls
-    path = move_calls[0]["poses"]
+    path = tuple(call["end_pose"] for call in move_calls)
     assert len(path) == 4
     assert path[-1] == path[0]
     vertices = path[:-1]

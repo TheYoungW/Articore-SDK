@@ -2,6 +2,7 @@
 
 所有示例都通过 `ArxDCanDualArm` 操作完整双臂产品，并按用途分为
 `control`、`diagnostics` 和 `maintenance` 三组。
+默认通过 DDS Domain 0 连接 `robot_id=yunyi-001` 的 RK3588 Runtime 服务。
 
 先进入项目环境：
 
@@ -20,7 +21,7 @@ cd ~/Articore-SDK
 | --- | --- | --- | --- |
 | `solve_ik()` + `set_joint_pv()` | 显式查看 IK 解，再提交普通关节 PV | 用户按关节反馈判断 | `example_07_cartesian_ptp` |
 | `move_pose()` | 五次时间律 Pose-to-Pose 轨迹 | `state.motion_arrived` / `stop_motion()` | `example_11_cartesian_orientation_ptp` |
-| `move_linear()` | 直线或精确经过 waypoint 的多段直线 | `state.motion_arrived` / `stop_motion()` | `example_09_cartesian_linear_trajectory` |
+| `move_linear()` | 单段板端直线运动 | `state.motion_arrived` / `stop_motion()` | `example_09_cartesian_linear_trajectory` |
 | `move_circular()` | 经过 start/via/end 的圆弧 | `state.motion_arrived` / `stop_motion()` | `example_10_cartesian_circular_trajectory` |
 
 所有 `move_*` 都是非阻塞发送接口，成功时返回 `None`。Runtime 同时只执行一个
@@ -148,8 +149,9 @@ SDK 不公开 Raw/流式 PV，不生成 P 步进、速度包络或轨迹重采�
 `J4=90°、其余关节=0°` 对应位姿；IK 阶段不使能也不运动。普通 PV 默认速度为
 50。`move_pose()` 使用 Runtime 有限轨迹规划。
 Linear 根据 `--side` 选择镜像路径，以原默认起点作为中心，
-通过三条精确经过尖角的直线画边长 14 cm 的左右镜像等边三角形。
-机器人会在每个尖角减速至停止，不再自动切角或生成圆角。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
+通过四次独立的板端直线请求画边长 14 cm 的左右镜像等边三角形。
+应用等待每段 `motion_arrived` 后再提交下一段，所以机器人会在每个尖角停止；Python
+不生成或插值 Runtime 内部轨迹点。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
 等待第一段到位后再提交返回半圆，执行半径 10 cm 的完整圆并返回起点。`move_pose()`、
 Linear 和 Circular 均可用命令行参数覆盖默认位姿。
 两个轨迹示例使用 `--speed 1..100` 调用 `set_speed_percent()`，不接收 duration。

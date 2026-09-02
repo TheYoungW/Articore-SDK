@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from numbers import Real
 from typing import Sequence
 
-from arx_d_can._motor_abi import (
-    ArticoreRuntime,
+from arx_d_can._dds import (
+    DdsRuntimeClient,
     GravityCompensationStatus,
     JointLimit,
     BimanualFollowStatus,
@@ -26,7 +26,7 @@ _PUBLIC_NAMES = tuple(f"joint{index}" for index in range(1, 8))
 
 @dataclass(slots=True, frozen=True)
 class ArxDCanDualArmState:
-    """同一原生产品快照中的左右臂、夹爪和时序信息。"""
+    """同一 DDS 产品快照中的左右臂、夹爪和时序信息。"""
 
     left: ArxDCanState
     right: ArxDCanState
@@ -82,13 +82,34 @@ def _gain_frame(value: float | Sequence[float], name: str) -> tuple[float, ...]:
 
 
 class ArxDCanDualArm:
-    """只转发整机业务数据的 Yunyi V1.0 双臂客户端。"""
+    """通过 Cyclone DDS/IP 调用 RK3588 Runtime 的双臂客户端。"""
 
     def __init__(
-        self, *, control_mode: str = "mit", with_grippers: bool = True
+        self,
+        *,
+        robot_id: str = "yunyi-001",
+        domain_id: int = 0,
+        client_id: str | None = None,
+        security_identity: str = "",
+        robot_ip: str | None = None,
+        network_interfaces: Sequence[str] | None = None,
+        control_mode: str = "mit",
+        with_grippers: bool = True,
+        request_timeout: float = 1.0,
+        discovery_timeout: float = 5.0,
+        _transport: DdsRuntimeClient | None = None,
     ) -> None:
-        self._runtime = ArticoreRuntime.create_yunyi(
-            _mode(control_mode), with_grippers=with_grippers
+        self._runtime = _transport or DdsRuntimeClient(
+            robot_id=robot_id,
+            domain_id=domain_id,
+            client_id=client_id,
+            security_identity=security_identity,
+            robot_ip=robot_ip,
+            network_interfaces=network_interfaces,
+            control_mode=_mode(control_mode),
+            with_grippers=with_grippers,
+            request_timeout=request_timeout,
+            discovery_timeout=discovery_timeout,
         )
 
     @property
@@ -105,10 +126,7 @@ class ArxDCanDualArm:
 
     @property
     def connected(self) -> bool:
-        return (
-            not self._runtime.closed
-            and self._runtime.health.state is not SafetyState.DISCONNECTED
-        )
+        return self._runtime.connected
 
     @property
     def enabled(self) -> bool:
@@ -128,7 +146,7 @@ class ArxDCanDualArm:
         return self._runtime.health
 
     def get_fps(self) -> float:
-        """非阻塞返回最近 0.1 秒窗口内的双通道 CAN 总帧率。"""
+        """非阻塞返回最近 1 秒窗口内的 DDS 状态接收频率。"""
         return self._runtime.get_fps()
 
     def get_joint_limits(self) -> dict[str, JointLimit]:
@@ -337,8 +355,10 @@ class ArxDCanDualArm:
         if poses is not None:
             if start_pose is not None or end_pose is not None:
                 raise ValueError("poses cannot be combined with start_pose/end_pose")
-            self._runtime.move_linear_path(_side(side), poses)
-            return
+            raise ValueError(
+                "DDS v1 does not carry explicit waypoint arrays; submit a Runtime "
+                "linear target with end_pose"
+            )
         if end_pose is None:
             raise ValueError("end_pose is required when poses is omitted")
         self._runtime.move_linear(_side(side), start_pose, end_pose)

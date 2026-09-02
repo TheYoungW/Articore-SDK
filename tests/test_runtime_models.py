@@ -1,4 +1,4 @@
-from arx_d_can._motor_abi import RuntimeOperation
+from arx_d_can._dds import RuntimeOperation
 
 
 def test_runtime_operation_values_match_the_native_cartesian_abi() -> None:

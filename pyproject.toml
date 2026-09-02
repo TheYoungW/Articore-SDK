@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arx-d-can"
-version = "0.6.0"
-description = "Yunyi V1.0 dual-arm Python SDK backed by Motor Drive Layer Runtime."
+version = "1.0.0"
+description = "Yunyi V1.0 dual-arm Python SDK for the RK3588 Cyclone DDS Runtime service."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "motor-drive-layer==0.31.0",
+    "cyclonedds==11.0.1",
 ]
 
 [project.optional-dependencies]
@@ -25,7 +25,7 @@ packages = [
   "arx_d_can.examples.control",
   "arx_d_can.examples.diagnostics",
   "arx_d_can.examples.maintenance",
-  "arx_d_can._motor_abi",
+  "arx_d_can._dds",
   "arx_d_can.sdk",
   "arx_d_can.service_tools",
 ]
