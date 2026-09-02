@@ -13,6 +13,9 @@ from arx_d_can import ArxDCanDualArm
 from arx_d_can.examples.common import joint_degrees, speed_percent
 
 
+DEFAULT_JOINT_TARGET_DEGREES = "0,0,0,20,0,0,0"
+
+
 def main(args: argparse.Namespace) -> None:
     print(
         "安全警告：快速 MIT 只适合小角度连续目标；请勿一次提交与当前姿态"
@@ -45,8 +48,16 @@ def main(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--left", required=True, help="左臂 7 个关节角度，单位为度")
-    parser.add_argument("--right", required=True, help="右臂 7 个关节角度，单位为度")
+    parser.add_argument(
+        "--left",
+        default=DEFAULT_JOINT_TARGET_DEGREES,
+        help="左臂 7 个关节角度，单位为度；默认 J4=20，其余为 0",
+    )
+    parser.add_argument(
+        "--right",
+        default=DEFAULT_JOINT_TARGET_DEGREES,
+        help="右臂 7 个关节角度，单位为度；默认 J4=20，其余为 0",
+    )
     parser.add_argument(
         "--velocity",
         type=speed_percent,

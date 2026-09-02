@@ -47,9 +47,7 @@ python -m arx_d_can.examples.control.example_04_send_position_mit \
 # 遥操/高频控制接口：上层每次收到新目标时重复调用
 # 安全警告：只使用小角度连续目标；请勿提交与当前姿态差异过大的目标
 python -m arx_d_can.examples.control.example_17_send_position_mit_fast \
-  --left "0,0,0,90,0,0,0" \
-  --right "0,0,0,90,0,0,0" \
-  --velocity 50
+  --velocity 10
 
 python -m arx_d_can.examples.control.example_05_set_gripper_openings \
   --left-gripper 1000 \

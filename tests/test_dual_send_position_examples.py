@@ -219,18 +219,20 @@ def test_dual_position_example_has_no_mode_option(example) -> None:
     assert "mode" not in destinations
 
 
-def test_fast_mit_example_requires_positions_and_exposes_speed() -> None:
+def test_fast_mit_example_defaults_both_arms_to_j4_20_and_exposes_speed() -> None:
     parser = fast_example.build_parser()
     destinations = {action.dest for action in parser._actions}
 
-    with pytest.raises(SystemExit):
-        parser.parse_args([])
     assert destinations == {
         "help",
         "left",
         "right",
         "velocity",
     }
+    defaults = parser.parse_args([])
+    assert defaults.left == "0,0,0,20,0,0,0"
+    assert defaults.right == "0,0,0,20,0,0,0"
+    assert defaults.velocity == 100.0
     base = ["--left", "0,0,0,0,0,0,0", "--right", "0,0,0,0,0,0,0"]
     assert parser.parse_args(base).velocity == 100.0
     assert parser.parse_args([*base, "--velocity", "25"]).velocity == 25.0

@@ -268,9 +268,7 @@ python -m arx_d_can.examples.control.example_04_send_position_mit \
 # 快速 MIT：面向遥操和高频控制
 # 安全警告：只使用小角度连续目标；请勿提交与当前姿态差异过大的目标
 python -m arx_d_can.examples.control.example_17_send_position_mit_fast \
-  --left "0,0,0,90,0,0,0" \
-  --right "0,0,0,90,0,0,0" \
-  --velocity 50
+  --velocity 10
 ```
 
 完整示例见 [arx_d_can/examples/README.md](arx_d_can/examples/README.md)。
