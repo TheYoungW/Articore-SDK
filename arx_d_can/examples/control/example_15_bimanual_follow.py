@@ -27,7 +27,7 @@ def _send(
     if mode == "pv":
         robot.set_joint_pv(left=left, right=right, velocity=speed)
     else:
-        robot.set_joint_mit(left=left, right=right)
+        robot.set_joint_mit_fast(left=left, right=right)
 
 
 def _wait_target(
@@ -74,7 +74,7 @@ def main(args: argparse.Namespace) -> None:
                 left=SAFE_POSE, right=SAFE_POSE, velocity=args.speed
             )
         else:
-            robot.set_joint_mit(
+            robot.set_joint_mit_fast(
                 left=SAFE_POSE, right=SAFE_POSE
             )
         tolerance = 0.05 if args.mode == "pv" else 0.06

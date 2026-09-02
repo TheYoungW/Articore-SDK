@@ -9,7 +9,6 @@ from arx_d_can._motor_abi import (
     ArticoreRuntime,
     GravityCompensationStatus,
     JointLimit,
-    MotionStatus,
     BimanualFollowStatus,
     RuntimeControlMode,
     SafetyHealth,
@@ -32,6 +31,7 @@ class ArxDCanDualArmState:
     left: ArxDCanState
     right: ArxDCanState
     has_grippers: bool = True
+    motion_arrived: bool = True
     timestamp_ns: int = 0
     sequence: int = 0
 
@@ -64,26 +64,21 @@ def _gripper_mode(value: str) -> int:
 
 
 def _frame(left: Sequence[float], right: Sequence[float]) -> tuple[float, ...]:
-    """只固定左右产品顺序；数量和数值合法性由 Runtime 校验。"""
-    return tuple(float(value) for value in (*left, *right))
+    """校验每侧7轴并固定为 left J1..J7 + right J1..J7。"""
+    left_values = tuple(float(value) for value in left)
+    right_values = tuple(float(value) for value in right)
+    if len(left_values) != 7 or len(right_values) != 7:
+        raise ValueError("left and right joint arrays must each contain 7 values")
+    return left_values + right_values
 
 
-def _optional_frame(
-    left: Sequence[float] | None,
-    right: Sequence[float] | None,
-) -> tuple[float, ...] | None:
-    if left is None and right is None:
-        return None
-    return _frame(left or (0.0,) * 7, right or (0.0,) * 7)
-
-
-def _gain_frame(value: float | Sequence[float] | None) -> tuple[float, ...] | None:
-    if value is None:
-        return None
+def _gain_frame(value: float | Sequence[float], name: str) -> tuple[float, ...]:
     if isinstance(value, Real):
         return (float(value),) * 14
     values = tuple(float(item) for item in value)
-    return values * 2 if len(values) == 7 else values
+    if len(values) != 14:
+        raise ValueError(f"{name} must be a scalar or contain exactly 14 values")
+    return values
 
 
 class ArxDCanDualArm:
@@ -174,24 +169,41 @@ class ArxDCanDualArm:
     def set_joint_mit(
         self,
         *,
-        left: Sequence[float],
-        right: Sequence[float],
+        left_positions: Sequence[float],
+        right_positions: Sequence[float],
+        left_velocities: Sequence[float],
+        right_velocities: Sequence[float],
+        kp: float | Sequence[float],
+        kd: float | Sequence[float],
+        left_feedforward_torques: Sequence[float],
+        right_feedforward_torques: Sequence[float],
     ) -> None:
-        """提交普通 MIT 最新关节角目标；Runtime 以 500 Hz 持续下发。"""
+        """提交用户完整声明的标准 MIT 帧；新帧原子覆盖旧帧。"""
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
             raise RuntimeError("set_joint_mit() requires MIT mode")
-        self._runtime.set_joint_mit_direct(_frame(left, right))
+        self._runtime.set_joint_mit(
+            _frame(left_positions, right_positions),
+            _frame(left_velocities, right_velocities),
+            _gain_frame(kp, "kp"),
+            _gain_frame(kd, "kd"),
+            _frame(left_feedforward_torques, right_feedforward_torques),
+        )
 
-    def set_joint_mit_fast_follow(
+    def set_joint_mit_fast(
         self,
         *,
         left: Sequence[float],
         right: Sequence[float],
+        velocity: float = 100.0,
     ) -> None:
-        """提交快速跟随 MIT 关节角目标，用于遥操和高频控制。"""
+        """提交快速 MIT 的最新完整关节角目标。
+
+        ``velocity`` 为 0..100 的参考步进速度百分比；Runtime 固定
+        dq/tau_ff/Kp/Kd，100 对应 5 rad/s，0 保留目标但保持当前参考。
+        """
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
-            raise RuntimeError("set_joint_mit_fast_follow() requires MIT mode")
-        self._runtime.set_joint_mit_fast_follow(_frame(left, right))
+            raise RuntimeError("set_joint_mit_fast() requires MIT mode")
+        self._runtime.set_joint_mit_fast(_frame(left, right), velocity)
 
     def set_joint_pv(
         self,
@@ -204,6 +216,18 @@ class ArxDCanDualArm:
         if self._runtime.control_mode is not RuntimeControlMode.PV:
             raise RuntimeError("set_joint_pv() requires PV mode")
         self._runtime.set_joint_pv(_frame(left, right), velocity)
+
+    def set_speed_percent(self, percent: float) -> None:
+        """设置 Runtime 共享速度百分比，范围 1..100。
+
+        普通 PV 立即使用新值；后续提交的 Linear/Circular 在提交时
+        捕获当前值，已排队或运行的轨迹不会重新计时。
+        """
+        self._runtime.set_speed_percent(percent)
+
+    def get_speed_percent(self) -> float:
+        """读取 Runtime 当前共享速度百分比。"""
+        return self._runtime.get_speed_percent()
 
     def set_max_speed(self, rad_s: float) -> None:
         """设置普通 PV 在 100% 时的全局速度基础上限，0 表示恢复默认值。"""
@@ -220,28 +244,6 @@ class ArxDCanDualArm:
     def get_max_acceleration(self) -> float:
         """读取普通 PV 全局加速度基础上限；0 表示当前使用逐关节默认值。"""
         return self._runtime.get_max_acceleration()
-
-    def submit_raw_mit(
-        self,
-        *,
-        left_positions: Sequence[float],
-        right_positions: Sequence[float],
-        left_velocities: Sequence[float] | None = None,
-        right_velocities: Sequence[float] | None = None,
-        kp: float | Sequence[float] | None = None,
-        kd: float | Sequence[float] | None = None,
-        left_feedforward_torques: Sequence[float] | None = None,
-        right_feedforward_torques: Sequence[float] | None = None,
-    ) -> None:
-        self._runtime.submit_mit_frame(
-            _frame(left_positions, right_positions),
-            _optional_frame(left_velocities, right_velocities),
-            _optional_frame(
-                left_feedforward_torques, right_feedforward_torques
-            ),
-            _gain_frame(kp),
-            _gain_frame(kd),
-        )
 
     def read_state(self) -> ArxDCanDualArmState:
         value = self._runtime.state
@@ -275,12 +277,10 @@ class ArxDCanDualArm:
             left=left,
             right=right,
             has_grippers=value.has_grippers,
+            motion_arrived=value.motion_arrived,
             timestamp_ns=value.timestamp_ns,
             sequence=value.sequence,
         )
-
-    def read_cached_state(self) -> ArxDCanDualArmState:
-        return self.read_state()
 
     def get_pose(self, side: str) -> list[float]:
         """返回指定手臂当前活动 TCP 位姿 [x, y, z, roll, pitch, yaw]。"""
@@ -319,67 +319,46 @@ class ArxDCanDualArm:
             )
         return positions[:7], positions[7:]
 
-    def set_pose(
-        self,
-        *,
-        left_target_pose: Sequence[float],
-        right_target_pose: Sequence[float],
-        speed_percent: float = 50.0,
+    def move_pose(
+        self, *, side: str, target_pose: Sequence[float],
     ) -> None:
-        """兼容快捷入口：两侧终点 IK 后按当前普通 PV 或 MIT 模式执行。"""
-        self._runtime.set_pose(
-            left_target_pose, right_target_pose, speed_percent
-        )
+        """非阻塞提交从 Runtime 当前规划位姿到目标位姿的平滑运动。"""
+        self._runtime.move_pose(_side(side), target_pose)
 
-    def move_linear_trajectory(
+    def move_linear(
         self,
         *,
         side: str,
         start_pose: Sequence[float] | None = None,
         end_pose: Sequence[float] | None = None,
         poses: Sequence[Sequence[float]] | None = None,
-        duration_s: float,
-    ) -> int:
-        """执行直线或自动 10 mm 圆角融合的多段直线路径。"""
+    ) -> None:
+        """提交直线运动；省略 ``start_pose`` 时从当前规划位姿开始。"""
         if poses is not None:
             if start_pose is not None or end_pose is not None:
                 raise ValueError("poses cannot be combined with start_pose/end_pose")
-            return self._runtime.move_linear_path_trajectory(
-                _side(side), poses, duration_s
-            )
-        if start_pose is None or end_pose is None:
-            raise ValueError(
-                "start_pose and end_pose are required when poses is omitted"
-            )
-        return self._runtime.move_linear_trajectory(
-            _side(side), start_pose, end_pose, duration_s
-        )
+            self._runtime.move_linear_path(_side(side), poses)
+            return
+        if end_pose is None:
+            raise ValueError("end_pose is required when poses is omitted")
+        self._runtime.move_linear(_side(side), start_pose, end_pose)
 
-    def move_circular_trajectory(
+    def move_circular(
         self,
         *,
         side: str,
         start_pose: Sequence[float],
         via_pose: Sequence[float],
         end_pose: Sequence[float],
-        duration_s: float,
-    ) -> int:
-        """提交圆弧时间参数；100 Hz 规划和 500 Hz 重采样均由 Runtime 完成。"""
-        return self._runtime.move_circular_trajectory(
-            _side(side), start_pose, via_pose, end_pose, duration_s
+    ) -> None:
+        """非阻塞提交自动定时的有限圆弧运动。"""
+        self._runtime.move_circular(
+            _side(side), start_pose, via_pose, end_pose
         )
 
-    def get_motion_status(self, motion_id: int) -> MotionStatus:
-        """按统一 Motion ID 查询 Linear 或 Circular 任务。"""
-        return self._runtime.get_motion_status(motion_id)
-
-    def cancel_motion(self, motion_id: int) -> None:
-        """取消指定任务；具体依赖处理与安全保持由 Runtime 完成。"""
-        self._runtime.cancel_motion(motion_id)
-
-    def cancel_all_motions(self) -> None:
-        """取消全部笛卡尔轨迹任务。"""
-        self._runtime.cancel_all_motions()
+    def stop_motion(self) -> None:
+        """停止当前有限笛卡尔运动并由 Runtime 安全保持。"""
+        self._runtime.stop_motion()
 
     def set_grippers(
         self,

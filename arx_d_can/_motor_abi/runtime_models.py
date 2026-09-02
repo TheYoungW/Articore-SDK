@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, IntEnum, IntFlag
+from enum import IntEnum, IntFlag
 
 
 class SafetyState(IntEnum):
@@ -21,21 +21,6 @@ class RuntimeControlMode(IntEnum):
     MIT = 2
 
 
-class MotionState(str, Enum):
-    IDLE = "idle"
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    FAULT = "fault"
-
-
-class MotionType(str, Enum):
-    JOINT_TRAJECTORY = "joint_trajectory"
-    CARTESIAN_LINEAR = "cartesian_linear"
-    CARTESIAN_CIRCULAR = "cartesian_circular"
-
-
 class RuntimeOperation(IntEnum):
     NONE = 0
     CONNECT = 1
@@ -49,10 +34,10 @@ class RuntimeOperation(IntEnum):
     RECOVER = 9
     MOVE_JOINT_TRAJECTORY = 10
     CANCEL_MOTION = 11
-    SET_POSE = 12
-    CANCEL_ALL_MOTIONS = 13
-    MOVE_LINEAR_TRAJECTORY = 14
-    MOVE_CIRCULAR_TRAJECTORY = 15
+    MOVE_POSE = 12
+    STOP_MOTION = 13
+    MOVE_LINEAR = 14
+    MOVE_CIRCULAR = 15
     START_BIMANUAL_FOLLOW = 16
     STOP_BIMANUAL_FOLLOW = 17
     SET_TCP_OFFSET = 18
@@ -141,6 +126,7 @@ class ProductState:
     right: ProductArmState
     left_gripper: ProductGripperState | None
     right_gripper: ProductGripperState | None
+    motion_arrived: bool
     timestamp_ns: int
     sequence: int
 
@@ -182,19 +168,6 @@ class ProductPose:
     @property
     def yaw(self) -> float:
         return self.values[5]
-
-
-@dataclass(frozen=True)
-class MotionStatus:
-    state: MotionState
-    motion_id: int
-    motion_type: MotionType
-    active_segment: int
-    waypoint_count: int
-    elapsed_s: float
-    duration_s: float
-    progress: float
-    error: str | None
 
 
 @dataclass(frozen=True)

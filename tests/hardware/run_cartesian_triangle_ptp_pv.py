@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用 set_pose 依次验证 Linear 三角形示例的三个顶点。"""
+"""用 move_pose 依次验证 Linear 三角形示例的三个顶点。"""
 from __future__ import annotations
 
 import argparse
@@ -68,13 +68,15 @@ def _wait_pose(
     stable_samples = 0
     while time.monotonic() < deadline:
         _require_healthy(robot)
+        state = robot.read_state()
         actual = robot.get_pose(side)
-        arm = getattr(robot.read_state(), side).arm
+        arm = getattr(state, side).arm
         position_error = math.dist(actual[:3], target[:3])
         orientation_error = _orientation_error(target, actual)
         maximum_velocity = max(abs(value) for value in arm.velocities)
         if (
-            position_error <= 0.005
+            state.motion_arrived
+            and position_error <= 0.005
             and orientation_error <= 0.035
             and maximum_velocity <= 0.05
         ):
@@ -100,7 +102,7 @@ def main(args: argparse.Namespace) -> None:
     )
     vertices = _triangle_vertices(center, args.side)
     print(
-        f"将以 set_pose 普通 PV 依次运动到 {args.side} 三角形的3个顶点，"
+        f"将以 move_pose 依次运动到 {args.side} 三角形的3个顶点，"
         f"边长={TRIANGLE_SIDE_M * 100:.1f} cm："
     )
     for index, pose in enumerate(vertices, start=1):
@@ -118,13 +120,8 @@ def main(args: argparse.Namespace) -> None:
 
         for index, target in enumerate(vertices, start=1):
             input(f"按回车发送 point{index}...")
-            other_side = "right" if args.side == "left" else "left"
-            other_pose = robot.get_pose(other_side)
-            robot.set_pose(
-                left_target_pose=(target if args.side == "left" else other_pose),
-                right_target_pose=(target if args.side == "right" else other_pose),
-                speed_percent=args.speed,
-            )
+            robot.set_speed_percent(args.speed)
+            robot.move_pose(side=args.side, target_pose=target)
             actual, position_error, orientation_error, maximum_velocity = _wait_pose(
                 robot,
                 args.side,
@@ -153,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--speed",
         type=speed_percent,
         default=50.0,
-        help="set_pose 普通 PV 速度百分比，默认50",
+        help="move_pose 轨迹速度百分比，默认50",
     )
     parser.add_argument(
         "--timeout",

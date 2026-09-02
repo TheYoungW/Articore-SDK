@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""控制示例 09（PV）：用一条自动圆角融合的 Linear 轨迹画等边三角形。"""
+"""控制示例 09（PV）：用精确经过尖角的 Linear 轨迹画等边三角形。"""
 from __future__ import annotations
 
 import argparse
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, MotionState
-from arx_d_can.examples.common import pose_values, positive_duration_s
+from arx_d_can import ArxDCanDualArm, SafetyState
+from arx_d_can.examples.common import positive_duration_s, pose_values, speed_percent
 
 
 TRIANGLE_SIDE_M = 0.14
@@ -62,53 +62,48 @@ def main(args: argparse.Namespace) -> None:
     submitted = False
     try:
         robot.connect()
+        robot.set_speed_percent(args.speed)
         robot.enable()
         try:
-            motion_id = robot.move_linear_trajectory(
+            robot.move_linear(
                 side=args.side,
                 poses=path,
-                duration_s=args.duration,
             )
             submitted = True
         except Exception:
             if submitted:
-                robot.cancel_all_motions()
+                robot.stop_motion()
             raise
         print(
-            f"{args.side} 等边三角形已提交：motion_id={motion_id}，"
-            f"模式=PV 50，默认圆角=10 mm，"
+            f"{args.side} 等边三角形已提交："
+            f"模式=PV，速度={args.speed:g}%，尖角精确停靠，"
             f"边长={TRIANGLE_SIDE_M * 100:.1f} cm"
         )
-        while True:
-            status = robot.get_motion_status(motion_id)
-            print(
-                f"\rstate={status.state.value} progress={status.progress:.1%}",
-                end="",
-                flush=True,
-            )
-            if status.state is MotionState.COMPLETED:
+        deadline = time.monotonic() + args.timeout
+        while time.monotonic() < deadline:
+            state = robot.read_state()
+            if state.motion_arrived:
                 print("\n三角形执行完成，机械臂已回到第一个顶点")
                 return
-            if status.state is MotionState.FAULT:
-                health = robot.get_health()
+            health = robot.get_health()
+            if health.state in {SafetyState.FAULT, SafetyState.SAFE_STOP}:
                 detail = (
-                    status.error
-                    or health.last_operation_error
+                    health.last_operation_error
                     or health.safety_reason
                     or health.fault_reason
                     or "未知错误"
                 )
-                raise RuntimeError(
-                    f"三角形运动失败：motion_id={motion_id}，{detail}"
-                )
-            if status.state is MotionState.CANCELLED:
-                print("\n运动已取消")
-                return
+                raise RuntimeError(f"三角形运动失败：{detail}")
             time.sleep(0.05)
+        raise TimeoutError(f"三角形运动在 {args.timeout:g} 秒内未完成")
+    except Exception:
+        if submitted:
+            robot.stop_motion()
+        raise
     except KeyboardInterrupt:
         if submitted:
             print("\n正在取消当前直线运动……")
-            robot.cancel_all_motions()
+            robot.stop_motion()
         else:
             print("\n用户中断")
     finally:
@@ -125,10 +120,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="三角形中心 x,y,z,roll,pitch,yaw（米、弧度）",
     )
     parser.add_argument(
-        "--duration",
+        "--speed",
+        type=speed_percent,
+        default=50.0,
+        help="Runtime 共享速度百分比，范围 1～100，默认 50",
+    )
+    parser.add_argument(
+        "--timeout",
         type=positive_duration_s,
-        required=True,
-        help="每条原始边的参考时间（秒；整条路径统一五次时间律和10 mm圆角）",
+        default=30.0,
+        help="等待轨迹完成的超时秒数，默认 30",
     )
     return parser
 

@@ -11,8 +11,8 @@ conda activate at
 pip install -e .
 ```
 
-当前版本严格依赖 `motor-drive-layer==0.24.0`，并严格要求 Runtime ABI 12.0
-(`0x000C0000`)；ABI 不一致时直接拒绝加载，不执行旧 ABI 兼容。x86_64 与
+当前版本严格依赖 `motor-drive-layer==0.31.0`，并严格要求 Runtime ABI 16.0
+(`0x00100000`)；ABI 不一致时直接拒绝加载，不执行旧 ABI 兼容。x86_64 与
 AArch64 由 pip 自动选择对应 wheel。Runtime 只通过三参数
 `articore_runtime_create_yunyi(mode, with_grippers, &runtime)` 创建。PV reference、
 500 Hz 安全循环、逐关节到位收敛及底层诊断均由 C++ Runtime 内部管理；SDK 只传递
@@ -60,59 +60,58 @@ Python 不公开单独的 `close()` 或 `free()`。
 
 - 普通 PV 位置：调用
   `set_joint_pv(left=..., right=..., velocity=1..100)` 直接提交最新最终目标；默认值为
-  50。新目标替换旧目标并保留各关节当前 V 爬坡状态。100% 速度上限为
+  50。一次调用提交完整 14 关节最终目标，新目标原子替换旧目标；Runtime 第一帧
+  直接发送最终 P，不生成中间 P 点。100% 速度上限为
   `[180,180,180,225,225,225,225] deg/s`，100% 加速度上限为
   `[450,450,900,900,900,900,900] deg/s²`。也可通过
   `set_max_speed(rad_s)` 和 `set_max_acceleration(rad_s2)` 为左右两臂共 14 关节设置
   100% 时的全局基础上限；设置 0 恢复逐关节默认值，对应 get 返回 0。速度按比例
-  `s` 缩放，加速度按 `s²` 缩放。位置累积、V 包络、反馈量化补偿和最终端点精确到达全部由 Runtime
-  负责。SDK 不生成 P 步进、速度斜坡或轨迹重采样，也不公开 Raw PV 直发。
-  Linear/Circular 的速度、加速度和 jerk 完全由 Runtime 按用户给定时间内部规划，
-  不读取普通 PV 设置，也不向用户暴露轨迹加速度。Linear/Circular 要求 PV 产品模式；
-  `set_pose()` 跟随当前普通 PV 或 MIT 模式。
+  `s` 缩放，加速度按 `s²` 缩放。Motor V 是最大速度限制，不是目标速度；Runtime
+  根据真实剩余距离和 `sqrt(2*a*distance)` 制动关系动态升降 V，到点稳定后切换
+  为 V=0 保持。SDK 不生成 P 步进、速度斜坡或轨迹重采样，也不公开 Raw PV 直发。
+  Linear/Circular 的时间参数化、速度、加速度和 jerk 完全由 Runtime 管理，
+  不向用户暴露 duration 或内部轨迹限制。`set_speed_percent(1..100)` 设置
+  Runtime 共享速度百分比；Linear/Circular 在任务提交时捕获当前值。
+  `move_pose()`、Linear 和 Circular 要求 PV 产品模式。
 
 普通 PV 的全局速度/加速度配置保存在当前 Runtime 实例中，运动过程中修改时由 Runtime
 平滑应用，不需要在每条目标命令前重复设置。正数控制值的实际下发分辨率为 `0.01`。
 这些配置约束发送给电机 POS_VEL 模式的 V/A 参数，不是对实测物理速度的安全级硬钳位；
 受电机内部控制和机械惯性影响，瞬时实测速度可能高于配置的 V。
-- 普通 MIT 位置使用 `set_joint_mit(left=..., right=...)`，只接收角度并采用
-  latest-target-wins；Runtime 以 500 Hz 持续下发，固定 `dq=0`、`tau_ff=0`。
-  遥操和高频控制使用 `set_joint_mit_fast_follow(left=..., right=...)`，同样只接收
-  角度。Raw MIT 保留给明确需要
-  自定义 Kp、Kd、目标速度和前馈力矩的高级控制。
-
-两个公开 MIT 模式的固定增益由 Runtime 管理：
-
-| 关节 | 普通 Kp | 普通 Kd | 快速跟随 Kp | 快速跟随 Kd |
-| --- | ---: | ---: | ---: | ---: |
-| J1 | 15 | 0.8 | 190 | 4.55 |
-| J2 | 15 | 0.8 | 190 | 4.50 |
-| J3 | 12 | 0.7 | 100 | 2.50 |
-| J4 | 12 | 0.7 | 100 | 2.50 |
-| J5 | 8 | 0.5 | 70 | 0.70 |
-| J6 | 7 | 0.5 | 60 | 0.60 |
-| J7 | 6 | 0.4 | 50 | 0.50 |
+- 标准 MIT 使用 `set_joint_mit(...)`，调用方必须显式提供每侧 7 轴的
+  `q/dq/tau_ff` 以及 `kp/kd`。`kp/kd` 可传一个标量广播到 14 轴，或直接传
+  14 个值。固定原生顺序为 `q, dq, kp, kd, tau_ff, 14`；SDK 不选择默认增益。
+  新帧原子覆盖旧帧，Runtime 不插值、不生成轨迹，并由流式命令看门狗保护。
+- 快速 MIT 使用 `set_joint_mit_fast(left=..., right=..., velocity=1..100)`，接收
+  完整双臂关节角和参考步进速度百分比。Runtime 内部固定 `dq=0`、`tau_ff=0`
+  和快速跟随 Kp/Kd；100 对应 5 rad/s。上层应持续提供小角度连续目标。
 
 旧代码迁移：
 
 ```python
-# 旧接口（velocity 已删除）
-robot.set_joint_mit(left=left, right=right, velocity=100)
+# 标准 MIT
+robot.set_joint_mit(
+    left_positions=left_q,
+    right_positions=right_q,
+    left_velocities=left_dq,
+    right_velocities=right_dq,
+    kp=kp,
+    kd=kd,
+    left_feedforward_torques=left_tau_ff,
+    right_feedforward_torques=right_tau_ff,
+)
 
-# 普通 MIT
-robot.set_joint_mit(left=left, right=right)
-
-# 遥操/高频跟随
-robot.set_joint_mit_fast_follow(left=left, right=right)
+# 快速 MIT
+robot.set_joint_mit_fast(left=left_q, right=right_q, velocity=50)
 ```
 - 电机电源：`enable()` / `disable()` 操作整机；传入
   `motors=["l-joint4", "r-joint4"]` 时由 C++ Runtime 执行一次原子批量事务。部分使能状态下
   仍提交完整 14 轴目标，底层自动跳过主动失能的电机。
-- 原始帧：产品 SDK 只保留 `submit_raw_mit()`。用户普通 PV 必须走
-  `set_joint_pv()` 最终目标路径；内部实时 PV 只能由有限轨迹触发，不公开
-  `submit_raw_pv()` 或流式 PV 接口。
+- 原始帧：标准 `set_joint_mit()` 已覆盖显式 MIT 帧能力；旧的
+  `submit_raw_mit()` 已删除。用户普通 PV 必须走 `set_joint_pv()` 最终目标路径，
+  不公开 Raw/流式 PV 接口。
 - 夹爪：`set_grippers(left=0..1000, right=0..1000, gripper_level=0..10, mode="protected" | "direct")`。默认 `protected`；`direct` 会持续追踪目标且不执行夹爪接触保持、堵转判断和过载退让。直驱时应关注夹爪温升、机械过载和被夹物体安全。
-- 状态：`read_state()`、`read_cached_state()`。
+- 状态：`read_state()`。
   `state.left.arm.enabled` 和 `state.right.arm.enabled` 返回逐关节
   `tuple[bool | None, ...]`；夹爪的 `enabled` 使用相同语义。数据直接来自底层新鲜反馈缓存，
   `None` 表示缺失、过期或无法确认。
@@ -127,34 +126,20 @@ robot.set_joint_mit_fast_follow(left=left, right=right)
 - 整机 IK：`solve_ik(left_target_pose=..., right_target_pose=...)` 同时接收左右
   `[x,y,z,roll,pitch,yaw]`，只求解并返回左右各 7 个逻辑关节角。它使用当前 TCP、
   产品限位和 Runtime 当前规划参考/新鲜反馈选择最近支路，不使能电机、不发送 PV、
-  不修改 Motion FIFO。新代码推荐显式执行一次 `solve_ik()`，再将结果交给一次
+  不启动运动。需要显式查看关节解时，可执行一次 `solve_ik()`，再将结果交给一次
   `set_joint_pv(..., velocity=50)`。
 - 状态：`read_state()` 的关节与夹爪快照包含位置、速度、力矩、使能状态以及
-  MOS/转子温度；没有有效温度反馈时对应值为 `None`。
-- `set_pose(left_target_pose, right_target_pose)` 是末端位姿便捷命令：底层只对
-  两侧目标各求一次终点 IK，再按照 Runtime 当前普通 PV 或 MIT 模式安装一份
-  14 关节目标。它返回 `None`，没有 motion ID、状态查询或取消接口，也
-  不属于 Linear/Circular 路径规划。关节点到点专指输入关节角度的
-  `set_joint_pv()`。该入口保留兼容；新代码推荐显式使用 `solve_ik()` 和
-  `set_joint_pv()`，以便直接查看和复用关节解。
-
-推荐的 Pose-to-Pose 写法只进行一次整机 IK 和一次普通 PV 提交：
-
-```python
-left_q, right_q = robot.solve_ik(
-    left_target_pose=left_pose,
-    right_target_pose=right_pose,
-)
-robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
-```
-- Linear 和 Circular 都由 Runtime 返回统一命名空间中的 motion ID，并进入同一个
-  原生 FIFO。`get_motion_status(motion_id)` 查询任一任务，`cancel_motion(motion_id)` 只取消
-  指定任务，`cancel_all_motions()` 取消全部任务。Python 不生成 ID、不维护 FIFO，也不推断
-  完成状态。
+  MOS/转子温度；没有有效温度反馈时对应值为 `None`。同一状态中的
+  `motion_arrived` 表示当前有限笛卡尔运动已经按真实反馈稳定到位。
+- 有限笛卡尔运动：`move_pose(side=..., target_pose=...)`、
+  `move_linear(...)`、`move_circular(...)`。三者都是非阻塞发送接口，成功时返回
+  `None`；Runtime 同一时间只接受一条有限笛卡尔运动，不公开 motion ID、FIFO 或
+  单任务查询/取消。用户程序自行轮询 `read_state().motion_arrived`，并结合
+  `get_health()` 处理故障和自己的超时策略。`stop_motion()` 停止当前有限运动。
 - 关节点到点轨迹已从 Runtime ABI 和 SDK 删除；关节目标使用普通
-  `set_joint_pv()`、`set_joint_mit()` 或 `set_joint_mit_fast_follow()`。
+  `set_joint_pv()`、`set_joint_mit()` 或 `set_joint_mit_fast()`。
 - Python 录制回放工具与笛卡尔轨迹 API 相互独立：录制频率最大为 500 Hz，回放按
-  文件时间戳逐点调用普通 `set_joint_pv()` 或 `set_joint_mit()`，不在 Python
+  文件时间戳逐点调用普通 `set_joint_pv()` 或快速 `set_joint_mit_fast()`，不在 Python
   重采样或插值。
 - 维护：`clear_motor_faults()` 只清错、不运动；`set_zero()` 把当前位置标定为零点。
 - 急停：调用无参数 `estop()` 后底层立即停止控制并失能整机；固定原因从
@@ -163,7 +148,7 @@ robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
   最后保持整机失能；任一步骤失败都会再次尝试失能并把具体阶段写入 `get_health()` 返回值。
 - 重力补偿：`start_gravity_compensation()`、`stop_gravity_compensation()`。
 - 双臂协同：PV 或 MIT 模式下调用 `start_bimanual_follow(leader="left")`，底层记录
-  启动瞬间的七关节相对位置；随后继续用普通 `set_joint_pv()` 或 `set_joint_mit()` 控制
+  启动瞬间的七关节相对位置；随后继续用普通 `set_joint_pv()` 或 MIT 接口控制
   主臂，另一侧由 C++ Runtime 自动跟随。普通接口中的从臂数组不会成为从臂目标；实际
   从臂目标由底层相对关系生成。`stop_bimanual_follow()` 会立即在当前模式保持退出位置。
 
@@ -179,47 +164,43 @@ robot.set_joint_pv(left=left_q, right=right_q, velocity=50)
 `(left_q[7], right_q[7])`。它只调用一次整机原生 IK，不在 Python 中逐臂或逐点
 求解。没有规划参考时，Runtime 使用连接后的新鲜完整反馈作为种子；没有可用反馈时
 调用失败并透传原生错误。
-`set_pose()` 的 `speed_percent` 范围为 `[1, 100]`；该参数只影响 PV 模式，MIT
-模式会忽略。Linear/Circular 使用正数
-`duration_s` 按固定 10 ms 周期控制规划关键点数：`duration_s=3` 通常生成 300 段、
-301 个 100 Hz 关键点，Runtime 再以 500 Hz 连续重采样执行；真实到位可能因 PV 限速、加速度限制和反馈稳定
-确认而更晚。Linear 和 Circular 都保证 2 mm / 0.1 rad 或更细的笛卡尔几何离散；
-Circular 的位置圆弧经过 via 点，姿态以最短路 SLERP 经过 via 姿态。SDK 只提交
-完整目标，不在 Python 中求 IK、插值或逐帧发送。
-`set_pose()` 由 Runtime 基于当前规划参考求最近种子 IK，再按当前普通 PV 或 MIT 模式执行；
-双臂目标使用同一份参考并一次提交完整 14 关节目标，不在 Python 中依次发送两个单臂目标。
-默认 `speed_percent=50`。Linear/Circular 在底层用一条全局五次时间律生成连续
-100 Hz 规划关键点，中间点不再逐点刹停，只有整段最终点制动。Runtime 在相邻关键点间
-连续重采样并以 500 Hz 下发 PV 轨迹命令，同时承担 watchdog、安全和反馈工作。
-`move_linear_trajectory()` 仍是唯一的 Linear 方法：传 `start_pose/end_pose` 时执行
-一条直线；传 `poses=[...]` 时将 2～64 个 Pose 原子规划为一个 Motion ID，并对内部
-角点默认使用 10 mm 笛卡尔圆角。短线段由 Runtime 自动缩小圆角，SDK 不计算圆弧、
-IK 或插值。`duration_s` 表示每条原始线段的参考时间，因此四个闭环三角形 Pose、
-`duration_s=3` 对应总参考时间约 9 秒。
-Linear 和 Circular 进入同一个原生 FIFO。连续的 Linear/Circular 在公共端点且
-跟踪误差不超过 0.04 rad 时按计划时刻直接切换下一条，不再额外等待 200 ms 稳定窗口；误差
-超出门槛或最后一条运动仍按真实反馈确认到位。Python 不实现轨迹插值、实时回放或队列调度。
-路径运行期间调用 `set_pose()` 会失败，必须先等待路径
-完成或取消相关 motion。
+使用 `set_speed_percent(1..100)` / `get_speed_percent()` 设置或读取有限笛卡尔
+运动使用的共享速度百分比，默认值为 100。每条 `move_*` 在提交时捕获当前值；
+运动开始后再修改不会重新定时当前轨迹。
+
+Linear/Circular 不接收 `duration_s`。Runtime 根据路径距离、共享速度百分比、
+速度/加速度限制、IK 关节变化和线性化误差自动选择安全时间。轨迹使用
+`s(u)=10u³-15u⁴+6u⁵` 五次时间律，起点和终点的速度、加速度均为零。
+内部 trajectory-PV knot 间隔自适应为 4～50 ms，最大相邻关节步长为 0.020 rad，
+关节线性化容差为 0.001 rad；Runtime 在 knot 间线性重采样并以 500 Hz 下发。
+这些参数都不是 SDK 公共配置。
+
+Linear 的 XYZ 严格沿直线；Circular 生成经过 start/via/end 的定向圆弧；姿态使用
+最短路 quaternion SLERP，Circular 的姿态经过 via pose。路径首点只使用当前
+规划关节作为 IK seed，后续点只使用上一个 IK 解，不尝试随机、回退或外推 seed。
+IK 优先 XYZ，位置容差为 0.0005 m，姿态允许最大约 0.035 rad 残差；Runtime 会在
+执行前拒绝超过 0.35 rad 的分支跳变和异常的短距离关节方向抖动。SDK 只提交完整路径并
+原样传递 Runtime 错误，不在 Python 中采样、求 IK、插值或重采样。
+`move_pose()` 只要求目标位姿，起点由 Runtime 在提交时原子地取当前规划位姿；
+`move_linear()` 传 `start_pose/end_pose` 时执行一条直线，省略 `start_pose` 或显式
+传 `None` 时也从当前规划位姿开始。SDK 不会先调用 `get_pose()` 再回传起点，避免
+读取与提交之间产生竞态。传 `poses=[...]` 时执行 2～64 个 Pose 组成的多段直线。
+尖锐角点按独立的 rest-to-rest 五次轨迹段处理，机械臂会在角点减速至停止，
+不自动切角、生成圆弧过渡或 blending。`move_circular()` 执行经过
+start/via/end 的定向圆弧。当前运动尚未到达时提交下一条 `move_*` 会返回 busy；
+应用应等待 `motion_arrived` 后再发送。
 产品限位、速度约束和真实反馈到位判断全部由 Runtime 完成。
 普通 PV 的速度与加速度包络由 Runtime 根据全局基础上限和本次 `speed_percent` 管理；SDK
-只原样传递两类参数，不重复计算百分比。全局速度最大约 `3.14159 rad/s`，全局加速度最大约
-`7.85398 rad/s²`；负数、NaN、无穷大或超限值由 Runtime 拒绝，SDK 不静默裁剪。笛卡尔轨迹只接受路径和时间参数，
+只原样传递参数，不重复计算百分比。全局速度最大约 `3.14159 rad/s`，全局加速度最大约
+`7.85398 rad/s²`；负数、NaN、无穷大或超限值由 Runtime 拒绝，SDK 不静默裁剪。笛卡尔轨迹只接受路径，
 轨迹速度、加速度与 jerk 由 Runtime 内部生成且不作为用户接口暴露。
-`set_joint_pv()` 与 PV 模式下 `set_pose()` 的 `speed_percent` 始终保持 `1..100`
-百分比语义。
-对 Linear/Circular，只有 `status.state == "completed"` 表示真实反馈已经稳定到位；`state == "queued"` 表示
-任务已完成底层规划并正在等待前序任务，`state == "running"` 且
-`progress == 1.0` 仍表示底层正在等待机械臂稳定。`set_pose()` 必须同时传
-`left_target_pose`、`right_target_pose`，再加可选速度百分比，不提供运动状态。Linear 统一传 `start_pose` 与 `end_pose`，Circular 统一传
-`start_pose`、`via_pose` 与 `end_pose`。显式起点是完整路径的几何起点；如果当前规划参考不在
-该位置，Runtime 会把普通 PV 关节点到点接近、真实反馈稳定确认和后续路径作为同一个 motion ID
-与 FIFO 项执行。起点确认阈值为 5 mm / 0.035 rad。Runtime 在运动前校验完整接近与路径；
-规划期间队尾发生变化或任一路径校验失败时，新任务不会入队，当前任务和已有队列保持不变。
+显式起点是完整路径的几何起点；如果当前规划参考不在该位置，Runtime 会先平滑
+接近并确认起点，再执行声明路径。起点确认阈值为 5 mm / 0.035 rad。Runtime 在
+运动前校验完整接近与路径；规划或校验失败时不会安装新运动。
 
 运动术语必须严格区分：`set_joint_pv()` 是输入关节角度的普通 PV 关节点到点；
-`set_pose()` 只对末端终点求一次 IK，得到关节角后交给当前普通 PV 或 MIT 模式；
-Linear/Circular 才规划笛卡尔路径。SDK 不再提供带时间戳的关节点到点轨迹接口。
+`move_pose()`、`move_linear()`、`move_circular()` 都是 Runtime 规划的有限笛卡尔
+轨迹。SDK 不再提供 `set_pose()` 或带时间戳的关节点到点轨迹接口。
 
 ```python
 robot.set_max_speed(1.5)          # rad/s，100% 时的全局基础上限
@@ -264,8 +245,7 @@ python -m arx_d_can.examples.diagnostics.example_01_read_state \
 # 500 Hz 读取性能测试
 python -m arx_d_can.examples.diagnostics.example_02_benchmark_read_rate \
   --seconds 15 \
-  --hz 500 \
-  --cached
+  --hz 500
 
 # 读取 Runtime health 和具体错误
 python -m arx_d_can.examples.diagnostics.example_03_read_health
@@ -276,16 +256,21 @@ python -m arx_d_can.examples.diagnostics.example_04_read_pose
 # 整机清错、低速回到已标定零点，最后失能
 python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 
-# MIT：双臂第 4 关节到 90°
+# 标准 MIT：显式提供 Kp/Kd，从当前反馈分段移动到较小的演示目标
 python -m arx_d_can.examples.control.example_04_send_position_mit \
-  --left "0,0,0,90,0,0,0" \
-  --right "0,0,0,90,0,0,0"
+  --left "0,0,0,20,0,-20,0" \
+  --right "0,0,0,20,0,-20,0" \
+  --kp 20 \
+  --kd 1 \
+  --max-step-deg 2 \
+  --step-interval 0.5
 
-# 快速跟随 MIT：面向遥操和高频控制
+# 快速 MIT：面向遥操和高频控制
 # 安全警告：只使用小角度连续目标；请勿提交与当前姿态差异过大的目标
-python -m arx_d_can.examples.control.example_17_send_position_mit_fast_follow \
+python -m arx_d_can.examples.control.example_17_send_position_mit_fast \
   --left "0,0,0,90,0,0,0" \
-  --right "0,0,0,90,0,0,0"
+  --right "0,0,0,90,0,0,0" \
+  --velocity 50
 ```
 
 完整示例见 [arx_d_can/examples/README.md](arx_d_can/examples/README.md)。

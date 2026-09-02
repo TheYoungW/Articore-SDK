@@ -59,7 +59,7 @@ def main(args: argparse.Namespace) -> None:
             health = robot.get_health()
             if health.safe_holding or health.fault_reason:
                 raise RuntimeError(health.fault_reason or "双臂已进入安全保持")
-            robot.read_cached_state()
+            robot.read_state()
             time.sleep(0.02)
     except KeyboardInterrupt:
         print("\n用户中断")

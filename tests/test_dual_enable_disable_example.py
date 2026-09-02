@@ -18,8 +18,8 @@ def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:
         def enable(self) -> None:
             events.append("enable")
 
-        def read_cached_state(self):
-            events.append("read_cached_state")
+        def read_state(self):
+            events.append("read_state")
             return SimpleNamespace(
                 left=SimpleNamespace(positions=(1.0, 2.0)),
                 right=SimpleNamespace(positions=(3.0, 4.0)),
@@ -47,7 +47,7 @@ def test_enable_disable_example_runs_interactive_sequence(monkeypatch) -> None:
         ("create", {"control_mode": "pv"}),
         "connect",
         "enable",
-        "read_cached_state",
+        "read_state",
         ("set_joint_pv", (1.0, 2.0), (3.0, 4.0)),
         "disable",
         "close",

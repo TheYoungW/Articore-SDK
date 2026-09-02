@@ -5,28 +5,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from arx_d_can import MotionState
+from arx_d_can import SafetyState
 from arx_d_can.examples.control import example_10_cartesian_circular_trajectory as circular
 from arx_d_can.examples.control import example_09_cartesian_linear_trajectory as linear
 from arx_d_can.examples.control import example_11_cartesian_orientation_ptp as orientation
 from arx_d_can.examples.control import example_07_cartesian_ptp as ptp
 
 
-def _status(
-    state: MotionState,
-    progress: float,
+def _health(
+    state: SafetyState = SafetyState.RUNNING,
     error: str | None = None,
 ):
     return SimpleNamespace(
         state=state,
-        progress=progress,
-        error=error,
-    )
-
-
-def _health():
-    return SimpleNamespace(
-        last_operation_error="global operation error",
+        last_operation_error=error,
         safety_reason="global safety reason",
         fault_reason="global fault reason",
     )
@@ -176,7 +168,7 @@ def test_orientation_error_handles_equivalent_rpy_at_singularity() -> None:
         ),
     ),
 )
-def test_linear_example_uses_one_blended_path_for_a_mirrored_equilateral_triangle(
+def test_linear_example_uses_one_exact_corner_path_for_a_mirrored_triangle(
     monkeypatch, side, center, outward_sign,
 ) -> None:
     calls: list[tuple] = []
@@ -188,18 +180,22 @@ def test_linear_example_uses_one_blended_path_for_a_mirrored_equilateral_triangl
         def connect(self) -> None:
             calls.append(("connect",))
 
+        def set_speed_percent(self, value: float) -> None:
+            calls.append(("set_speed_percent", value))
+
         def enable(self) -> None:
             calls.append(("enable",))
 
-        def move_linear_trajectory(self, **kwargs) -> int:
-            calls.append(("move_linear_trajectory", kwargs))
-            return 7
+        def move_linear(self, **kwargs) -> None:
+            calls.append(("move_linear", kwargs))
 
-        def get_motion_status(self, motion_id: int):
-            assert motion_id == 7
-            return _status(MotionState.COMPLETED, 1.0)
+        def read_state(self):
+            return SimpleNamespace(motion_arrived=True)
 
-        def cancel_all_motions(self) -> None:
+        def get_health(self):
+            return _health()
+
+        def stop_motion(self) -> None:
             calls.append(("cancel",))
 
         def disconnect(self) -> None:
@@ -209,16 +205,17 @@ def test_linear_example_uses_one_blended_path_for_a_mirrored_equilateral_triangl
     monkeypatch.setattr(linear.time, "sleep", lambda _seconds: None)
     args = linear.build_parser().parse_args([
         "--side", side,
-        "--duration", "20",
+        "--speed", "40",
     ])
 
     linear.main(args)
 
     assert calls[-1] == ("disconnect",)
     assert calls[0] == ("create", "pv")
-    move_calls = [call[1] for call in calls if call[0] == "move_linear_trajectory"]
+    move_calls = [call[1] for call in calls if call[0] == "move_linear"]
     assert len(move_calls) == 1
-    assert move_calls[0]["duration_s"] == 20
+    assert "duration_s" not in move_calls[0]
+    assert ("set_speed_percent", 40.0) in calls
     path = move_calls[0]["poses"]
     assert len(path) == 4
     assert path[-1] == path[0]
@@ -234,7 +231,7 @@ def test_linear_example_uses_one_blended_path_for_a_mirrored_equilateral_triangl
     assert (vertices[0][1] - center[1]) * outward_sign > 0.0
 
 
-def test_linear_example_reports_fault_before_cancelled_queue_tail(
+def test_linear_example_reports_runtime_fault(
     monkeypatch, capsys,
 ) -> None:
     calls: list[tuple] = []
@@ -246,26 +243,25 @@ def test_linear_example_reports_fault_before_cancelled_queue_tail(
         def connect(self) -> None:
             pass
 
+        def set_speed_percent(self, _value: float) -> None:
+            pass
+
         def enable(self) -> None:
             pass
 
-        def move_linear_trajectory(self, **_kwargs) -> int:
-            motion_id = 1 + len(calls)
-            calls.append(("move", motion_id))
-            return motion_id
+        def move_linear(self, **_kwargs) -> None:
+            calls.append(("move",))
 
-        def get_motion_status(self, motion_id: int):
-            if motion_id == 1:
-                return _status(
-                    MotionState.FAULT, 0.657,
-                    "first linear segment missed its deadline",
-                )
-            return _status(MotionState.CANCELLED, 0.0)
+        def read_state(self):
+            return SimpleNamespace(motion_arrived=False)
 
         def get_health(self):
-            return _health()
+            return _health(
+                SafetyState.FAULT,
+                "first linear segment missed its deadline",
+            )
 
-        def cancel_all_motions(self) -> None:
+        def stop_motion(self) -> None:
             calls.append(("cancel",))
 
         def disconnect(self) -> None:
@@ -274,12 +270,12 @@ def test_linear_example_reports_fault_before_cancelled_queue_tail(
     monkeypatch.setattr(linear, "ArxDCanDualArm", FakeRobot)
     args = linear.build_parser().parse_args([
         "--side", "left",
-        "--duration", "3",
+        "--speed", "30",
     ])
 
     with pytest.raises(
         RuntimeError,
-        match="motion_id=1.*first linear segment missed its deadline",
+        match="first linear segment missed its deadline",
     ):
         linear.main(args)
 
@@ -320,18 +316,22 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
         def connect(self) -> None:
             pass
 
+        def set_speed_percent(self, value: float) -> None:
+            calls.append(("set_speed_percent", value))
+
         def enable(self) -> None:
             pass
 
-        def move_circular_trajectory(self, **kwargs) -> int:
-            calls.append(("move_circular_trajectory", kwargs))
-            return 8 + len(calls) - 1
+        def move_circular(self, **kwargs) -> None:
+            calls.append(("move_circular", kwargs))
 
-        def get_motion_status(self, motion_id: int):
-            assert motion_id in (8, 9)
-            return _status(MotionState.COMPLETED, 1.0)
+        def read_state(self):
+            return SimpleNamespace(motion_arrived=True)
 
-        def cancel_all_motions(self) -> None:
+        def get_health(self):
+            return _health()
+
+        def stop_motion(self) -> None:
             calls.append(("cancel",))
 
         def disconnect(self) -> None:
@@ -340,30 +340,29 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
     monkeypatch.setattr(circular, "ArxDCanDualArm", FakeRobot)
     args = circular.build_parser().parse_args([
         "--side", side,
-        "--duration", "15",
+        "--speed", "35",
     ])
 
     circular.main(args)
 
     assert calls == [
+        ("set_speed_percent", 35.0),
         (
-            "move_circular_trajectory",
+            "move_circular",
             {
                 "side": side,
                 "start_pose": start,
                 "via_pose": via,
                 "end_pose": end,
-                "duration_s": 15.0,
             },
         ),
         (
-            "move_circular_trajectory",
+            "move_circular",
             {
                 "side": side,
                 "start_pose": end,
                 "via_pose": return_via,
                 "end_pose": start,
-                "duration_s": 15.0,
             },
         ),
     ]
@@ -380,7 +379,7 @@ def test_circular_example_uses_two_mirrored_yz_semicircles_for_a_full_circle(
     )
 
 
-def test_circular_example_reports_fault_before_cancelled_queue_tail(
+def test_circular_example_reports_runtime_fault(
     monkeypatch, capsys,
 ) -> None:
     calls: list[tuple] = []
@@ -392,26 +391,25 @@ def test_circular_example_reports_fault_before_cancelled_queue_tail(
         def connect(self) -> None:
             pass
 
+        def set_speed_percent(self, _value: float) -> None:
+            pass
+
         def enable(self) -> None:
             pass
 
-        def move_circular_trajectory(self, **_kwargs) -> int:
-            motion_id = 11 + len(calls)
-            calls.append(("move", motion_id))
-            return motion_id
+        def move_circular(self, **_kwargs) -> None:
+            calls.append(("move",))
 
-        def get_motion_status(self, motion_id: int):
-            if motion_id == 11:
-                return _status(
-                    MotionState.FAULT, 0.4,
-                    "first circular segment failed arrival",
-                )
-            return _status(MotionState.CANCELLED, 0.0)
+        def read_state(self):
+            return SimpleNamespace(motion_arrived=False)
 
         def get_health(self):
-            return _health()
+            return _health(
+                SafetyState.FAULT,
+                "first circular segment failed arrival",
+            )
 
-        def cancel_all_motions(self) -> None:
+        def stop_motion(self) -> None:
             calls.append(("cancel",))
 
         def disconnect(self) -> None:
@@ -420,12 +418,12 @@ def test_circular_example_reports_fault_before_cancelled_queue_tail(
     monkeypatch.setattr(circular, "ArxDCanDualArm", FakeRobot)
     args = circular.build_parser().parse_args([
         "--side", "left",
-        "--duration", "3",
+        "--speed", "30",
     ])
 
     with pytest.raises(
         RuntimeError,
-        match="motion_id=11.*first circular segment failed arrival",
+        match="first circular segment failed arrival",
     ):
         circular.main(args)
 

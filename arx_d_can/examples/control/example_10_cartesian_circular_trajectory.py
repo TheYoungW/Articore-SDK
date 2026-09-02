@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import time
 
-from arx_d_can import ArxDCanDualArm, MotionState
-from arx_d_can.examples.common import pose_values, positive_duration_s
+from arx_d_can import ArxDCanDualArm, SafetyState
+from arx_d_can.examples.common import positive_duration_s, pose_values, speed_percent
 
 
 CIRCLE_RADIUS_M = 0.10
@@ -108,81 +108,54 @@ def main(args: argparse.Namespace) -> None:
     submitted = False
     try:
         robot.connect()
+        robot.set_speed_percent(args.speed)
         robot.enable()
-        outward_motion_id = robot.move_circular_trajectory(
+        robot.move_circular(
             side=args.side,
             start_pose=args.start,
             via_pose=args.via,
             end_pose=args.end,
-            duration_s=args.duration,
         )
         submitted = True
-        try:
-            return_motion_id = robot.move_circular_trajectory(
-                side=args.side,
-                start_pose=args.end,
-                via_pose=args.return_via,
-                end_pose=args.start,
-                duration_s=args.duration,
-            )
-        except Exception:
-            robot.cancel_all_motions()
-            raise
         print(
-            f"{args.side} 完整圆运动已提交："
-            f"motion_ids=[{outward_motion_id}, {return_motion_id}]"
+            f"{args.side} 第一段半圆已提交，速度={args.speed:g}%"
         )
-        while True:
-            outward_status = robot.get_motion_status(outward_motion_id)
-            return_status = robot.get_motion_status(return_motion_id)
-            progress = (outward_status.progress + return_status.progress) / 2.0
-            print(
-                f"\rstate=[{outward_status.state.value}, "
-                f"{return_status.state.value}] progress={progress:.1%}",
-                end="",
-                flush=True,
-            )
-            if (
-                outward_status.state is MotionState.COMPLETED
-                and return_status.state is MotionState.COMPLETED
-            ):
-                print("\n完整圆执行完成，机械臂已回到起点")
-                return
-            fault = next(
-                (
-                    (motion_id, status)
-                    for motion_id, status in (
-                        (outward_motion_id, outward_status),
-                        (return_motion_id, return_status),
-                    )
-                    if status.state is MotionState.FAULT
-                ),
-                None,
-            )
-            if fault is not None:
-                fault_motion_id, fault_status = fault
+        for stage in ("outward", "return"):
+            deadline = time.monotonic() + args.timeout
+            while time.monotonic() < deadline:
+                if robot.read_state().motion_arrived:
+                    break
                 health = robot.get_health()
-                detail = (
-                    fault_status.error
-                    or health.last_operation_error
-                    or health.safety_reason
-                    or health.fault_reason
-                    or "未知错误"
+                if health.state in {SafetyState.FAULT, SafetyState.SAFE_STOP}:
+                    detail = (
+                        health.last_operation_error
+                        or health.safety_reason
+                        or health.fault_reason
+                        or "未知错误"
+                    )
+                    raise RuntimeError(f"完整圆运动失败：{detail}")
+                time.sleep(0.05)
+            else:
+                raise TimeoutError(
+                    f"{stage} 圆弧在 {args.timeout:g} 秒内未完成"
                 )
-                raise RuntimeError(
-                    f"完整圆运动失败：motion_id={fault_motion_id}，{detail}"
+            if stage == "outward":
+                robot.move_circular(
+                    side=args.side,
+                    start_pose=args.end,
+                    via_pose=args.return_via,
+                    end_pose=args.start,
                 )
-            if (
-                outward_status.state is MotionState.CANCELLED
-                or return_status.state is MotionState.CANCELLED
-            ):
-                print("\n运动已取消")
-                return
-            time.sleep(0.05)
+                print("第一段已到达，返回半圆已提交")
+        print("完整圆执行完成，机械臂已回到起点")
+    except Exception:
+        if submitted:
+            robot.stop_motion()
+        raise
     except KeyboardInterrupt:
         if submitted:
             print("\n正在取消当前圆弧运动……")
-            robot.cancel_all_motions()
+            robot.stop_motion()
         else:
             print("\n用户中断")
     finally:
@@ -217,10 +190,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="返回半圆经由点 x,y,z,roll,pitch,yaw（米、弧度）",
     )
     parser.add_argument(
-        "--duration",
+        "--speed",
+        type=speed_percent,
+        default=50.0,
+        help="Runtime 共享速度百分比，范围 1～100，默认 50",
+    )
+    parser.add_argument(
+        "--timeout",
         type=positive_duration_s,
-        required=True,
-        help="每段半圆完整任务的预计时间（秒，包含自动接近起点）",
+        default=30.0,
+        help="等待每段圆弧完成的超时秒数，默认 30",
     )
     return parser
 

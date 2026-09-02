@@ -116,7 +116,7 @@ def test_dual_pv_replay_sends_each_sample_at_its_recorded_timestamp(
     ]
 
 
-def test_dual_mit_replay_uses_only_normal_mit_commands(monkeypatch) -> None:
+def test_dual_mit_replay_forwards_fast_mit_speed(monkeypatch) -> None:
     commands = []
     now = 0.0
 
@@ -128,7 +128,7 @@ def test_dual_mit_replay_uses_only_normal_mit_commands(monkeypatch) -> None:
         has_grippers = False
         control_mode = "mit"
 
-        def set_joint_mit(self, **kwargs) -> None:
+        def set_joint_mit_fast(self, **kwargs) -> None:
             commands.append((now, kwargs))
 
     monkeypatch.setattr(
@@ -152,10 +152,10 @@ def test_dual_mit_replay_uses_only_normal_mit_commands(monkeypatch) -> None:
 
     assert [command[0] for command in commands] == pytest.approx([0.0, 0.5])
     assert commands[0][1] == {
-        "left": (0.1,), "right": (-0.2,),
+        "left": (0.1,), "right": (-0.2,), "velocity": 75.0,
     }
     assert commands[1][1] == {
-        "left": (0.2,), "right": (-0.1,),
+        "left": (0.2,), "right": (-0.1,), "velocity": 75.0,
     }
 
 
@@ -228,7 +228,7 @@ def test_dual_record_uses_cached_runtime_state_and_grippers(
         def get_health(self):
             return self.health
 
-        def read_cached_state(self):
+        def read_state(self):
             side = lambda opening: type(
                 "Side",
                 (),

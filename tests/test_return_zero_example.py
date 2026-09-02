@@ -23,7 +23,7 @@ def test_return_zero_submits_every_installed_product_target_before_waiting(
         def enable(self) -> None:
             calls.append("enable")
 
-        def set_joint_mit(self, *, left, right) -> None:
+        def set_joint_mit_fast(self, *, left, right) -> None:
             calls.append(("arms", tuple(left), tuple(right)))
 
         def set_grippers(self, *, left, right, gripper_level) -> None:

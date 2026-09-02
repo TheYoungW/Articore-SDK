@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""控制示例 11（PV）：用 set_pose 演示 Pitch、Roll、Yaw。"""
+"""控制示例 11（PV）：用 move_pose 演示 Pitch、Roll、Yaw。"""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ import time
 from typing import Sequence
 
 from arx_d_can import ArxDCanDualArm
-from arx_d_can.examples.common import speed_percent
+from arx_d_can.examples.common import positive_duration_s, speed_percent
 
 
 Pose = tuple[float, float, float, float, float, float]
@@ -129,7 +129,7 @@ def _wait_dual_pose(
     *,
     timeout_s: float = 30.0,
 ) -> None:
-    """set_pose 无 motion ID，使用真实位姿和关节速度确认双臂稳定到位。"""
+    """用普通状态确认双臂实际位姿和速度已经稳定。"""
     deadline = time.monotonic() + timeout_s
     stable_since: float | None = None
     while time.monotonic() < deadline:
@@ -164,7 +164,19 @@ def _wait_dual_pose(
         else:
             stable_since = None
         time.sleep(0.01)
-    raise TimeoutError(f"双臂 set_pose 在 {timeout_s:.0f} 秒内未稳定到位")
+    raise TimeoutError(f"双臂 move_pose 在 {timeout_s:.0f} 秒内未稳定到位")
+
+
+def _wait_motion(robot: ArxDCanDualArm, timeout_s: float = 30.0) -> None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if robot.read_state().motion_arrived:
+            return
+        health = robot.get_health()
+        if health.last_operation_error:
+            raise RuntimeError(health.last_operation_error)
+        time.sleep(0.02)
+    raise TimeoutError(f"move_pose 在 {timeout_s:.0f} 秒内未完成")
 
 
 def _move_and_wait(
@@ -173,15 +185,16 @@ def _move_and_wait(
     left: Pose,
     right: Pose,
     speed: float,
+    timeout_s: float,
     label: str,
 ) -> None:
     print(f"提交：{label}")
-    robot.set_pose(
-        left_target_pose=left,
-        right_target_pose=right,
-        speed_percent=speed,
-    )
-    _wait_dual_pose(robot, left, right)
+    robot.set_speed_percent(speed)
+    robot.move_pose(side="left", target_pose=left)
+    _wait_motion(robot, timeout_s)
+    robot.move_pose(side="right", target_pose=right)
+    _wait_motion(robot, timeout_s)
+    _wait_dual_pose(robot, left, right, timeout_s=timeout_s)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -198,6 +211,7 @@ def main(args: argparse.Namespace) -> None:
             left=BASE_LEFT_POSE,
             right=BASE_RIGHT_POSE,
             speed=args.speed,
+            timeout_s=args.timeout,
             label="双臂基准姿态",
         )
         for axis, negative_left, negative_right, positive_left, positive_right in AXIS_SWEEPS:
@@ -207,6 +221,7 @@ def main(args: argparse.Namespace) -> None:
                 left=negative_left,
                 right=negative_right,
                 speed=args.speed,
+                timeout_s=args.timeout,
                 label=f"{axis} 负方向端点",
             )
             _move_and_wait(
@@ -214,6 +229,7 @@ def main(args: argparse.Namespace) -> None:
                 left=positive_left,
                 right=positive_right,
                 speed=args.speed,
+                timeout_s=args.timeout,
                 label=f"{axis} 正方向端点",
             )
             _move_and_wait(
@@ -221,6 +237,7 @@ def main(args: argparse.Namespace) -> None:
                 left=BASE_LEFT_POSE,
                 right=BASE_RIGHT_POSE,
                 speed=args.speed,
+                timeout_s=args.timeout,
                 label=f"{axis} 返回基准姿态",
             )
         input("Pitch、Roll、Yaw 演示完成，按回车失能并退出...")
@@ -228,6 +245,10 @@ def main(args: argparse.Namespace) -> None:
         print("双臂已失能")
     except KeyboardInterrupt:
         print("\n用户中断")
+        robot.stop_motion()
+    except Exception:
+        robot.stop_motion()
+        raise
     finally:
         robot.disconnect()
         print("已断开连接")
@@ -239,7 +260,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--speed",
         type=speed_percent,
         default=50.0,
-        help="set_pose 普通 PV 速度百分比，范围 [1, 100]，默认 50",
+        help="move_pose 轨迹速度百分比，范围 [1, 100]，默认 50",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=positive_duration_s,
+        default=30.0,
+        help="等待每次 move_pose 完成的超时秒数，默认 30",
     )
     return parser
 

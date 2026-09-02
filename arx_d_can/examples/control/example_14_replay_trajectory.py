@@ -35,16 +35,17 @@ def _move_to_start(
             velocity=velocity,
         )
     else:
-        robot.set_joint_mit(
+        robot.set_joint_mit_fast(
             left=target.left_positions,
             right=target.right_positions,
+            velocity=velocity,
         )
 
     deadline = time.monotonic() + timeout
     stable_since = None
     next_tick = time.perf_counter()
     while time.monotonic() < deadline:
-        state = robot.read_cached_state()
+        state = robot.read_state()
         position_error = max(
             *(
                 abs(actual - expected)
@@ -96,7 +97,7 @@ def main(args: argparse.Namespace) -> None:
     print("机器人连接成功")
     try:
         robot.enable()
-        detail = f"，速度 {args.velocity:g}%" if args.mode == "pv" else ""
+        detail = f"，速度 {args.velocity:g}%"
         print(f"正以普通 {args.mode.upper()}{detail} 移动到轨迹起点……")
         _move_to_start(
             robot,

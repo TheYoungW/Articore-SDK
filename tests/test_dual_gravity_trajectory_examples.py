@@ -90,7 +90,7 @@ def test_move_to_start_uses_runtime_stepping_for_pv(monkeypatch) -> None:
         def set_joint_pv(self, **kwargs):
             self.position_commands.append(kwargs)
 
-        def read_cached_state(self):
+        def read_state(self):
             side = SimpleNamespace(
                 arm=SimpleNamespace(positions=(0.0,), velocities=(0.0,))
             )

@@ -10,15 +10,13 @@ from arx_d_can._motor_abi import (
     FeedbackIssueScope,
     JointLimit,
     MotorFeedbackIssue,
-    MotionState,
-    MotionStatus,
-    MotionType,
     OperationError,
     ProductArmState,
     ProductGripperState,
     ProductPose,
     ProductState,
     RuntimeControlMode,
+    RuntimeCallError,
     RuntimeOperation,
     RuntimeTransportHealth,
     SafetyHealth,
@@ -27,7 +25,6 @@ from arx_d_can._motor_abi import (
 from arx_d_can.sdk.dual_arm import ArxDCanDualArm
 from arx_d_can._motor_abi._runtime_abi import (
     CGravityCompensationStatus,
-    CMotionStatus,
     CProductState,
     CSafetyHealth,
 )
@@ -100,7 +97,7 @@ def _product_state(with_grippers: bool = True) -> ProductState:
         if with_grippers else None,
         ProductGripperState(True, 250.0, 3, None, 38.0, 39.0)
         if with_grippers else None,
-        123456, 77,
+        True, 123456, 77,
     )
 
 
@@ -116,17 +113,6 @@ class FakeRuntime:
         self.bimanual_follow_status = SimpleNamespace(
             active=False, leader="left", follower="right",
         )
-        self._motion_status = MotionStatus(
-            state=MotionState.RUNNING,
-            motion_id=9,
-            motion_type=MotionType.CARTESIAN_LINEAR,
-            active_segment=0,
-            waypoint_count=0,
-            elapsed_s=0.5,
-            duration_s=1.0,
-            progress=0.5,
-            error=None,
-        )
         self.fps = 8120.0
         self.joint_limits = tuple(
             JointLimit(-float(index + 1), float(index + 1), 5.0)
@@ -134,20 +120,7 @@ class FakeRuntime:
         )
         self.max_speed = 0.0
         self.max_acceleration = 0.0
-
-    def get_motion_status(self, motion_id: int) -> MotionStatus:
-        self.calls.append(("get_motion_status", motion_id))
-        return MotionStatus(
-            state=self._motion_status.state,
-            motion_id=motion_id,
-            motion_type=self._motion_status.motion_type,
-            active_segment=self._motion_status.active_segment,
-            waypoint_count=self._motion_status.waypoint_count,
-            elapsed_s=self._motion_status.elapsed_s,
-            duration_s=self._motion_status.duration_s,
-            progress=self._motion_status.progress,
-            error=self._motion_status.error,
-        )
+        self.speed_percent = 100.0
 
     @property
     def control_mode(self) -> RuntimeControlMode:
@@ -189,6 +162,14 @@ class FakeRuntime:
     def set_joint_pv(self, positions, velocity) -> None:
         self.calls.append(("pv", tuple(positions), velocity))
 
+    def set_speed_percent(self, value: float) -> None:
+        self.calls.append(("set_speed_percent", value))
+        self.speed_percent = value
+
+    def get_speed_percent(self) -> float:
+        self.calls.append(("get_speed_percent",))
+        return self.speed_percent
+
     def set_max_speed(self, value: float) -> None:
         self.calls.append(("set_max_speed", value))
         self.max_speed = value
@@ -205,14 +186,11 @@ class FakeRuntime:
         self.calls.append(("get_max_acceleration",))
         return self.max_acceleration
 
-    def set_joint_mit_direct(self, positions) -> None:
-        self.calls.append(("mit-direct", tuple(positions)))
-
-    def set_joint_mit_fast_follow(self, positions) -> None:
-        self.calls.append(("mit-fast-follow", tuple(positions)))
-
-    def submit_mit_frame(self, *values) -> None:
+    def set_joint_mit(self, *values) -> None:
         self.calls.append(("mit", *values))
+
+    def set_joint_mit_fast(self, positions, velocity) -> None:
+        self.calls.append(("mit-fast", tuple(positions), velocity))
 
     def set_product_grippers(self, *, left, right, gripper_level, mode) -> None:
         self.calls.append(("grippers", left, right, gripper_level, mode))
@@ -268,46 +246,30 @@ class FakeRuntime:
         ))
         return tuple(float(index) for index in range(14))
 
-    def set_pose(
-        self, left_target_pose, right_target_pose, speed_percent=50.0
-    ) -> None:
+    def move_pose(self, side, target_pose) -> None:
+        self.calls.append(("move_pose", side, tuple(target_pose)))
+
+    def move_linear(self, side, start_pose, end_pose) -> None:
         self.calls.append((
-            "set_pose", tuple(left_target_pose), tuple(right_target_pose),
-            speed_percent,
+            "move_linear", side,
+            None if start_pose is None else tuple(start_pose),
+            tuple(end_pose),
         ))
 
-    def move_linear_trajectory(
-        self, side, start_pose, end_pose, duration_s
-    ) -> int:
+    def move_linear_path(self, side, poses) -> None:
         self.calls.append((
-            "move_linear_trajectory", side, tuple(start_pose), tuple(end_pose),
-            duration_s,
+            "move_linear_path", side,
+            tuple(tuple(pose) for pose in poses),
         ))
-        return 11
 
-    def move_linear_path_trajectory(
-        self, side, poses, segment_duration_s
-    ) -> int:
+    def move_circular(self, side, start_pose, via_pose, end_pose) -> None:
         self.calls.append((
-            "move_linear_path_trajectory", side,
-            tuple(tuple(pose) for pose in poses), segment_duration_s,
+            "move_circular", side, tuple(start_pose), tuple(via_pose),
+            tuple(end_pose),
         ))
-        return 13
 
-    def move_circular_trajectory(
-        self, side, start_pose, via_pose, end_pose, duration_s
-    ) -> int:
-        self.calls.append((
-            "move_circular_trajectory", side, tuple(start_pose), tuple(via_pose),
-            tuple(end_pose), duration_s,
-        ))
-        return 12
-
-    def cancel_motion(self, motion_id: int) -> None:
-        self.calls.append(("cancel_motion", motion_id))
-
-    def cancel_all_motions(self) -> None:
-        self.calls.append(("cancel_all_motions",))
+    def stop_motion(self) -> None:
+        self.calls.append(("stop_motion",))
 
 
 @pytest.fixture
@@ -435,7 +397,7 @@ def test_ctypes_health_maps_per_motor_feedback_diagnostics() -> None:
         native.motor_fault_count = 1
         native.motor_faults[0].value = b"left/l-joint2"
         native.fault_reason = b"connect detected motor fault"
-        native.last_operation = int(RuntimeOperation.SET_POSE)
+        native.last_operation = int(RuntimeOperation.MOVE_POSE)
         native.last_operation_code = int(OperationError.INVALID_STATE)
         native.operation_failed_motor_count = 1
         native.operation_failed_motors[0].value = b"left/l-joint2"
@@ -471,7 +433,7 @@ def test_ctypes_health_maps_per_motor_feedback_diagnostics() -> None:
     assert motor.update_count == 77
     assert health.motor_faults == ("left/l-joint2",)
     assert health.fault_reason == "connect detected motor fault"
-    assert health.last_operation is RuntimeOperation.SET_POSE
+    assert health.last_operation is RuntimeOperation.MOVE_POSE
     assert health.last_operation_code is OperationError.INVALID_STATE
     assert health.operation_failed_motors == ("left/l-joint2",)
     assert health.last_operation_error == "current_state=FAULT"
@@ -573,6 +535,8 @@ def test_get_fps_returns_latest_runtime_sample(product_factory) -> None:
 def test_pv_global_limits_are_forwarded_without_sdk_scaling(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
 
+    robot.set_speed_percent(60.0)
+    assert robot.get_speed_percent() == 60.0
     robot.set_max_speed(1.25)
     assert robot.get_max_speed() == 1.25
     robot.set_max_acceleration(2.5)
@@ -581,6 +545,8 @@ def test_pv_global_limits_are_forwarded_without_sdk_scaling(product_factory) -> 
     robot.set_max_acceleration(0.0)
 
     assert robot._runtime.calls == [
+        ("set_speed_percent", 60.0),
+        ("get_speed_percent",),
         ("set_max_speed", 1.25),
         ("get_max_speed",),
         ("set_max_acceleration", 2.5),
@@ -590,7 +556,7 @@ def test_pv_global_limits_are_forwarded_without_sdk_scaling(product_factory) -> 
     ]
     assert not hasattr(robot, "set_speed")
     assert not hasattr(robot, "get_speed")
-    assert not hasattr(ArticoreRuntime, "set_joint_mit")
+    assert hasattr(ArticoreRuntime, "set_joint_mit")
 
 
 def test_joint_limits_use_fixed_product_names_and_native_values(
@@ -614,26 +580,54 @@ def test_joint_limits_use_fixed_product_names_and_native_values(
 
 def test_ordinary_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.set_joint_mit(left=range(7), right=range(7, 14))
+    robot.set_joint_mit(
+        left_positions=range(7),
+        right_positions=range(7, 14),
+        left_velocities=(1,) * 7,
+        right_velocities=(2,) * 7,
+        kp=3.0,
+        kd=0.5,
+        left_feedforward_torques=(4,) * 7,
+        right_feedforward_torques=(5,) * 7,
+    )
     assert robot._runtime.calls == [
-        ("mit-direct", tuple(float(i) for i in range(14)))
+        (
+            "mit",
+            tuple(float(i) for i in range(14)),
+            (1.0,) * 7 + (2.0,) * 7,
+            (3.0,) * 14,
+            (0.5,) * 14,
+            (4.0,) * 7 + (5.0,) * 7,
+        )
     ]
 
 
-def test_fast_follow_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
+def test_fast_mit_position_is_one_fixed_fourteen_axis_frame(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.set_joint_mit_fast_follow(left=(0,) * 7, right=(1,) * 7)
+    robot.set_joint_mit_fast(left=(0,) * 7, right=(1,) * 7, velocity=40)
     assert robot._runtime.calls == [
-        ("mit-fast-follow", (0.0,) * 7 + (1.0,) * 7)
+        ("mit-fast", (0.0,) * 7 + (1.0,) * 7, 40)
     ]
 
 
-@pytest.mark.parametrize("method", ("set_joint_mit", "set_joint_mit_fast_follow"))
+@pytest.mark.parametrize("method", ("set_joint_mit", "set_joint_mit_fast"))
 def test_public_mit_modes_require_mit_control_mode(product_factory, method) -> None:
     robot = ArxDCanDualArm(control_mode="pv")
 
     with pytest.raises(RuntimeError, match="requires MIT mode"):
-        getattr(robot, method)(left=(0.0,) * 7, right=(0.0,) * 7)
+        if method == "set_joint_mit_fast":
+            robot.set_joint_mit_fast(left=(0.0,) * 7, right=(0.0,) * 7)
+        else:
+            robot.set_joint_mit(
+                left_positions=(0.0,) * 7,
+                right_positions=(0.0,) * 7,
+                left_velocities=(0.0,) * 7,
+                right_velocities=(0.0,) * 7,
+                kp=10.0,
+                kd=1.0,
+                left_feedforward_torques=(0.0,) * 7,
+                right_feedforward_torques=(0.0,) * 7,
+            )
 
     assert robot._runtime.calls == []
 
@@ -656,19 +650,25 @@ def test_pv_position_forwards_per_command_speed(product_factory) -> None:
     )
 
 
-def test_ctypes_ordinary_position_uses_explicit_pv_and_new_mit_symbols() -> None:
+def test_ctypes_ordinary_position_uses_explicit_pv_and_abi_16_mit_symbols() -> None:
     calls: list[tuple] = []
 
     def set_joint_pv(_runtime, positions, count, speed) -> int:
         calls.append(("pv", tuple(positions[:count]), float(speed)))
         return 0
 
-    def set_joint_mit_direct(_runtime, positions, count) -> int:
-        calls.append(("mit-direct", tuple(positions[:count])))
+    def set_joint_mit(_runtime, q, dq, kp, kd, tau_ff, count) -> int:
+        calls.append((
+            "mit",
+            tuple(q[:count]), tuple(dq[:count]), tuple(kp[:count]),
+            tuple(kd[:count]), tuple(tau_ff[:count]), int(count),
+        ))
         return 0
 
-    def set_joint_mit_fast_follow(_runtime, positions, count) -> int:
-        calls.append(("mit-fast-follow", tuple(positions[:count])))
+    def set_joint_mit_fast(_runtime, positions, count, speed) -> int:
+        calls.append(
+            ("mit-fast", tuple(positions[:count]), int(count), float(speed))
+        )
         return 0
 
     runtime = ArticoreRuntime.__new__(ArticoreRuntime)
@@ -676,24 +676,75 @@ def test_ctypes_ordinary_position_uses_explicit_pv_and_new_mit_symbols() -> None
     runtime._ptr = 1
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
         articore_runtime_set_joint_pv=set_joint_pv,
-        articore_runtime_set_joint_mit_direct=set_joint_mit_direct,
-        articore_runtime_set_joint_mit_fast_follow=set_joint_mit_fast_follow,
+        articore_runtime_set_joint_mit=set_joint_mit,
+        articore_runtime_set_joint_mit_fast=set_joint_mit_fast,
     ))
 
     runtime.set_joint_pv(range(14), 37)
-    runtime.set_joint_mit_direct(range(14))
-    runtime.set_joint_mit_fast_follow(range(14))
+    runtime.set_joint_mit(
+        range(14), (1,) * 14, (2,) * 14, (3,) * 14, (4,) * 14,
+    )
+    runtime.set_joint_mit_fast(range(14), 35)
 
     expected = tuple(float(value) for value in range(14))
     assert calls == [
         ("pv", expected, 37.0),
-        ("mit-direct", expected),
-        ("mit-fast-follow", expected),
+        ("mit", expected, (1.0,) * 14, (2.0,) * 14, (3.0,) * 14,
+         (4.0,) * 14, 14),
+        ("mit-fast", expected, 14, 35.0),
     ]
 
 
-def test_ctypes_pv_global_limits_use_scalar_setters_and_float_outputs() -> None:
-    values = {"speed": 0.0, "acceleration": 0.0}
+def test_ctypes_standard_mit_propagates_native_error_text() -> None:
+    def set_joint_mit(_runtime, *_args) -> int:
+        return -1
+
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+    runtime._lock = RLock()
+    runtime._ptr = 1
+    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_set_joint_mit=set_joint_mit,
+        articore_runtime_last_error=lambda: b"MIT kp[3]=501 exceeds 500",
+    ))
+
+    with pytest.raises(
+        RuntimeCallError,
+        match=r"set_joint_mit failed: MIT kp\[3\]=501 exceeds 500",
+    ):
+        runtime.set_joint_mit(
+            (0.0,) * 14,
+            (0.0,) * 14,
+            (10.0,) * 14,
+            (1.0,) * 14,
+            (0.0,) * 14,
+        )
+
+
+def test_ctypes_standard_mit_rejects_mismatched_array_lengths() -> None:
+    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
+
+    with pytest.raises(ValueError, match="all contain exactly 14"):
+        runtime.set_joint_mit(
+            (0.0,) * 14,
+            (0.0,) * 13,
+            (10.0,) * 14,
+            (1.0,) * 14,
+            (0.0,) * 14,
+        )
+
+
+def test_ctypes_pv_settings_use_scalar_setters_and_float_outputs() -> None:
+    values = {"percent": 100.0, "speed": 0.0, "acceleration": 0.0}
+
+    def set_speed_percent(_runtime, value) -> int:
+        values["percent"] = float(value)
+        return 0
+
+    def get_speed_percent(_runtime, output) -> int:
+        ctypes.cast(output, ctypes.POINTER(ctypes.c_float)).contents.value = (
+            values["percent"]
+        )
+        return 0
 
     def set_max_speed(_runtime, value) -> int:
         values["speed"] = float(value)
@@ -719,36 +770,42 @@ def test_ctypes_pv_global_limits_use_scalar_setters_and_float_outputs() -> None:
     runtime._lock = RLock()
     runtime._ptr = 1
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
+        articore_runtime_set_speed_percent=set_speed_percent,
+        articore_runtime_get_speed_percent=get_speed_percent,
         articore_runtime_set_max_speed=set_max_speed,
         articore_runtime_get_max_speed=get_max_speed,
         articore_runtime_set_max_acceleration=set_max_acceleration,
         articore_runtime_get_max_acceleration=get_max_acceleration,
     ))
 
+    runtime.set_speed_percent(60.0)
     runtime.set_max_speed(1.25)
     runtime.set_max_acceleration(2.5)
 
+    assert runtime.get_speed_percent() == pytest.approx(60.0)
     assert runtime.get_max_speed() == pytest.approx(1.25)
     assert runtime.get_max_acceleration() == pytest.approx(2.5)
 
 
-def test_raw_mit_forwards_product_arrays_without_motor_mapping(product_factory) -> None:
+def test_mit_rejects_non_seven_axis_sides_and_non_fourteen_gains(product_factory) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.submit_raw_mit(
-        left_positions=range(7),
-        right_positions=range(7, 14),
-        left_velocities=(1,) * 7,
-        right_velocities=(2,) * 7,
-        kp=3.0,
-        kd=(0.5,) * 7,
-    )
-    call = robot._runtime.calls[0]
-    assert call[0] == "mit"
-    assert call[1] == tuple(float(i) for i in range(14))
-    assert call[2] == (1.0,) * 7 + (2.0,) * 7
-    assert call[3] is None
-    assert call[4] == (3.0,) * 14
-    assert call[5] == (0.5,) * 14
+    valid = (0.0,) * 7
+    kwargs = {
+        "left_positions": valid,
+        "right_positions": valid,
+        "left_velocities": valid,
+        "right_velocities": valid,
+        "kp": 10.0,
+        "kd": 1.0,
+        "left_feedforward_torques": valid,
+        "right_feedforward_torques": valid,
+    }
+    with pytest.raises(ValueError, match="each contain 7"):
+        robot.set_joint_mit(**{**kwargs, "left_positions": (0.0,) * 6})
+    with pytest.raises(ValueError, match="kp.*14"):
+        robot.set_joint_mit(**{**kwargs, "kp": (10.0,) * 7})
+    with pytest.raises(ValueError, match="each contain 7"):
+        robot.set_joint_mit_fast(left=(0.0,) * 7, right=(0.0,) * 8)
 
 
 def test_joint_trajectory_interfaces_are_not_public(product_factory) -> None:
@@ -779,6 +836,7 @@ def test_read_state_uses_one_native_product_snapshot(product_factory) -> None:
     assert state.right.gripper is not None
     assert state.right.gripper.opening == pytest.approx(250.0)
     assert state.right.gripper.enabled is None
+    assert state.motion_arrived is True
     assert state.timestamp_ns == 123456
     assert state.sequence == 77
 
@@ -808,6 +866,7 @@ def test_ctypes_state_maps_feedback_and_temperature_masks() -> None:
         native.left_gripper_rotor_temperature = 39.0
         native.right_gripper_available = 1
         native.right_gripper_enabled_valid = 0
+        native.motion_arrived = 1
         return 0
 
     runtime = ArticoreRuntime.__new__(ArticoreRuntime)
@@ -829,6 +888,7 @@ def test_ctypes_state_maps_feedback_and_temperature_masks() -> None:
     assert state.left_gripper.rotor_temperature == pytest.approx(39.0)
     assert state.right_gripper is not None
     assert state.right_gripper.enabled is None
+    assert state.motion_arrived is True
 
 
 def test_get_pose_returns_six_values_and_optional_sample_metadata(
@@ -876,80 +936,88 @@ def test_cartesian_motion_is_forwarded_as_native_operation(
         tuple(float(index) for index in range(7)),
         tuple(float(index) for index in range(7, 14)),
     )
-    assert robot.set_pose(
-        left_target_pose=target,
-        right_target_pose=via,
-        speed_percent=25,
+    assert robot.move_pose(side="right", target_pose=target) is None
+    assert robot.move_linear(
+        side="right", start_pose=start, end_pose=target,
     ) is None
-    assert robot.move_linear_trajectory(
-        side="right", start_pose=start, end_pose=target, duration_s=20,
-    ) == 11
-    assert robot.move_linear_trajectory(
-        side="left", poses=(start, via, target), duration_s=10,
-    ) == 13
+    assert robot.move_linear(side="left", end_pose=target) is None
+    assert robot.move_linear(
+        side="right", start_pose=None, end_pose=via,
+    ) is None
+    assert robot.move_linear(
+        side="left", poses=(start, via, target),
+    ) is None
     with pytest.raises(ValueError, match="cannot be combined"):
-        robot.move_linear_trajectory(
+        robot.move_linear(
             side="left", start_pose=start, end_pose=target,
-            poses=(start, via, target), duration_s=10,
+            poses=(start, via, target),
         )
     with pytest.raises(ValueError, match="required when poses is omitted"):
-        robot.move_linear_trajectory(side="left", duration_s=10)
-    assert robot.move_circular_trajectory(
+        robot.move_linear(side="left")
+    assert robot.move_circular(
         side="left", start_pose=start, via_pose=via, end_pose=target,
-        duration_s=30,
-    ) == 12
-    assert robot.get_motion_status(10).motion_id == 10
-    robot.cancel_motion(10)
-    robot.cancel_all_motions()
+    ) is None
+    robot.stop_motion()
 
     assert robot._runtime.calls == [
         ("solve_ik", target, via),
-        ("set_pose", target, via, 25),
-        ("move_linear_trajectory", 1, start, target, 20),
-        ("move_linear_path_trajectory", 0, (start, via, target), 10),
-        ("move_circular_trajectory", 0, start, via, target, 30),
-        ("get_motion_status", 10),
-        ("cancel_motion", 10),
-        ("cancel_all_motions",),
+        ("move_pose", 1, target),
+        ("move_linear", 1, start, target),
+        ("move_linear", 0, None, target),
+        ("move_linear", 1, None, via),
+        ("move_linear_path", 0, (start, via, target)),
+        ("move_circular", 0, start, via, target),
+        ("stop_motion",),
     ]
 
 
-def test_cartesian_sdk_keeps_one_linear_method_and_native_path_planning(
+def test_cartesian_sdk_exposes_simple_nonblocking_motion_surface(
     product_factory,
 ) -> None:
     import inspect
 
     robot = ArxDCanDualArm(control_mode="pv")
     solve_ik = inspect.signature(robot.solve_ik)
-    ptp = inspect.signature(robot.set_pose)
+    pose = inspect.signature(robot.move_pose)
     assert not hasattr(robot, "set_poses")
-    assert not hasattr(robot, "move_pose")
-    assert not hasattr(robot, "move_linear")
-    assert not hasattr(robot, "move_circular")
-    linear = inspect.signature(robot.move_linear_trajectory)
-    circular = inspect.signature(robot.move_circular_trajectory)
+    assert not hasattr(robot, "set_pose")
+    assert not hasattr(robot, "get_motion_status")
+    assert not hasattr(robot, "cancel_motion")
+    assert not hasattr(robot, "cancel_all_motions")
+    assert not hasattr(robot, "move_linear_trajectory")
+    assert not hasattr(robot, "move_circular_trajectory")
+    linear = inspect.signature(robot.move_linear)
+    circular = inspect.signature(robot.move_circular)
     joint_pv = inspect.signature(robot.set_joint_pv)
 
     assert tuple(joint_pv.parameters) == ("left", "right", "velocity")
     assert joint_pv.parameters["velocity"].default == 50.0
     joint_mit = inspect.signature(robot.set_joint_mit)
-    assert tuple(joint_mit.parameters) == ("left", "right")
-    joint_mit_fast_follow = inspect.signature(robot.set_joint_mit_fast_follow)
-    assert tuple(joint_mit_fast_follow.parameters) == ("left", "right")
+    assert tuple(joint_mit.parameters) == (
+        "left_positions", "right_positions", "left_velocities",
+        "right_velocities", "kp", "kd", "left_feedforward_torques",
+        "right_feedforward_torques",
+    )
+    joint_mit_fast = inspect.signature(robot.set_joint_mit_fast)
+    assert tuple(joint_mit_fast.parameters) == ("left", "right", "velocity")
+    assert joint_mit_fast.parameters["velocity"].default == 100.0
+    assert not hasattr(robot, "read_cached_state")
+    assert not hasattr(robot, "set_joint_mit_direct")
+    assert not hasattr(robot, "set_joint_mit_fast_follow")
+    assert not hasattr(robot, "set_joint_mit_fast_with_speed")
+    assert not hasattr(robot, "submit_raw_mit")
 
     assert tuple(solve_ik.parameters) == (
         "left_target_pose", "right_target_pose",
     )
 
-    assert tuple(ptp.parameters) == (
-        "left_target_pose", "right_target_pose", "speed_percent",
-    )
-    assert ptp.parameters["speed_percent"].default == 50.0
+    assert tuple(pose.parameters) == ("side", "target_pose")
     assert tuple(linear.parameters) == (
-        "side", "start_pose", "end_pose", "poses", "duration_s",
+        "side", "start_pose", "end_pose", "poses",
     )
+    assert linear.parameters["start_pose"].default is None
     assert tuple(circular.parameters) == (
-        "side", "start_pose", "via_pose", "end_pose", "duration_s",
+        "side", "start_pose", "via_pose", "end_pose",
     )
 
 
@@ -959,79 +1027,73 @@ def test_linear_path_rejects_pose_counts_outside_native_2_to_64() -> None:
 
     for poses in ((pose,), (pose,) * 65):
         with pytest.raises(ValueError, match="2..64 poses"):
-            runtime.move_linear_path_trajectory(0, poses, 3.0)
+            runtime.move_linear_path(0, poses)
 
 
-def test_ctypes_cartesian_paths_forward_explicit_start_poses() -> None:
+def test_ctypes_simple_cartesian_paths_forward_without_motion_ids() -> None:
     calls: list[tuple] = []
 
-    def set_pose(_runtime, left, right, speed) -> int:
-        calls.append(("ptp", tuple(left), tuple(right), float(speed)))
+    def move_pose(_runtime, side, target) -> int:
+        calls.append(("pose", side, tuple(target)))
         return 0
 
-    def move_linear_trajectory(_runtime, side, start, end, speed, output) -> int:
+    def move_linear(_runtime, side, start, end) -> int:
         calls.append((
-            "linear", side, tuple(start), tuple(end), float(speed),
+            "linear", side, None if start is None else tuple(start), tuple(end),
         ))
-        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 21
         return 0
 
-    def move_linear_path_trajectory(
-        _runtime, side, poses, pose_count, duration, output
-    ) -> int:
+    def move_linear_path(_runtime, side, poses, pose_count) -> int:
         calls.append((
             "linear_path", side,
             tuple(poses[index] for index in range(pose_count * 6)),
-            pose_count, float(duration),
+            pose_count,
         ))
-        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 23
         return 0
 
-    def move_circular_trajectory(
-        _runtime, side, start, via, end, speed, output
-    ) -> int:
-        calls.append((
-            "circular", side, tuple(start), tuple(via), tuple(end),
-            float(speed),
-        ))
-        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = 22
+    def move_circular(_runtime, side, start, via, end) -> int:
+        calls.append(("circular", side, tuple(start), tuple(via), tuple(end)))
+        return 0
+
+    def stop_motion(_runtime) -> int:
+        calls.append(("stop",))
         return 0
 
     runtime = ArticoreRuntime.__new__(ArticoreRuntime)
     runtime._lock = RLock()
     runtime._ptr = 1
     runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
-        articore_runtime_set_pose=set_pose,
-        articore_runtime_move_linear_trajectory=move_linear_trajectory,
-        articore_runtime_move_linear_trajectory_with_point_count=(
-            move_linear_path_trajectory
-        ),
-        articore_runtime_move_circular_trajectory=move_circular_trajectory,
+        articore_runtime_move_pose=move_pose,
+        articore_runtime_move_linear=move_linear,
+        articore_runtime_move_linear_path=move_linear_path,
+        articore_runtime_move_circular=move_circular,
+        articore_runtime_stop_motion=stop_motion,
     ))
     start = (0.1, 0.2, 0.3, 0.0, 0.1, 0.2)
     via = (0.2, 0.3, 0.4, 0.1, 0.2, 0.3)
     end = (0.3, 0.4, 0.5, 0.2, 0.3, 0.4)
 
-    assert runtime.set_pose(start, end, 7) is None
-    assert runtime.move_linear_trajectory(0, start, end, 10) == 21
-    assert runtime.move_linear_path_trajectory(0, (start, via, end), 10) == 23
-    assert runtime.move_circular_trajectory(1, start, via, end, 20) == 22
-    assert calls[0][0] == "ptp"
-    assert calls[0][1] == pytest.approx(start)
+    assert runtime.move_pose(0, end) is None
+    assert runtime.move_linear(0, start, end) is None
+    assert runtime.move_linear(1, None, end) is None
+    assert runtime.move_linear_path(0, (start, via, end)) is None
+    assert runtime.move_circular(1, start, via, end) is None
+    assert runtime.stop_motion() is None
+    assert calls[0][0:2] == ("pose", 0)
     assert calls[0][2] == pytest.approx(end)
-    assert calls[0][3] == 7.0
     assert calls[1][:2] == ("linear", 0)
     assert calls[1][2] == pytest.approx(start)
     assert calls[1][3] == pytest.approx(end)
-    assert calls[1][4] == 10.0
-    assert calls[2][:2] == ("linear_path", 0)
-    assert calls[2][2] == pytest.approx(start + via + end)
-    assert calls[2][3:] == (3, 10.0)
-    assert calls[3][:2] == ("circular", 1)
-    assert calls[3][2] == pytest.approx(start)
-    assert calls[3][3] == pytest.approx(via)
-    assert calls[3][4] == pytest.approx(end)
-    assert calls[3][5] == 20.0
+    assert calls[2][0:3] == ("linear", 1, None)
+    assert calls[2][3] == pytest.approx(end)
+    assert calls[3][:2] == ("linear_path", 0)
+    assert calls[3][2] == pytest.approx(start + via + end)
+    assert calls[3][3:] == (3,)
+    assert calls[4][:2] == ("circular", 1)
+    assert calls[4][2] == pytest.approx(start)
+    assert calls[4][3] == pytest.approx(via)
+    assert calls[4][4] == pytest.approx(end)
+    assert calls[5] == ("stop",)
 
 
 def test_ctypes_solve_ik_forwards_two_poses_and_returns_fourteen_joints() -> None:
@@ -1118,152 +1180,14 @@ def test_product_solve_ik_only_forwards_one_non_motion_call(
     assert robot._runtime.calls == [("solve_ik", left, right)]
 
 
-def test_native_motion_fifo_states_need_no_python_planning_token() -> None:
-    next_motion_id = 30
-    states = {
-        31: (1, 2),
-        32: (5, 2),
-        33: (5, 2),
-        34: (2, 3),
-    }
-
-    def move_linear_trajectory(_runtime, _side, _start, _end, _duration, output) -> int:
-        nonlocal next_motion_id
-        next_motion_id += 1
-        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = (
-            next_motion_id
-        )
-        return 0
-
-    def move_circular_trajectory(
-        _runtime, _side, _start, _via, _end, _duration, output
-    ) -> int:
-        nonlocal next_motion_id
-        next_motion_id += 1
-        ctypes.cast(output, ctypes.POINTER(ctypes.c_uint64)).contents.value = (
-            next_motion_id
-        )
-        return 0
-
-    def get_status(_runtime, motion_id, output) -> int:
-        state, motion_type = states[int(motion_id)]
-        native = ctypes.cast(output, ctypes.POINTER(CMotionStatus)).contents
-        native.motion_id = int(motion_id)
-        native.motion_type = motion_type
-        native.state = state
-        native.progress = 1.0 if state == 2 else 0.0
-        return 0
-
-    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
-    runtime._lock = RLock()
-    runtime._ptr = 1
-    runtime._runtime_abi = SimpleNamespace(lib=SimpleNamespace(
-        articore_runtime_move_linear_trajectory=move_linear_trajectory,
-        articore_runtime_move_circular_trajectory=move_circular_trajectory,
-        articore_runtime_get_motion_status=get_status,
-    ))
-    start = (0.1, 0.2, 0.3, 0.0, 0.1, 0.2)
-    via = (0.2, 0.3, 0.4, 0.1, 0.2, 0.3)
-    end = (0.3, 0.4, 0.5, 0.2, 0.3, 0.4)
-
-    linear_ids = [runtime.move_linear_trajectory(0, start, end, 10.0) for _ in range(3)]
-    linear_states = [runtime.get_motion_status(item).state for item in linear_ids]
-    circular_id = runtime.move_circular_trajectory(1, start, via, end, 20.0)
-
-    assert linear_ids == [31, 32, 33]
-    assert linear_states == [
-        MotionState.RUNNING,
-        MotionState.QUEUED,
-        MotionState.QUEUED,
-    ]
-    assert runtime.get_motion_status(circular_id).state is MotionState.COMPLETED
-
-
-def test_cartesian_motion_does_not_duplicate_native_mode_or_speed_checks(
+def test_cartesian_motion_does_not_duplicate_native_mode_checks(
     product_factory,
 ) -> None:
     robot = ArxDCanDualArm(control_mode="mit")
-    robot.set_pose(
-        left_target_pose=(0.0,) * 6,
-        right_target_pose=(0.0,) * 6,
-        speed_percent=0,
-    )
+    robot.move_pose(side="left", target_pose=(0.0,) * 6)
     assert robot._runtime.calls == [
-        ("set_pose", (0.0,) * 6, (0.0,) * 6, 0),
+        ("move_pose", 0, (0.0,) * 6),
     ]
-
-
-def test_ctypes_motion_status_maps_all_native_fields() -> None:
-    calls: list[int] = []
-
-    def get_status(_pointer, motion_id, output) -> int:
-        calls.append(int(motion_id))
-        native = ctypes.cast(
-            output, ctypes.POINTER(CMotionStatus)
-        ).contents
-        native.state = 1
-        native.motion_id = 42
-        native.motion_type = 3
-        native.active_segment = 2
-        native.waypoint_count = 8
-        native.elapsed_s = 2.0
-        native.duration_s = 2.0
-        native.progress = 1.0
-        native.error = b"waiting for physical settling"
-        return 0
-
-    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
-    runtime._lock = RLock()
-    runtime._ptr = 1
-    runtime._runtime_abi = SimpleNamespace(
-        lib=SimpleNamespace(
-            articore_runtime_get_motion_status=get_status
-        )
-    )
-
-    status = runtime.get_motion_status(42)
-
-    assert calls == [42]
-    assert status.state == "running"
-    assert status.progress == pytest.approx(1.0)
-    assert status.state != "completed"
-    assert status.motion_id == 42
-    assert status.motion_type is MotionType.CARTESIAN_CIRCULAR
-    assert status.active_segment == 2
-    assert status.waypoint_count == 8
-    assert status.error == "waiting for physical settling"
-
-
-def test_ctypes_motion_status_queries_one_fifo_motion_id() -> None:
-    calls: list[int] = []
-
-    def get_status(_pointer, motion_id, output) -> int:
-        calls.append(int(motion_id))
-        native = ctypes.cast(
-            output, ctypes.POINTER(CMotionStatus)
-        ).contents
-        native.state = 5
-        native.motion_id = int(motion_id)
-        native.motion_type = 1
-        native.duration_s = 3.0
-        return 0
-
-    runtime = ArticoreRuntime.__new__(ArticoreRuntime)
-    runtime._lock = RLock()
-    runtime._ptr = 1
-    runtime._runtime_abi = SimpleNamespace(
-        lib=SimpleNamespace(
-            articore_runtime_get_motion_status=get_status
-        )
-    )
-
-    status = runtime.get_motion_status(27)
-    assert calls == [27]
-    assert status.state is MotionState.QUEUED
-    assert status.motion_type is MotionType.JOINT_TRAJECTORY
-    assert status.motion_id == 27
-    with pytest.raises(ValueError, match="motion_id"):
-        runtime.get_motion_status(0)
 
 
 def test_gripperless_product_returns_arm_state_and_none_grippers(

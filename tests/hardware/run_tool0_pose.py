@@ -7,7 +7,7 @@ import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, MotionState, SafetyState
+from arx_d_can import ArxDCanDualArm, SafetyState
 
 
 TOOL_OFFSET = (-0.004, 0.0, -0.178)
@@ -69,45 +69,19 @@ def read_topology(with_grippers: bool) -> dict[str, object]:
 
 def wait_motion(
     robot: ArxDCanDualArm,
-    motion_id: int,
     timeout_s: float,
-    *,
-    allow_fault: bool = False,
 ) -> dict[str, object]:
+    started = time.monotonic()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         require_healthy(robot)
-        status = robot.get_motion_status(motion_id)
-        if status.motion_id != motion_id:
-            raise RuntimeError(
-                f"motion id changed: expected {motion_id}, got {status.motion_id}"
-            )
-        if status.state is MotionState.COMPLETED:
+        if robot.read_state().motion_arrived:
             return {
-                "motion_id": motion_id,
-                "state": status.state.value,
-                "duration_s": status.duration_s,
-                "elapsed_s": status.elapsed_s,
-                "progress": status.progress,
+                "state": "arrived",
+                "elapsed_s": time.monotonic() - started,
             }
-        if status.state in {
-            MotionState.CANCELLED,
-            MotionState.FAULT,
-        }:
-            if allow_fault:
-                return {
-                    "motion_id": motion_id,
-                    "state": status.state.value,
-                    "duration_s": status.duration_s,
-                    "elapsed_s": status.elapsed_s,
-                    "progress": status.progress,
-                    "error": status.error,
-                }
-            raise RuntimeError(
-                f"motion {motion_id} ended as {status.state.value}: {status.error}"
-            )
-        time.sleep(0.01)
-    raise TimeoutError(f"motion {motion_id} did not complete within {timeout_s}s")
+        time.sleep(0.002)
+    raise TimeoutError(f"motion did not complete within {timeout_s}s")
 
 
 def settle_pose(robot: ArxDCanDualArm, side: str, seconds: float = 2.0) -> list[float]:
@@ -118,44 +92,8 @@ def settle_pose(robot: ArxDCanDualArm, side: str, seconds: float = 2.0) -> list[
     return robot.get_pose(side)
 
 
-def wait_ptp_pose(
-    robot: ArxDCanDualArm,
-    side: str,
-    target: list[float],
-    timeout_s: float,
-) -> dict[str, object]:
-    """set_pose has no motion status; verify pose and velocity feedback directly."""
-    deadline = time.monotonic() + timeout_s
-    stable_samples = 0
-    while time.monotonic() < deadline:
-        require_healthy(robot)
-        pose = robot.get_pose(side)
-        arm = getattr(robot.read_state(), side).arm
-        position_error = math.dist(pose[:3], target[:3])
-        orientation_error = math.dist(pose[3:], target[3:])
-        maximum_velocity = max(abs(value) for value in arm.velocities)
-        if (
-            position_error <= 0.006
-            and orientation_error <= 0.035
-            and maximum_velocity <= 0.05
-        ):
-            stable_samples += 1
-            if stable_samples >= 25:
-                return {
-                    "state": "feedback_settled",
-                    "position_error_m": position_error,
-                    "orientation_error_rad": orientation_error,
-                    "maximum_velocity_rad_s": maximum_velocity,
-                }
-        else:
-            stable_samples = 0
-        time.sleep(0.002)
-    raise TimeoutError(f"set_pose did not settle within {timeout_s}s")
-
-
 def collect_hold(
     robot: ArxDCanDualArm,
-    motion_id: int | None,
     *,
     seconds: float = 5.0,
 ) -> dict[str, object]:
@@ -164,21 +102,10 @@ def collect_hold(
     velocity_peak = [0.0] * 7
     samples = 0
     last_sequence = None
-    status_counts: dict[str, int] = {}
     started = time.monotonic()
     deadline = started + seconds
     while time.monotonic() < deadline:
         require_healthy(robot)
-        if motion_id is not None:
-            status = robot.get_motion_status(motion_id)
-            if status.motion_id != motion_id:
-                raise RuntimeError(
-                    f"hold motion id changed: expected {motion_id}, "
-                    f"got {status.motion_id}"
-                )
-            status_counts[status.state.value] = (
-                status_counts.get(status.state.value, 0) + 1
-            )
         state = robot.read_state()
         if state.sequence != last_sequence:
             last_sequence = state.sequence
@@ -200,17 +127,7 @@ def collect_hold(
             high - low for low, high in zip(minimum, maximum)
         ],
         "velocity_absolute_peak_rad_s": velocity_peak,
-        "status_counts": status_counts,
-        "final_status": (
-            "not_available_for_ptp"
-            if motion_id is None
-            else robot.get_motion_status(motion_id).state.value
-        ),
-        "final_status_error": (
-            None
-            if motion_id is None
-            else robot.get_motion_status(motion_id).error
-        ),
+        "motion_arrived": robot.read_state().motion_arrived,
     }
 
 
@@ -286,7 +203,6 @@ def move_and_return(
     distance_m: float,
     *,
     speed_percent: float = 10.0,
-    duration_s: float = 10.0,
     hold_seconds: float = 5.0,
 ) -> dict[str, object]:
     robot = ArxDCanDualArm(control_mode="pv", with_grippers=True)
@@ -301,24 +217,16 @@ def move_and_return(
         start = robot.get_pose(side)
         target = list(start)
         target[2] += distance_m
-        other_side = "right" if side == "left" else "left"
-        other_target = robot.get_pose(other_side)
-        robot.set_pose(
-            left_target_pose=target if side == "left" else other_target,
-            right_target_pose=target if side == "right" else other_target,
-            speed_percent=speed_percent,
-        )
-        outbound = wait_ptp_pose(robot, side, target, 15.0)
-        outbound_hold = collect_hold(robot, None, seconds=hold_seconds)
+        robot.set_speed_percent(speed_percent)
+        robot.move_pose(side=side, target_pose=target)
+        outbound = wait_motion(robot, 15.0)
+        outbound_hold = collect_hold(robot, seconds=hold_seconds)
         reached = robot.get_pose(side)
-        return_id = robot.move_linear_trajectory(
+        robot.move_linear(
             side=side, start_pose=reached, end_pose=start,
-            duration_s=duration_s,
         )
-        returned = wait_motion(robot, return_id, 15.0, allow_fault=True)
-        return_hold = collect_hold(
-            robot, return_id, seconds=hold_seconds
-        )
+        returned = wait_motion(robot, 15.0)
+        return_hold = collect_hold(robot, seconds=hold_seconds)
         final = robot.get_pose(side)
         require_healthy(robot)
         return {
@@ -337,7 +245,7 @@ def move_and_return(
         }
     finally:
         try:
-            robot.cancel_all_motions()
+            robot.stop_motion()
         except Exception:
             pass
         if enabled:
@@ -353,7 +261,6 @@ def main() -> None:
     parser.add_argument("--move-mm", type=float, default=0.0)
     parser.add_argument("--side", choices=("left", "right"), default="left")
     parser.add_argument("--speed-percent", type=float, default=10.0)
-    parser.add_argument("--duration-s", type=float, default=10.0)
     parser.add_argument("--hold-seconds", type=float, default=5.0)
     parser.add_argument(
         "--restore-left",
@@ -395,7 +302,6 @@ def main() -> None:
             args.side,
             args.move_mm / 1000.0,
             speed_percent=args.speed_percent,
-            duration_s=args.duration_s,
             hold_seconds=args.hold_seconds,
         )
     print(json.dumps(report, indent=2, ensure_ascii=False))

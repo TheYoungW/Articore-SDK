@@ -13,13 +13,10 @@ def main(args: argparse.Namespace) -> None:
     robot.connect()
     print("机器人连接成功")
     try:
-        if args.cached:
-            robot.read_state()
         result = benchmark_state_reads(
             robot,
             seconds=args.seconds,
             target_hz=args.hz,
-            cached=args.cached,
         )
         print(f"读取次数：{result.samples}")
         print(f"实际频率：{result.achieved_hz:.2f} Hz")
@@ -35,5 +32,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seconds", type=float, default=5.0, help="测试时间")
     parser.add_argument("--hz", type=float, default=500.0, help="目标读取频率")
-    parser.add_argument("--cached", action="store_true", help="测试缓存读取")
     main(parser.parse_args())

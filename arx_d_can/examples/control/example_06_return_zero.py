@@ -11,7 +11,7 @@ def main() -> None:
     print("机器人连接成功")
     try:
         robot.enable()
-        robot.set_joint_mit(
+        robot.set_joint_mit_fast(
             left=[0.0] * len(robot.joint_names),
             right=[0.0] * len(robot.joint_names),
         )

@@ -101,7 +101,6 @@ def benchmark_state_reads(
     *,
     seconds: float,
     target_hz: float,
-    cached: bool = False,
     now: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
 ) -> BenchmarkResult:
@@ -127,7 +126,7 @@ def benchmark_state_reads(
         if remaining > 0.0:
             sleep(remaining)
         read_started = now()
-        (robot.read_cached_state if cached else robot.read_state)()
+        robot.read_state()
         read_s = now() - read_started
         total_read_s += read_s
         max_read_s = max(max_read_s, read_s)

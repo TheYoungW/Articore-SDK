@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Real-hardware check for native TCP FK/IK across set_pose, Linear and Circular."""
+"""Real-hardware check for native TCP FK/IK across PTP, Linear and Circular."""
 from __future__ import annotations
 
 import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, MotionState, SafetyState
+from arx_d_can import ArxDCanDualArm, SafetyState
 
 
 SAFE_Q = [0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0]
@@ -50,20 +50,18 @@ def wait_pose(robot: ArxDCanDualArm, target, timeout: float = 15.0) -> dict:
         if position_error <= 0.005 and speed <= 0.05:
             return {"actual": actual, "position_error_m": position_error}
         time.sleep(0.005)
-    raise TimeoutError("set_pose target did not settle")
+    raise TimeoutError("move_pose target did not settle")
 
 
-def wait_motion(robot: ArxDCanDualArm, motion_id: int, timeout: float = 20.0) -> dict:
+def wait_motion(robot: ArxDCanDualArm, timeout: float = 20.0) -> dict:
+    started = time.monotonic()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         healthy(robot)
-        status = robot.get_motion_status(motion_id)
-        if status.state is MotionState.COMPLETED:
-            return {"duration_s": status.duration_s, "progress": status.progress}
-        if status.state in {MotionState.CANCELLED, MotionState.FAULT}:
-            raise RuntimeError(status.error or status.state.value)
+        if robot.read_state().motion_arrived:
+            return {"elapsed_s": time.monotonic() - started}
         time.sleep(0.002)
-    raise TimeoutError(f"motion {motion_id} did not complete")
+    raise TimeoutError("motion did not complete")
 
 
 def main() -> None:
@@ -93,17 +91,15 @@ def main() -> None:
         start = robot.get_pose("left")
         up = list(start)
         up[2] += 0.01
-        robot.set_pose(
-            left_target_pose=up,
-            right_target_pose=robot.get_pose("right"),
-            speed_percent=20.0,
-        )
+        robot.set_speed_percent(20.0)
+        robot.move_pose(side="left", target_pose=up)
+        report["ptp_motion"] = wait_motion(robot)
         report["ptp"] = wait_pose(robot, up)
 
-        linear_id = robot.move_linear_trajectory(
-            side="left", start_pose=up, end_pose=start, duration_s=10.0
+        robot.move_linear(
+            side="left", start_pose=up, end_pose=start
         )
-        report["linear"] = wait_motion(robot, linear_id)
+        report["linear"] = wait_motion(robot)
         report["linear_end"] = wait_pose(robot, start)
 
         via = list(start)
@@ -111,17 +107,16 @@ def main() -> None:
         via[1] += 0.005
         via[2] += 0.005
         end[2] += 0.01
-        circular_id = robot.move_circular_trajectory(
+        robot.move_circular(
             side="left", start_pose=start, via_pose=via, end_pose=end,
-            duration_s=10.0,
         )
-        report["circular"] = wait_motion(robot, circular_id)
+        report["circular"] = wait_motion(robot)
         report["circular_end"] = wait_pose(robot, end)
 
-        return_id = robot.move_linear_trajectory(
-            side="left", start_pose=end, end_pose=start, duration_s=10.0
+        robot.move_linear(
+            side="left", start_pose=end, end_pose=start
         )
-        report["return"] = wait_motion(robot, return_id)
+        report["return"] = wait_motion(robot)
         wait_pose(robot, start)
 
         robot.set_joint_pv(
@@ -138,7 +133,7 @@ def main() -> None:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     finally:
         try:
-            robot.cancel_all_motions()
+            robot.stop_motion()
         except Exception:
             pass
         if enabled:

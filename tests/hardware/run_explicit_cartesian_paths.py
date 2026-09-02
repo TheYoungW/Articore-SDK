@@ -6,12 +6,12 @@ import json
 import math
 import time
 
-from arx_d_can import ArxDCanDualArm, MotionState, SafetyState
+from arx_d_can import ArxDCanDualArm, SafetyState
 
 
 JOINT_TARGET = [0.0, 0.0, 0.0, math.pi / 2.0, 0.0, 0.0, 0.0]
 SETUP_SPEED_PERCENT = 10.0
-CARTESIAN_DURATION_S = 10.0
+CARTESIAN_SPEED_PERCENT = 10.0
 VERTICAL_DISTANCE_M = 0.070
 RIGHT_OFFSET_M = 0.035
 
@@ -58,7 +58,6 @@ def wait_joint_target(
 
 def wait_motion(
     robot: ArxDCanDualArm,
-    motion_id: int,
     *,
     timeout_s: float = 20.0,
 ) -> dict[str, object]:
@@ -72,30 +71,15 @@ def wait_motion(
         if state.sequence != last_sequence:
             samples += 1
             last_sequence = state.sequence
-        status = robot.get_motion_status(motion_id)
-        if status.motion_id != motion_id:
-            raise RuntimeError(
-                f"motion id changed: expected {motion_id}, got {status.motion_id}"
-            )
-        if status.state is MotionState.COMPLETED:
+        if state.motion_arrived:
             elapsed = time.monotonic() - started
             return {
-                "motion_id": motion_id,
                 "elapsed_s": elapsed,
-                "runtime_duration_s": status.duration_s,
                 "samples": samples,
                 "sample_hz": samples / max(elapsed, 1e-9),
-                "progress": status.progress,
             }
-        if status.state in {
-            MotionState.CANCELLED,
-            MotionState.FAULT,
-        }:
-            raise RuntimeError(
-                f"motion {motion_id} ended as {status.state.value}: {status.error}"
-            )
         time.sleep(0.002)
-    raise TimeoutError(f"motion {motion_id} did not complete within {timeout_s}s")
+    raise TimeoutError(f"motion did not complete within {timeout_s}s")
 
 
 def rotation_from_rpy(pose: list[float]) -> tuple[tuple[float, ...], ...]:
@@ -140,7 +124,7 @@ def main() -> None:
         "vertical_distance_m": VERTICAL_DISTANCE_M,
         "right_offset_m": RIGHT_OFFSET_M,
         "right_direction": "base -Y",
-        "duration_s": CARTESIAN_DURATION_S,
+        "speed_percent": CARTESIAN_SPEED_PERCENT,
     }
     try:
         robot.connect()
@@ -161,6 +145,7 @@ def main() -> None:
         )
         report["joint_setup"] = wait_joint_target(robot, JOINT_TARGET)
         time.sleep(0.25)
+        robot.set_speed_percent(CARTESIAN_SPEED_PERCENT)
 
         start = robot.get_pose("left")
         end = list(start)
@@ -174,41 +159,37 @@ def main() -> None:
         report["end_pose"] = end
         report["via_pose"] = via
 
-        motion_id = robot.move_linear_trajectory(
+        robot.move_linear(
             side="left",
             start_pose=start,
             end_pose=end,
-            duration_s=CARTESIAN_DURATION_S,
         )
-        report["linear_up"] = wait_motion(robot, motion_id)
+        report["linear_up"] = wait_motion(robot)
         report["linear_up_pose"] = pose_report(robot, end)
 
-        motion_id = robot.move_linear_trajectory(
+        robot.move_linear(
             side="left",
             start_pose=end,
             end_pose=start,
-            duration_s=CARTESIAN_DURATION_S,
         )
-        report["linear_return"] = wait_motion(robot, motion_id)
+        report["linear_return"] = wait_motion(robot)
         report["linear_return_pose"] = pose_report(robot, start)
 
-        motion_id = robot.move_circular_trajectory(
+        robot.move_circular(
             side="left",
             start_pose=start,
             via_pose=via,
             end_pose=end,
-            duration_s=CARTESIAN_DURATION_S,
         )
-        report["circular_up"] = wait_motion(robot, motion_id)
+        report["circular_up"] = wait_motion(robot)
         report["circular_up_pose"] = pose_report(robot, end)
 
-        motion_id = robot.move_linear_trajectory(
+        robot.move_linear(
             side="left",
             start_pose=end,
             end_pose=start,
-            duration_s=CARTESIAN_DURATION_S,
         )
-        report["final_linear_return"] = wait_motion(robot, motion_id)
+        report["final_linear_return"] = wait_motion(robot)
         report["final_linear_return_pose"] = pose_report(robot, start)
         print(
             json.dumps({"cartesian_results": report}, ensure_ascii=False),
@@ -225,7 +206,7 @@ def main() -> None:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     finally:
         try:
-            robot.cancel_all_motions()
+            robot.stop_motion()
         except Exception:
             pass
         if enabled:

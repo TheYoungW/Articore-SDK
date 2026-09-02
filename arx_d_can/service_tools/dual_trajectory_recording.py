@@ -75,7 +75,7 @@ def record(
         health = robot.get_health()
         if health.safe_holding or health.fault_reason:
             raise RuntimeError(health.fault_reason or "dual arm entered safe hold")
-        state = robot.read_cached_state()
+        state = robot.read_state()
         left_positions = state.left.arm.positions
         right_positions = state.right.arm.positions
         samples.append(
@@ -245,9 +245,10 @@ def replay(
                 velocity=speed,
             )
         else:
-            robot.set_joint_mit(
+            robot.set_joint_mit_fast(
                 left=sample.left_positions,
                 right=sample.right_positions,
+                velocity=speed,
             )
 
         left_gripper, right_gripper = grippers

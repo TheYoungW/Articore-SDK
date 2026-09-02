@@ -22,7 +22,7 @@ from pathlib import Path
 from .errors import AbiLoadError
 
 
-RUNTIME_ABI_VERSION = 0x000C0000
+RUNTIME_ABI_VERSION = 0x00100000
 
 
 def _runtime_library_name() -> str:
@@ -197,6 +197,7 @@ class CProductState(Structure):
         ("right_gripper_rotor_temperature", c_float),
         ("left_gripper_temperature_valid", c_int32),
         ("right_gripper_temperature_valid", c_int32),
+        ("motion_arrived", c_int32),
         ("timestamp_ns", c_uint64), ("sequence", c_uint64),
     ]
 
@@ -223,21 +224,6 @@ class CTcpOffset(Structure):
     _fields_ = [
         ("struct_size", c_uint32), ("side", c_uint32),
         ("values", c_float * 6),
-    ]
-
-
-class CMotionStatus(Structure):
-    _fields_ = [
-        ("struct_size", c_uint32),
-        ("motion_id", c_uint64),
-        ("motion_type", c_int32),
-        ("state", c_int32),
-        ("active_segment", c_uint32),
-        ("waypoint_count", c_uint32),
-        ("elapsed_s", ctypes.c_double),
-        ("duration_s", ctypes.c_double),
-        ("progress", c_float),
-        ("error", c_char * 512),
     ]
 
 
@@ -273,7 +259,7 @@ class RuntimeAbi:
         version = int(self.lib.articore_runtime_abi_version())
         if version != RUNTIME_ABI_VERSION:
             raise AbiLoadError(
-                "Articore-SDK requires Runtime ABI exactly 12.0; "
+                "Articore-SDK requires Runtime ABI exactly 16.0; "
                 f"loaded {version >> 16}.{version & 0xFFFF}"
             )
         self.abi_version = version
@@ -316,6 +302,12 @@ class RuntimeAbi:
             c_void_p, float_pointer, c_uint32, c_float,
         ]
         lib.articore_runtime_set_joint_pv.restype = c_int32
+        lib.articore_runtime_set_speed_percent.argtypes = [c_void_p, c_float]
+        lib.articore_runtime_set_speed_percent.restype = c_int32
+        lib.articore_runtime_get_speed_percent.argtypes = [
+            c_void_p, float_pointer,
+        ]
+        lib.articore_runtime_get_speed_percent.restype = c_int32
         lib.articore_runtime_set_max_speed.argtypes = [c_void_p, c_float]
         lib.articore_runtime_set_max_speed.restype = c_int32
         lib.articore_runtime_get_max_speed.argtypes = [
@@ -330,19 +322,20 @@ class RuntimeAbi:
             c_void_p, float_pointer,
         ]
         lib.articore_runtime_get_max_acceleration.restype = c_int32
-        lib.articore_runtime_set_joint_mit_direct.argtypes = [
-            c_void_p, float_pointer, c_uint32,
+        lib.articore_runtime_set_joint_mit.argtypes = [
+            c_void_p,
+            float_pointer,
+            float_pointer,
+            float_pointer,
+            float_pointer,
+            float_pointer,
+            c_uint32,
         ]
-        lib.articore_runtime_set_joint_mit_direct.restype = c_int32
-        lib.articore_runtime_set_joint_mit_fast_follow.argtypes = [
-            c_void_p, float_pointer, c_uint32,
+        lib.articore_runtime_set_joint_mit.restype = c_int32
+        lib.articore_runtime_set_joint_mit_fast.argtypes = [
+            c_void_p, float_pointer, c_uint32, c_float,
         ]
-        lib.articore_runtime_set_joint_mit_fast_follow.restype = c_int32
-        lib.articore_runtime_submit_mit_frame.argtypes = [
-            c_void_p, float_pointer, float_pointer, float_pointer,
-            float_pointer, float_pointer, c_uint32,
-        ]
-        lib.articore_runtime_submit_mit_frame.restype = c_int32
+        lib.articore_runtime_set_joint_mit_fast.restype = c_int32
         lib.articore_runtime_set_grippers.argtypes = [
             c_void_p, c_float, c_float, c_int32, c_int32,
         ]
@@ -376,36 +369,24 @@ class RuntimeAbi:
         lib.articore_runtime_get_tcp_offset.restype = c_int32
         lib.articore_runtime_reset_tcp_offset.argtypes = [c_void_p, c_uint32]
         lib.articore_runtime_reset_tcp_offset.restype = c_int32
-        lib.articore_runtime_set_pose.argtypes = [
-            c_void_p, float_pointer, float_pointer, c_float,
+        lib.articore_runtime_move_pose.argtypes = [
+            c_void_p, c_uint32, float_pointer,
         ]
-        lib.articore_runtime_set_pose.restype = c_int32
-        lib.articore_runtime_move_linear_trajectory.argtypes = [
+        lib.articore_runtime_move_pose.restype = c_int32
+        lib.articore_runtime_move_linear.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer,
-            ctypes.c_double, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_linear_trajectory.restype = c_int32
-        linear_with_point_count = (
-            lib.articore_runtime_move_linear_trajectory_with_point_count
-        )
-        linear_with_point_count.argtypes = [
+        lib.articore_runtime_move_linear.restype = c_int32
+        lib.articore_runtime_move_linear_path.argtypes = [
             c_void_p, c_uint32, float_pointer, c_uint32,
-            ctypes.c_double, POINTER(c_uint64),
         ]
-        linear_with_point_count.restype = c_int32
-        lib.articore_runtime_move_circular_trajectory.argtypes = [
+        lib.articore_runtime_move_linear_path.restype = c_int32
+        lib.articore_runtime_move_circular.argtypes = [
             c_void_p, c_uint32, float_pointer, float_pointer, float_pointer,
-            ctypes.c_double, POINTER(c_uint64),
         ]
-        lib.articore_runtime_move_circular_trajectory.restype = c_int32
-        lib.articore_runtime_get_motion_status.argtypes = [
-            c_void_p, c_uint64, POINTER(CMotionStatus),
-        ]
-        lib.articore_runtime_get_motion_status.restype = c_int32
-        lib.articore_runtime_cancel_motion.argtypes = [c_void_p, c_uint64]
-        lib.articore_runtime_cancel_motion.restype = c_int32
-        lib.articore_runtime_cancel_all_motions.argtypes = [c_void_p]
-        lib.articore_runtime_cancel_all_motions.restype = c_int32
+        lib.articore_runtime_move_circular.restype = c_int32
+        lib.articore_runtime_stop_motion.argtypes = [c_void_p]
+        lib.articore_runtime_stop_motion.restype = c_int32
         lib.articore_runtime_get_health.argtypes = [c_void_p, POINTER(CSafetyHealth)]
         lib.articore_runtime_get_health.restype = c_int32
 

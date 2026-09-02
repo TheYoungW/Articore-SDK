@@ -12,7 +12,7 @@ def main() -> None:
     try:
         input("确认环境安全后，按回车使能左右臂...")
         robot.enable()
-        state = robot.read_cached_state()
+        state = robot.read_state()
         robot.set_joint_pv(
             left=state.left.positions,
             right=state.right.positions,
