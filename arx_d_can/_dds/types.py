@@ -19,7 +19,7 @@ from cyclonedds.idl.types import (
 
 
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 0
+PROTOCOL_MINOR = 1
 ARM_DOF = 7
 ROBOT_DOF = 14
 POSE_DOF = 6
@@ -85,6 +85,7 @@ class ControlOperation(IdlEnum, typename="articore_wire.ControlOperation"):
     HAS_GRIPPERS = auto()
     GET_GRAVITY_STATUS = auto()
     GET_BIMANUAL_STATUS = auto()
+    GET_HARDWARE_TOPOLOGY = auto()
 
 
 class StreamKind(IdlEnum, typename="articore_wire.StreamKind"):

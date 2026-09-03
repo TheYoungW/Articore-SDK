@@ -24,11 +24,12 @@ from arx_d_can._dds.types import (
 
 def test_wire_enums_and_type_names_match_cpp_idl() -> None:
     assert PROTOCOL_MAJOR == 1
-    assert PROTOCOL_MINOR == 0
+    assert PROTOCOL_MINOR == 1
     assert ProtocolError.OK.value == 0
     assert ProtocolError.INTERNAL_ERROR.value == 9
     assert ControlOperation.ACQUIRE_LEASE.value == 0
     assert ControlOperation.GET_BIMANUAL_STATUS.value == 37
+    assert ControlOperation.GET_HARDWARE_TOPOLOGY.value == 38
     assert StreamKind.PV.value == 0
     assert StreamKind.MIT_FAST.value == 2
     assert Discovery.__idl_typename__ == "articore_wire.Discovery"
@@ -149,6 +150,25 @@ def test_request_correlates_reply_and_carries_lease_sequence() -> None:
     assert captured[0].scalar == pytest.approx([50.0] + [0.0] * 7)
 
 
+def test_requests_negotiate_down_to_discovered_protocol_1_0() -> None:
+    client, captured = _request_client()
+    client._discovery = Discovery(
+        PROTOCOL_MAJOR,
+        0,
+        client.robot_id,
+        "runtime",
+        "",
+        1,
+        "1.0.3",
+        0,
+        True,
+    )
+
+    client._request(ControlOperation.QUERY_HEALTH)
+
+    assert captured[0].protocol_minor == 0
+
+
 def test_protocol_error_is_exposed_as_stable_runtime_error_code() -> None:
     client, _ = _request_client(ProtocolError.NO_LEASE)
     with pytest.raises(RuntimeCallError) as raised:
@@ -163,7 +183,13 @@ def test_request_validates_fixed_arrays_before_writing() -> None:
     assert captured == []
 
 
-def _connect_client(state: SafetyState):
+def _connect_client(
+    state: SafetyState,
+    *,
+    publish_health: bool = True,
+    grippers: tuple[int, int] = (1, 1),
+    protocol_minor: int = PROTOCOL_MINOR,
+):
     client = DdsRuntimeClient.__new__(DdsRuntimeClient)
     client._closed = False
     client._lease_id = 0
@@ -171,13 +197,17 @@ def _connect_client(state: SafetyState):
     client._maintenance_only = False
     client._with_grippers = True
     client.control_mode = RuntimeControlMode.PV
+    client.request_timeout = 0.01
     client.discovery_timeout = 0.1
     client.domain_id = 0
     client.robot_id = "yunyi-001"
     client._cache_lock = threading.Lock()
+    client._health_generation = 0
+    client._health_updated = threading.Event()
+    client._transport_error = None
     client._discovery = Discovery(
         PROTOCOL_MAJOR,
-        PROTOCOL_MINOR,
+        protocol_minor,
         client.robot_id,
         "runtime",
         "",
@@ -196,8 +226,14 @@ def _connect_client(state: SafetyState):
         values = [0.0] * 64
         if operation is ControlOperation.QUERY_HEALTH:
             values[0] = float(state)
+            if publish_health:
+                with client._cache_lock:
+                    client._health_generation += 1
+                    client._health_updated.set()
+        if operation is ControlOperation.GET_HARDWARE_TOPOLOGY:
+            values[0:3] = [1.0, float(grippers[0]), float(grippers[1])]
         if operation is ControlOperation.HAS_GRIPPERS:
-            values[0] = 1.0
+            values[0] = float(any(grippers))
         return SimpleNamespace(lease_id=77, values=values)
 
     client._request = request
@@ -217,7 +253,7 @@ def test_connect_keeps_faulted_runtime_as_maintenance_session() -> None:
         ControlOperation.ACQUIRE_LEASE,
         "START_HEARTBEAT",
         ControlOperation.QUERY_HEALTH,
-        ControlOperation.HAS_GRIPPERS,
+        ControlOperation.GET_HARDWARE_TOPOLOGY,
     ]
 
 
@@ -232,7 +268,7 @@ def test_connect_configures_ready_runtime_after_heartbeat_starts() -> None:
         "START_HEARTBEAT",
         ControlOperation.QUERY_HEALTH,
         ControlOperation.CONFIGURE_MODE,
-        ControlOperation.HAS_GRIPPERS,
+        ControlOperation.GET_HARDWARE_TOPOLOGY,
     ]
 
 
@@ -248,7 +284,55 @@ def test_explicit_maintenance_connect_skips_mode_even_when_ready() -> None:
         ControlOperation.ACQUIRE_LEASE,
         "START_HEARTBEAT",
         ControlOperation.QUERY_HEALTH,
-        ControlOperation.HAS_GRIPPERS,
+        ControlOperation.GET_HARDWARE_TOPOLOGY,
+    ]
+
+
+def test_connect_accepts_independent_left_only_gripper_topology() -> None:
+    client, _ = _connect_client(
+        SafetyState.READY,
+        grippers=(1, 0),
+    )
+
+    client.connect(maintenance=True)
+
+    assert client.has_grippers
+    assert client.left_has_gripper
+    assert not client.right_has_gripper
+
+
+def test_protocol_1_0_gripper_query_remains_supported() -> None:
+    client, operations = _connect_client(
+        SafetyState.READY,
+        protocol_minor=0,
+    )
+
+    client.connect(maintenance=True)
+
+    assert client.left_has_gripper and client.right_has_gripper
+    assert ControlOperation.HAS_GRIPPERS in operations
+    assert ControlOperation.GET_HARDWARE_TOPOLOGY not in operations
+
+
+def test_connect_fails_and_releases_lease_without_a_fresh_health_sample() -> None:
+    client, operations = _connect_client(
+        SafetyState.READY,
+        publish_health=False,
+    )
+
+    with pytest.raises(RuntimeCallError) as raised:
+        client.connect(maintenance=True)
+
+    assert raised.value.code == "TIMEOUT"
+    assert "health sample" in str(raised.value)
+    assert not client.connected
+    assert operations == [
+        ControlOperation.ACQUIRE_LEASE,
+        "START_HEARTBEAT",
+        ControlOperation.QUERY_HEALTH,
+        ControlOperation.GET_HARDWARE_TOPOLOGY,
+        "STOP_HEARTBEAT",
+        ControlOperation.RELEASE_LEASE,
     ]
 
 

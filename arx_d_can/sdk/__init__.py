@@ -1,7 +1,12 @@
 """Yunyi 双臂高层接口。"""
 from __future__ import annotations
 
-from .dual_arm import ArxDCanDualArm, ArxDCanDualArmState, JointLimit
+from .dual_arm import (
+    ArxDCanDualArm,
+    ArxDCanDualArmState,
+    HardwareTopology,
+    JointLimit,
+)
 from .state import ArxDCanState, DualArmGripperState, JointState
 
 for _public_type in (
@@ -11,6 +16,7 @@ for _public_type in (
     DualArmGripperState,
     JointState,
     JointLimit,
+    HardwareTopology,
 ):
     _public_type.__module__ = __name__
 del _public_type
@@ -22,4 +28,5 @@ __all__ = [
     "DualArmGripperState",
     "JointState",
     "JointLimit",
+    "HardwareTopology",
 ]

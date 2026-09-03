@@ -21,6 +21,34 @@ class RuntimeControlMode(IntEnum):
     MIT = 2
 
 
+class EndEffectorType(IntEnum):
+    NONE = 0
+    DAMIAO_GRIPPER = 1
+
+
+@dataclass(frozen=True)
+class HardwareTopology:
+    revision: int
+    left: EndEffectorType
+    right: EndEffectorType
+
+    @property
+    def left_has_gripper(self) -> bool:
+        return self.left is EndEffectorType.DAMIAO_GRIPPER
+
+    @property
+    def right_has_gripper(self) -> bool:
+        return self.right is EndEffectorType.DAMIAO_GRIPPER
+
+    @property
+    def has_grippers(self) -> bool:
+        return self.left_has_gripper or self.right_has_gripper
+
+    @property
+    def has_paired_grippers(self) -> bool:
+        return self.left_has_gripper and self.right_has_gripper
+
+
 class RuntimeOperation(IntEnum):
     NONE = 0
     CONNECT = 1

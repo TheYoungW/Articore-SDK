@@ -17,7 +17,7 @@ def _six_values(text: str) -> tuple[float, ...]:
 
 
 def main(args: argparse.Namespace) -> None:
-    robot = ArxDCanDualArm(control_mode="pv", with_grippers=args.with_grippers)
+    robot = ArxDCanDualArm(control_mode="pv")
     try:
         robot.connect()
         print("default offset:", robot.get_tcp_offset(side=args.side))
@@ -43,11 +43,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=_six_values,
         default=_six_values("-0.004,0,-0.128,0,0,0"),
         help="link7 到 TCP 的 x,y,z,roll,pitch,yaw；默认将夹爪 TCP 缩短 5 cm",
-    )
-    parser.add_argument(
-        "--with-grippers",
-        action=argparse.BooleanOptionalAction,
-        default=True,
     )
     return parser
 

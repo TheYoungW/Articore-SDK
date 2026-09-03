@@ -30,9 +30,11 @@ from .errors import RuntimeCallError
 from .models import (
     BimanualFollowPhase,
     BimanualFollowStatus,
+    EndEffectorType,
     FeedbackIssueScope,
     GravityCompensationPhase,
     GravityCompensationStatus,
+    HardwareTopology,
     JointLimit,
     ProductArmState,
     ProductGripperState,
@@ -173,7 +175,7 @@ class DdsRuntimeClient:
         request_timeout: float = 1.0,
         discovery_timeout: float = 5.0,
         control_mode: RuntimeControlMode = RuntimeControlMode.MIT,
-        with_grippers: bool = True,
+        with_grippers: bool | None = None,
     ) -> None:
         if not robot_id or len(robot_id.encode()) > 63:
             raise ValueError("robot_id must contain 1..63 UTF-8 bytes")
@@ -202,7 +204,15 @@ class DdsRuntimeClient:
         self.control_mode = control_mode
         self._mode_configured = False
         self._maintenance_only = False
-        self._with_grippers = bool(with_grippers)
+        # Retained as a source-compatible constructor argument. Runtime is the
+        # hardware authority and overwrites this hint with its startup scan.
+        self._requested_with_grippers = with_grippers
+        self._hardware_topology = HardwareTopology(
+            revision=0,
+            left=EndEffectorType.NONE,
+            right=EndEffectorType.NONE,
+        )
+        self._with_grippers = False
         self._lease_id = 0
         self._sequence = 0
         self._request_id = 0
@@ -213,6 +223,7 @@ class DdsRuntimeClient:
         self._state: RobotState | None = None
         self._health_wire: Health | None = None
         self._health = _initial_health()
+        self._health_generation = 0
         self._motion_events: dict[int, MotionEvent] = {}
         self._state_arrivals: deque[float] = deque()
         self._transport_error: str | None = None
@@ -220,6 +231,7 @@ class DdsRuntimeClient:
         self._stop = threading.Event()
         self._heartbeat_stop = threading.Event()
         self._discovery_ready = threading.Event()
+        self._health_updated = threading.Event()
 
         self._domain: Domain | None = None
         if network_interfaces is not None or self.robot_ip is not None:
@@ -298,6 +310,18 @@ class DdsRuntimeClient:
     def has_grippers(self) -> bool:
         return self._with_grippers
 
+    @property
+    def hardware_topology(self) -> HardwareTopology:
+        return self._hardware_topology
+
+    @property
+    def left_has_gripper(self) -> bool:
+        return self._hardware_topology.left_has_gripper
+
+    @property
+    def right_has_gripper(self) -> bool:
+        return self._hardware_topology.right_has_gripper
+
     def _next_sequence_locked(self) -> int:
         self._sequence += 1
         return self._sequence
@@ -305,6 +329,12 @@ class DdsRuntimeClient:
     def _next_request_locked(self) -> int:
         self._request_id += 1
         return self._request_id
+
+    def _negotiated_protocol_minor(self) -> int:
+        discovery = getattr(self, "_discovery", None)
+        if discovery is None or int(discovery.protocol_major) != PROTOCOL_MAJOR:
+            return PROTOCOL_MINOR
+        return min(PROTOCOL_MINOR, int(discovery.protocol_minor))
 
     def _request(
         self,
@@ -340,7 +370,7 @@ class DdsRuntimeClient:
             request_id = self._next_request_locked()
             request = ControlRequest(
                 PROTOCOL_MAJOR,
-                PROTOCOL_MINOR,
+                self._negotiated_protocol_minor(),
                 self.robot_id,
                 self.client_id,
                 self.security_identity,
@@ -407,7 +437,7 @@ class DdsRuntimeClient:
         with self._write_lock:
             sample = StreamCommand(
                 PROTOCOL_MAJOR,
-                PROTOCOL_MINOR,
+                self._negotiated_protocol_minor(),
                 self.robot_id,
                 self.client_id,
                 self.security_identity,
@@ -469,6 +499,8 @@ class DdsRuntimeClient:
             with self._cache_lock:
                 self._health_wire = sample
                 self._health = converted
+                self._health_generation += 1
+                self._health_updated.set()
         elif isinstance(sample, MotionEvent) and sample.client_id == self.client_id:
             with self._cache_lock:
                 self._motion_events[sample.request_id] = sample
@@ -509,6 +541,8 @@ class DdsRuntimeClient:
         self._lease_id = int(reply.lease_id)
         self._maintenance_only = bool(maintenance)
         try:
+            with self._cache_lock:
+                health_generation = self._health_generation
             self._start_heartbeat()
             runtime_state = self._query_runtime_state()
             if self._maintenance_only or runtime_state is SafetyState.FAULT:
@@ -523,8 +557,8 @@ class DdsRuntimeClient:
                     mode=int(self.control_mode),
                 )
                 self._mode_configured = True
-            grippers = self._request(ControlOperation.HAS_GRIPPERS)
-            self._with_grippers = bool(round(grippers.values[0]))
+            self._read_hardware_topology()
+            self._wait_for_health_update(health_generation)
         except Exception:
             self._stop_heartbeat()
             try:
@@ -535,6 +569,53 @@ class DdsRuntimeClient:
                 self._mode_configured = False
                 self._maintenance_only = False
             raise
+
+    def _read_hardware_topology(self) -> None:
+        discovery = self._discovery
+        if discovery is not None and int(discovery.protocol_minor) >= 1:
+            reply = self._request(ControlOperation.GET_HARDWARE_TOPOLOGY)
+            try:
+                topology = HardwareTopology(
+                    revision=max(1, int(round(reply.values[0]))),
+                    left=EndEffectorType(int(round(reply.values[1]))),
+                    right=EndEffectorType(int(round(reply.values[2]))),
+                )
+            except (ValueError, TypeError, IndexError) as error:
+                raise RuntimeCallError(
+                    f"Runtime returned an invalid hardware topology: {error}",
+                    code="INTERNAL_ERROR",
+                ) from error
+        else:
+            # Protocol 1.0 exposed only a paired-gripper boolean.
+            reply = self._request(ControlOperation.HAS_GRIPPERS)
+            present = bool(round(reply.values[0]))
+            end_effector = (
+                EndEffectorType.DAMIAO_GRIPPER
+                if present
+                else EndEffectorType.NONE
+            )
+            topology = HardwareTopology(
+                revision=1,
+                left=end_effector,
+                right=end_effector,
+            )
+        self._hardware_topology = topology
+        self._with_grippers = topology.has_grippers
+
+    def _wait_for_health_update(self, previous_generation: int) -> None:
+        deadline = time.monotonic() + self.request_timeout
+        while True:
+            with self._cache_lock:
+                if self._health_generation > previous_generation:
+                    return
+                self._health_updated.clear()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                detail = self._transport_error or (
+                    "Runtime health sample was not received during connect"
+                )
+                raise RuntimeCallError(detail, code="TIMEOUT")
+            self._health_updated.wait(remaining)
 
     def _query_runtime_state(self) -> SafetyState:
         reply = self._request(ControlOperation.QUERY_HEALTH)
@@ -640,8 +721,12 @@ class DdsRuntimeClient:
             has_grippers=self._with_grippers,
             left=arm(0),
             right=arm(7),
-            left_gripper=unavailable if self._with_grippers else None,
-            right_gripper=unavailable if self._with_grippers else None,
+            left_gripper=(
+                unavailable if self._hardware_topology.left_has_gripper else None
+            ),
+            right_gripper=(
+                unavailable if self._hardware_topology.right_has_gripper else None
+            ),
             motion_arrived=sample.motion_arrived,
             timestamp_ns=int(sample.source_timestamp_ns),
             sequence=int(sample.sequence_id),

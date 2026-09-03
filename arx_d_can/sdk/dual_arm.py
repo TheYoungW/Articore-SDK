@@ -8,6 +8,7 @@ from typing import Sequence
 from arx_d_can._dds import (
     DdsRuntimeClient,
     GravityCompensationStatus,
+    HardwareTopology,
     JointLimit,
     BimanualFollowStatus,
     RuntimeControlMode,
@@ -94,7 +95,7 @@ class ArxDCanDualArm:
         robot_ip: str | None = None,
         network_interfaces: Sequence[str] | None = None,
         control_mode: str = "mit",
-        with_grippers: bool = True,
+        with_grippers: bool | None = None,
         request_timeout: float = 1.0,
         discovery_timeout: float = 5.0,
         _transport: DdsRuntimeClient | None = None,
@@ -123,6 +124,19 @@ class ArxDCanDualArm:
     @property
     def has_grippers(self) -> bool:
         return self._runtime.has_grippers
+
+    @property
+    def hardware_topology(self) -> HardwareTopology:
+        """Runtime 启动时扫描并在本进程生命周期内冻结的物理拓扑。"""
+        return self._runtime.hardware_topology
+
+    @property
+    def left_has_gripper(self) -> bool:
+        return self._runtime.left_has_gripper
+
+    @property
+    def right_has_gripper(self) -> bool:
+        return self._runtime.right_has_gripper
 
     @property
     def connected(self) -> bool:

@@ -16,8 +16,9 @@ cd ~/Articore-SDK
 pip install -e .
 ```
 
-SDK 固定依赖 `cyclonedds==11.0.1`，与 RK3588 服务的 Cyclone DDS 版本和 DDS v1
-协议一致。原来的 `motor-drive-layer`、ctypes `_motor_abi` 和本地 native wheel 已从
+SDK 固定依赖 `cyclonedds==11.0.1`，与 RK3588 服务的 Cyclone DDS 版本和 DDS v1.1
+协议一致，并可回退连接 v1.0 Runtime。原来的 `motor-drive-layer`、ctypes
+`_motor_abi` 和本地 native wheel 已从
 1.0 包中删除。
 
 ## RK3588 前提
@@ -75,6 +76,12 @@ finally:
   Cyclone DDS 默认配置或 `CYCLONEDDS_URI`。
 - `control_mode="mit" | "pv"`。
 - `request_timeout` 与 `discovery_timeout`：请求及发现超时秒数。
+
+Runtime v1.1 在每次服务启动时分别扫描左右 ID8 末端，允许仅左侧、仅右侧、双侧或
+不安装夹爪。Python 不配置物理拓扑，连接后通过 `robot.hardware_topology`、
+`robot.left_has_gripper` 和 `robot.right_has_gripper` 读取扫描结果。旧的
+`with_grippers` 构造参数仅为源码兼容而保留，不再覆盖板端扫描结果。更换末端应先
+失能并重启 Runtime，新的 Runtime 进程会重新扫描，但不会自动 enable。
 
 现有示例不传 `robot_ip`，可以先设置环境变量，让全部示例都直连这台机械臂：
 
