@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arx-d-can"
-version = "1.0.0"
+version = "1.0.2"
 description = "Yunyi V1.0 dual-arm Python SDK for the RK3588 Cyclone DDS Runtime service."
 readme = "README.md"
 requires-python = ">=3.10"

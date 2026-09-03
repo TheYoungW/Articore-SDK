@@ -41,8 +41,8 @@ class FakeTransport:
         )
         self.health = type("Health", (), {"state": SafetyState.READY})()
 
-    def connect(self) -> None:
-        self.calls.append(("connect",))
+    def connect(self, *, maintenance: bool = False) -> None:
+        self.calls.append(("connect", maintenance))
         self.connected = True
 
     def disconnect(self) -> None:
@@ -115,11 +115,20 @@ def test_lifecycle_delegates_to_control_lease_session() -> None:
     robot.disconnect()
 
     assert transport.calls == [
-        ("connect",),
+        ("connect", False),
         ("enable", None),
         ("disable", None),
         ("disconnect",),
     ]
+
+
+def test_explicit_maintenance_connection_is_forwarded() -> None:
+    transport = FakeTransport()
+    robot = ArxDCanDualArm(_transport=transport)
+
+    robot.connect(maintenance=True)
+
+    assert transport.calls == [("connect", True)]
 
 
 def test_pv_and_mit_frames_keep_left_then_right_wire_order() -> None:

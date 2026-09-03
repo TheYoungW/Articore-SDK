@@ -167,8 +167,12 @@ class ArxDCanDualArm:
     def bimanual_follow_status(self) -> BimanualFollowStatus:
         return self._runtime.bimanual_follow_status
 
-    def connect(self) -> None:
-        self._runtime.connect()
+    def connect(self, *, maintenance: bool = False) -> None:
+        """建立控制租约；维护连接不会自动配置控制模式。"""
+        if maintenance:
+            self._runtime.connect(maintenance=True)
+        else:
+            self._runtime.connect()
 
     def disconnect(self) -> None:
         self._runtime.disconnect()
@@ -429,7 +433,7 @@ class ArxDCanDualArm:
         return self._runtime.set_zero()
 
     def clear_motor_faults(self) -> None:
-        """Clear recoverable faults without moving or changing calibration."""
+        """清除可恢复故障；维护连接中不会随后自动配置控制模式。"""
         self._runtime.clear_faults()
 
     def __enter__(self) -> ArxDCanDualArm:

@@ -25,10 +25,10 @@ SDK 固定依赖 `cyclonedds==11.0.1`，与 RK3588 服务的 Cyclone DDS 版本�
 先在板端安装并启动 `articore-runtime-service`：
 
 ```bash
-sudo apt install /tmp/articore-runtime-service_1.0.0_arm64.deb
+sudo apt install /tmp/articore-runtime-service_1.0.3_arm64.deb
 sudo systemctl enable --now articore-can.service
-sudo systemctl enable --now articore-runtime-service.service
-systemctl status articore-runtime-service.service --no-pager
+sudo systemctl enable --now articore-runtime.service
+systemctl status articore-runtime.service --no-pager
 ```
 
 客户端和板端必须使用相同的 `robot_id`、DDS Domain ID，并且所选网卡 IP 可达。默认
@@ -48,7 +48,7 @@ robot = ArxDCanDualArm(
 )
 
 try:
-    robot.connect()  # 等待发现、获取全机器人唯一控制租约、配置模式
+    robot.connect()  # 获取租约并保活；READY 时配置模式，FAULT 时进入维护会话
     robot.enable()
     robot.set_joint_pv(
         left=[0.0] * 7,
@@ -90,6 +90,16 @@ export ARTICORE_ROBOT_IP=192.168.1.185
 整台机器人同一时刻只有一个控制租约。SDK 在 `connect()` 成功后以 20 Hz 保活；租约
 丢失后，板端会撤销流式目标、取消有限运动并走 Runtime 安全停止路径。重新连接只会
 重新获取租约，不会自动使能电机。
+
+Runtime 已处于 `FAULT` 时，`connect()` 会保留租约和 heartbeat，但不会先发送
+`CONFIGURE_MODE`。此维护会话允许应用显式调用 `clear_motor_faults()`；清错成功后
+SDK 才配置构造时要求的 PV/MIT 模式。连接、清错和模式配置均不会自动 enable，也
+不会发送运动目标。急停锁存不能由普通清错解除，必须按 Runtime 的恢复流程处理。
+
+纯维护工具应显式调用 `connect(maintenance=True)`。这种连接即使 Runtime 当前为
+`READY` 也不会配置模式，而且 `clear_motor_faults()` 成功后仍保持未配置、失能状态；
+需要进入控制流程时，先断开维护连接，再使用普通 `connect()` 建立业务会话。这样可
+避免电机尚未静止时，清错工具在连接阶段被 `CONFIGURE_MODE` 拦截。
 
 - `set_joint_pv()`、`set_joint_mit()` 和 `set_joint_mit_fast()` 发送最新完整 14 轴目标。
   流式 Topic 为 Best Effort、KeepLast(1)、20 ms Lifespan；丢包时不补发旧目标。

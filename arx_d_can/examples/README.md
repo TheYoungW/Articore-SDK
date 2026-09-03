@@ -124,6 +124,11 @@ python -m arx_d_can.examples.maintenance.example_02_recover_to_zero
 python -m arx_d_can.examples.maintenance.example_03_set_zero_current_position
 ```
 
+`example_01_clear_faults` 使用 `connect(maintenance=True)`，只获取并维持控制
+租约，不会在连接或清错成功后配置模式，全程不会自动使能或发送运动命令。若清错
+失败，Runtime 返回的电机、操作和底层原因会原样抛出；不得用重启服务替代故障处理。
+急停锁存仍会被 Runtime 拒绝，必须使用经过现场安全确认的恢复流程。
+
 PV 单点控制使用 `velocity=1..100` 的 `set_joint_pv()`；默认 50。调用只提交最终
 目标，新目标替换旧目标并保留 Runtime 的逐关节 V 爬坡状态。100% 速度上限为
 `[180,180,180,225,225,225,225] deg/s`，100% 加速度上限为

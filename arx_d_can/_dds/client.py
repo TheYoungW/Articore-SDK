@@ -200,6 +200,8 @@ class DdsRuntimeClient:
         self.request_timeout = float(request_timeout)
         self.discovery_timeout = float(discovery_timeout)
         self.control_mode = control_mode
+        self._mode_configured = False
+        self._maintenance_only = False
         self._with_grippers = bool(with_grippers)
         self._lease_id = 0
         self._sequence = 0
@@ -471,8 +473,13 @@ class DdsRuntimeClient:
             with self._cache_lock:
                 self._motion_events[sample.request_id] = sample
 
-    def connect(self) -> None:
+    def connect(self, *, maintenance: bool = False) -> None:
         if self.connected:
+            if bool(maintenance) != self._maintenance_only:
+                raise RuntimeCallError(
+                    "disconnect before changing the session maintenance mode",
+                    code="WRONG_STATE",
+                )
             return
         if self._closed:
             raise RuntimeCallError("DDS client is closed", code="TRANSPORT_ERROR")
@@ -500,21 +507,57 @@ class DdsRuntimeClient:
             raise RuntimeCallError(detail, code="TIMEOUT")
         reply = self._request(ControlOperation.ACQUIRE_LEASE, lease_id=0)
         self._lease_id = int(reply.lease_id)
+        self._maintenance_only = bool(maintenance)
         try:
-            self._request(ControlOperation.CONFIGURE_MODE, mode=int(self.control_mode))
+            self._start_heartbeat()
+            runtime_state = self._query_runtime_state()
+            if self._maintenance_only or runtime_state is SafetyState.FAULT:
+                # A faulted Runtime is still a valid maintenance endpoint.
+                # Explicit maintenance sessions also skip mode configuration
+                # when Runtime is READY. Keep the lease alive so maintenance
+                # operations can be sent without enabling or moving anything.
+                self._mode_configured = False
+            else:
+                self._request(
+                    ControlOperation.CONFIGURE_MODE,
+                    mode=int(self.control_mode),
+                )
+                self._mode_configured = True
             grippers = self._request(ControlOperation.HAS_GRIPPERS)
             self._with_grippers = bool(round(grippers.values[0]))
         except Exception:
+            self._stop_heartbeat()
             try:
-                self._request(ControlOperation.RELEASE_LEASE)
+                if self._lease_id:
+                    self._request(ControlOperation.RELEASE_LEASE)
             finally:
                 self._lease_id = 0
+                self._mode_configured = False
+                self._maintenance_only = False
             raise
+
+    def _query_runtime_state(self) -> SafetyState:
+        reply = self._request(ControlOperation.QUERY_HEALTH)
+        try:
+            return SafetyState(round(reply.values[0]))
+        except (IndexError, TypeError, ValueError) as error:
+            raise RuntimeCallError(
+                "Runtime returned an invalid safety state",
+                code="INTERNAL_ERROR",
+            ) from error
+
+    def _start_heartbeat(self) -> None:
         self._heartbeat_stop.clear()
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop, name="articore-dds-heartbeat", daemon=True
         )
         self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        self._heartbeat_stop.set()
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=0.3)
+            self._heartbeat_thread = None
 
     def _heartbeat_loop(self) -> None:
         failures = 0
@@ -531,20 +574,21 @@ class DdsRuntimeClient:
                 failures += 1
                 if failures >= 2:
                     self._lease_id = 0
+                    self._mode_configured = False
                     return
 
     def disconnect(self) -> None:
         if self._closed:
             return
-        self._heartbeat_stop.set()
-        if self._heartbeat_thread is not None:
-            self._heartbeat_thread.join(timeout=0.3)
+        self._stop_heartbeat()
         if self._lease_id:
             try:
                 self._request(ControlOperation.RELEASE_LEASE)
             except RuntimeCallError:
                 pass
             self._lease_id = 0
+            self._mode_configured = False
+        self._maintenance_only = False
         self.close()
 
     def close(self) -> None:
@@ -671,8 +715,10 @@ class DdsRuntimeClient:
         return True
 
     def configure_mode(self, mode: RuntimeControlMode) -> None:
+        self._mode_configured = False
         self._request(ControlOperation.CONFIGURE_MODE, mode=int(mode))
         self.control_mode = mode
+        self._mode_configured = True
 
     def set_joint_pv(self, positions: Sequence[float], speed_percent: float) -> None:
         self._stream(StreamKind.PV, positions=positions, speed_percent=speed_percent)
@@ -853,7 +899,13 @@ class DdsRuntimeClient:
         return True
 
     def clear_faults(self) -> None:
+        self._mode_configured = False
         self._request(ControlOperation.CLEAR_FAULTS)
+        if self._maintenance_only:
+            return
+        # CLEAR_FAULTS only restores a disabled READY Runtime. Configure the
+        # caller's requested mode afterwards; never enable or move here.
+        self.configure_mode(self.control_mode)
 
 
 __all__ = ["DdsRuntimeClient"]

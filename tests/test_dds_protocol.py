@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import queue
 import threading
+from types import SimpleNamespace
 
 import pytest
 
 from arx_d_can._dds.client import DdsRuntimeClient, _cyclone_xml
 from arx_d_can._dds.errors import RuntimeCallError
+from arx_d_can._dds.models import RuntimeControlMode, SafetyState
 from arx_d_can._dds.types import (
     PROTOCOL_MAJOR,
     PROTOCOL_MINOR,
@@ -159,3 +161,139 @@ def test_request_validates_fixed_arrays_before_writing() -> None:
     with pytest.raises(ValueError):
         client._request(ControlOperation.SOLVE_IK, pose_a=(0.0,) * 5)
     assert captured == []
+
+
+def _connect_client(state: SafetyState):
+    client = DdsRuntimeClient.__new__(DdsRuntimeClient)
+    client._closed = False
+    client._lease_id = 0
+    client._mode_configured = False
+    client._maintenance_only = False
+    client._with_grippers = True
+    client.control_mode = RuntimeControlMode.PV
+    client.discovery_timeout = 0.1
+    client.domain_id = 0
+    client.robot_id = "yunyi-001"
+    client._cache_lock = threading.Lock()
+    client._discovery = Discovery(
+        PROTOCOL_MAJOR,
+        PROTOCOL_MINOR,
+        client.robot_id,
+        "runtime",
+        "",
+        1,
+        "1.0.2",
+        0,
+        True,
+    )
+    client._discovery_ready = threading.Event()
+    operations = []
+
+    def request(operation, **_kwargs):
+        operations.append(operation)
+        if operation is ControlOperation.ACQUIRE_LEASE:
+            return SimpleNamespace(lease_id=77, values=[0.0] * 64)
+        values = [0.0] * 64
+        if operation is ControlOperation.QUERY_HEALTH:
+            values[0] = float(state)
+        if operation is ControlOperation.HAS_GRIPPERS:
+            values[0] = 1.0
+        return SimpleNamespace(lease_id=77, values=values)
+
+    client._request = request
+    client._start_heartbeat = lambda: operations.append("START_HEARTBEAT")
+    client._stop_heartbeat = lambda: operations.append("STOP_HEARTBEAT")
+    return client, operations
+
+
+def test_connect_keeps_faulted_runtime_as_maintenance_session() -> None:
+    client, operations = _connect_client(SafetyState.FAULT)
+
+    client.connect()
+
+    assert client.connected
+    assert not client._mode_configured
+    assert operations == [
+        ControlOperation.ACQUIRE_LEASE,
+        "START_HEARTBEAT",
+        ControlOperation.QUERY_HEALTH,
+        ControlOperation.HAS_GRIPPERS,
+    ]
+
+
+def test_connect_configures_ready_runtime_after_heartbeat_starts() -> None:
+    client, operations = _connect_client(SafetyState.READY)
+
+    client.connect()
+
+    assert client._mode_configured
+    assert operations == [
+        ControlOperation.ACQUIRE_LEASE,
+        "START_HEARTBEAT",
+        ControlOperation.QUERY_HEALTH,
+        ControlOperation.CONFIGURE_MODE,
+        ControlOperation.HAS_GRIPPERS,
+    ]
+
+
+def test_explicit_maintenance_connect_skips_mode_even_when_ready() -> None:
+    client, operations = _connect_client(SafetyState.READY)
+
+    client.connect(maintenance=True)
+
+    assert client.connected
+    assert client._maintenance_only
+    assert not client._mode_configured
+    assert operations == [
+        ControlOperation.ACQUIRE_LEASE,
+        "START_HEARTBEAT",
+        ControlOperation.QUERY_HEALTH,
+        ControlOperation.HAS_GRIPPERS,
+    ]
+
+
+def test_clear_faults_configures_requested_mode_only_after_success() -> None:
+    client, operations = _connect_client(SafetyState.FAULT)
+    client._lease_id = 77
+
+    client.clear_faults()
+
+    assert operations == [
+        ControlOperation.CLEAR_FAULTS,
+        ControlOperation.CONFIGURE_MODE,
+    ]
+    assert client._mode_configured
+
+
+def test_maintenance_clear_faults_never_configures_mode() -> None:
+    client, operations = _connect_client(SafetyState.READY)
+    client._lease_id = 77
+    client._maintenance_only = True
+
+    client.clear_faults()
+
+    assert operations == [ControlOperation.CLEAR_FAULTS]
+    assert not client._mode_configured
+
+
+def test_failed_clear_faults_does_not_configure_enable_or_move() -> None:
+    client, operations = _connect_client(SafetyState.FAULT)
+    client._lease_id = 77
+    client._mode_configured = True
+
+    def reject_clear(operation, **_kwargs):
+        operations.append(operation)
+        if operation is ControlOperation.CLEAR_FAULTS:
+            raise RuntimeCallError(
+                "CLEAR_FAULTS rejected: current_state=FAULT, "
+                "fault_reason=emergency stop requested",
+                code="WRONG_STATE",
+            )
+        return SimpleNamespace(lease_id=77, values=[0.0] * 64)
+
+    client._request = reject_clear
+    with pytest.raises(RuntimeCallError, match="emergency stop requested"):
+        client.clear_faults()
+
+    assert operations == [ControlOperation.CLEAR_FAULTS]
+    assert not client._mode_configured
