@@ -484,7 +484,10 @@ class DdsRuntimeClient:
             if waiter is not None:
                 waiter.put_nowait(sample)
         elif isinstance(sample, RobotState):
-            if sample.protocol_major != PROTOCOL_MAJOR:
+            if (
+                sample.protocol_major != PROTOCOL_MAJOR
+                or sample.protocol_minor < PROTOCOL_MINOR
+            ):
                 return
             now = time.monotonic()
             with self._cache_lock:
@@ -524,6 +527,15 @@ class DdsRuntimeClient:
                 if discovery.protocol_major != PROTOCOL_MAJOR:
                     raise RuntimeCallError(
                         "Runtime protocol major version mismatch",
+                        code="VERSION_MISMATCH",
+                    )
+                if discovery.protocol_minor < PROTOCOL_MINOR:
+                    raise RuntimeCallError(
+                        "Runtime DDS protocol is too old for this SDK: "
+                        f"runtime={discovery.protocol_major}."
+                        f"{discovery.protocol_minor}, "
+                        f"required>={PROTOCOL_MAJOR}.{PROTOCOL_MINOR}; "
+                        "RobotState is an incompatible @final type",
                         code="VERSION_MISMATCH",
                     )
                 if discovery.ready:
@@ -716,17 +728,22 @@ class DdsRuntimeClient:
                 ),
             )
 
-        unavailable = ProductGripperState(False, 0.0, 0)
+        def gripper(index: int) -> ProductGripperState | None:
+            available = bool(sample.gripper_available[index])
+            feedback_valid = bool(sample.gripper_feedback_valid[index])
+            opening = float(sample.gripper_openings[index])
+            if not available or not feedback_valid or not math.isfinite(opening):
+                return None
+            # Protocol 1.2 publishes measured opening and validity. Force level,
+            # power state and temperatures are not part of RobotState yet.
+            return ProductGripperState(True, opening, 0)
+
         return ProductState(
             has_grippers=self._with_grippers,
             left=arm(0),
             right=arm(7),
-            left_gripper=(
-                unavailable if self._hardware_topology.left_has_gripper else None
-            ),
-            right_gripper=(
-                unavailable if self._hardware_topology.right_has_gripper else None
-            ),
+            left_gripper=gripper(0),
+            right_gripper=gripper(1),
             motion_arrived=sample.motion_arrived,
             timestamp_ns=int(sample.source_timestamp_ns),
             sequence=int(sample.sequence_id),

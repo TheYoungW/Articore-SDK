@@ -16,8 +16,9 @@ cd ~/Articore-SDK
 pip install -e .
 ```
 
-SDK 固定依赖 `cyclonedds==11.0.1`，与 RK3588 服务的 Cyclone DDS 版本和 DDS v1.1
-协议一致，并可回退连接 v1.0 Runtime。原来的 `motor-drive-layer`、ctypes
+SDK 1.0.3 固定依赖 `cyclonedds==11.0.1`，对应 RK3588 Runtime 1.2.0 和 DDS v1.2
+协议。`RobotState` 是 DDS `@final` 类型，v1.2 新增夹爪状态字段后不再兼容
+Runtime v1.0/v1.1；连接旧服务会明确返回 `VERSION_MISMATCH`。原来的 `motor-drive-layer`、ctypes
 `_motor_abi` 和本地 native wheel 已从
 1.0 包中删除。
 
@@ -82,6 +83,11 @@ Runtime v1.1 在每次服务启动时分别扫描左右 ID8 末端，允许仅�
 `robot.left_has_gripper` 和 `robot.right_has_gripper` 读取扫描结果。旧的
 `with_grippers` 构造参数仅为源码兼容而保留，不再覆盖板端扫描结果。更换末端应先
 失能并重启 Runtime，新的 Runtime 进程会重新扫描，但不会自动 enable。
+
+Runtime v1.2 还会在 500 Hz `RobotState` 中发布左右夹爪开合度。SDK 只有在对应侧
+`gripper_available` 和 `gripper_feedback_valid` 同时为真且开合度为有限值时，才在
+`read_state()` 的 `state.left.gripper` / `state.right.gripper` 中返回该侧夹爪状态；
+反馈过期时返回 `None`，物理安装情况仍以 topology 属性为准。
 
 现有示例不传 `robot_ip`，可以先设置环境变量，让全部示例都直连这台机械臂：
 

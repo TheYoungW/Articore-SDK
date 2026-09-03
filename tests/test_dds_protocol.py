@@ -8,7 +8,12 @@ import pytest
 
 from arx_d_can._dds.client import DdsRuntimeClient, _cyclone_xml
 from arx_d_can._dds.errors import RuntimeCallError
-from arx_d_can._dds.models import RuntimeControlMode, SafetyState
+from arx_d_can._dds.models import (
+    EndEffectorType,
+    HardwareTopology,
+    RuntimeControlMode,
+    SafetyState,
+)
 from arx_d_can._dds.types import (
     PROTOCOL_MAJOR,
     PROTOCOL_MINOR,
@@ -17,6 +22,7 @@ from arx_d_can._dds.types import (
     ControlRequest,
     Discovery,
     ProtocolError,
+    RobotState,
     StreamCommand,
     StreamKind,
 )
@@ -24,7 +30,7 @@ from arx_d_can._dds.types import (
 
 def test_wire_enums_and_type_names_match_cpp_idl() -> None:
     assert PROTOCOL_MAJOR == 1
-    assert PROTOCOL_MINOR == 1
+    assert PROTOCOL_MINOR == 2
     assert ProtocolError.OK.value == 0
     assert ProtocolError.INTERNAL_ERROR.value == 9
     assert ControlOperation.ACQUIRE_LEASE.value == 0
@@ -71,6 +77,27 @@ def test_fixed_wire_types_serialize() -> None:
         [0.0] * 14,
         50.0,
     )
+    state = RobotState(
+        1,
+        2,
+        "yunyi-001",
+        "runtime",
+        "",
+        5,
+        123456,
+        [0.0] * 14,
+        [0.0] * 14,
+        [0.0] * 14,
+        [30.0] * 14,
+        [31.0] * 14,
+        0,
+        0,
+        0,
+        [321.0, 654.0],
+        [True, True],
+        [True, False],
+        False,
+    )
 
     assert ControlRequest.__idl__.deserialize(
         ControlRequest.__idl__.serialize(request)
@@ -78,6 +105,9 @@ def test_fixed_wire_types_serialize() -> None:
     assert StreamCommand.__idl__.deserialize(
         StreamCommand.__idl__.serialize(stream)
     ) == stream
+    assert RobotState.__idl__.deserialize(
+        RobotState.__idl__.serialize(state)
+    ) == state
 
 
 def test_explicit_interfaces_and_peer_produce_cyclone_config() -> None:
@@ -150,11 +180,11 @@ def test_request_correlates_reply_and_carries_lease_sequence() -> None:
     assert captured[0].scalar == pytest.approx([50.0] + [0.0] * 7)
 
 
-def test_requests_negotiate_down_to_discovered_protocol_1_0() -> None:
+def test_requests_use_discovered_protocol_1_2() -> None:
     client, captured = _request_client()
     client._discovery = Discovery(
         PROTOCOL_MAJOR,
-        0,
+        PROTOCOL_MINOR,
         client.robot_id,
         "runtime",
         "",
@@ -166,7 +196,7 @@ def test_requests_negotiate_down_to_discovered_protocol_1_0() -> None:
 
     client._request(ControlOperation.QUERY_HEALTH)
 
-    assert captured[0].protocol_minor == 0
+    assert captured[0].protocol_minor == PROTOCOL_MINOR
 
 
 def test_protocol_error_is_exposed_as_stable_runtime_error_code() -> None:
@@ -212,7 +242,7 @@ def _connect_client(
         "runtime",
         "",
         1,
-        "1.0.2",
+        "1.2.0",
         0,
         True,
     )
@@ -301,17 +331,80 @@ def test_connect_accepts_independent_left_only_gripper_topology() -> None:
     assert not client.right_has_gripper
 
 
-def test_protocol_1_0_gripper_query_remains_supported() -> None:
+def test_connect_rejects_pre_1_2_runtime_before_acquiring_lease() -> None:
     client, operations = _connect_client(
         SafetyState.READY,
-        protocol_minor=0,
+        protocol_minor=1,
     )
 
-    client.connect(maintenance=True)
+    with pytest.raises(RuntimeCallError) as raised:
+        client.connect(maintenance=True)
 
-    assert client.left_has_gripper and client.right_has_gripper
-    assert ControlOperation.HAS_GRIPPERS in operations
-    assert ControlOperation.GET_HARDWARE_TOPOLOGY not in operations
+    assert raised.value.code == "VERSION_MISMATCH"
+    assert "required>=1.2" in str(raised.value)
+    assert operations == []
+
+
+def _state_client(sample: RobotState) -> DdsRuntimeClient:
+    client = DdsRuntimeClient.__new__(DdsRuntimeClient)
+    client._cache_lock = threading.Lock()
+    client._state = sample
+    client._with_grippers = True
+    client._hardware_topology = HardwareTopology(
+        revision=1,
+        left=EndEffectorType.DAMIAO_GRIPPER,
+        right=EndEffectorType.DAMIAO_GRIPPER,
+    )
+    return client
+
+
+def _robot_state(
+    *,
+    openings: tuple[float, float] = (321.0, 654.0),
+    available: tuple[bool, bool] = (True, True),
+    feedback_valid: tuple[bool, bool] = (True, False),
+) -> RobotState:
+    return RobotState(
+        PROTOCOL_MAJOR,
+        PROTOCOL_MINOR,
+        "yunyi-001",
+        "runtime",
+        "",
+        7,
+        123456,
+        [float(index) for index in range(14)],
+        [0.1] * 14,
+        [0.2] * 14,
+        [30.0] * 14,
+        [31.0] * 14,
+        0,
+        0,
+        0,
+        list(openings),
+        list(available),
+        list(feedback_valid),
+        True,
+    )
+
+
+def test_state_exposes_only_fresh_installed_gripper_feedback() -> None:
+    state = _state_client(_robot_state()).state
+
+    assert state.has_grippers
+    assert state.left_gripper is not None
+    assert state.left_gripper.available
+    assert state.left_gripper.opening == pytest.approx(321.0)
+    assert state.right_gripper is None
+
+
+def test_state_rejects_non_finite_gripper_opening_even_when_marked_valid() -> None:
+    state = _state_client(
+        _robot_state(openings=(float("nan"), 654.0), feedback_valid=(True, True))
+    ).state
+
+    assert state.left_gripper is None
+    assert state.right_gripper is not None
+    assert state.right_gripper.opening == pytest.approx(654.0)
 
 
 def test_connect_fails_and_releases_lease_without_a_fresh_health_sample() -> None:

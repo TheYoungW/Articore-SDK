@@ -19,7 +19,7 @@ from cyclonedds.idl.types import (
 
 
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 1
+PROTOCOL_MINOR = 2
 ARM_DOF = 7
 ROBOT_DOF = 14
 POSE_DOF = 6
@@ -197,6 +197,9 @@ class RobotState(IdlStruct, typename="articore_wire.RobotState"):
     enabled_mask: uint32
     enabled_valid_mask: uint32
     temperature_valid_mask: uint32
+    gripper_openings: array[float32, 2]
+    gripper_available: array[bool, 2]
+    gripper_feedback_valid: array[bool, 2]
     motion_arrived: bool
 
     key("robot_id")
