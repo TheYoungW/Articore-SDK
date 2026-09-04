@@ -154,28 +154,31 @@ def test_orientation_error_handles_equivalent_rpy_at_singularity() -> None:
 
 
 @pytest.mark.parametrize(
-    ("side", "center", "outward_sign"),
+    ("side", "start", "end", "expected_y_delta"),
     (
         (
             "left",
-            linear.DEFAULT_LEFT_CENTER_POSE,
-            1.0,
+            linear.DEFAULT_LEFT_START_POSE,
+            linear.DEFAULT_LEFT_END_POSE,
+            linear.LINE_DISTANCE_M,
         ),
         (
             "right",
-            linear.DEFAULT_RIGHT_CENTER_POSE,
-            -1.0,
+            linear.DEFAULT_RIGHT_START_POSE,
+            linear.DEFAULT_RIGHT_END_POSE,
+            -linear.LINE_DISTANCE_M,
         ),
     ),
 )
-def test_linear_example_submits_runtime_segments_for_a_mirrored_triangle(
-    monkeypatch, side, center, outward_sign,
+def test_linear_example_submits_one_outward_segment(
+    monkeypatch, side, start, end, expected_y_delta,
 ) -> None:
     calls: list[tuple] = []
 
     class FakeRobot:
         def __init__(self, *, control_mode: str) -> None:
             calls.append(("create", control_mode))
+            self.state_reads = 0
 
         def connect(self) -> None:
             calls.append(("connect",))
@@ -190,7 +193,17 @@ def test_linear_example_submits_runtime_segments_for_a_mirrored_triangle(
             calls.append(("move_linear", kwargs))
 
         def read_state(self):
-            return SimpleNamespace(motion_arrived=True)
+            states = (
+                # Baseline followed by one stale cached sample, then the
+                # post-submit running and completed states.
+                SimpleNamespace(sequence=40, motion_arrived=True),
+                SimpleNamespace(sequence=40, motion_arrived=True),
+                SimpleNamespace(sequence=41, motion_arrived=False),
+                SimpleNamespace(sequence=42, motion_arrived=True),
+            )
+            state = states[min(self.state_reads, len(states) - 1)]
+            self.state_reads += 1
+            return state
 
         def get_health(self):
             return _health()
@@ -213,23 +226,16 @@ def test_linear_example_submits_runtime_segments_for_a_mirrored_triangle(
     assert calls[-1] == ("disconnect",)
     assert calls[0] == ("create", "pv")
     move_calls = [call[1] for call in calls if call[0] == "move_linear"]
-    assert len(move_calls) == 4
+    assert len(move_calls) == 1
     assert all("duration_s" not in call for call in move_calls)
     assert all("poses" not in call for call in move_calls)
     assert ("set_speed_percent", 40.0) in calls
-    path = tuple(call["end_pose"] for call in move_calls)
-    assert len(path) == 4
-    assert path[-1] == path[0]
-    vertices = path[:-1]
-    for first, second in zip(vertices, vertices[1:] + vertices[:1]):
-        distance = math.dist(first[:3], second[:3])
-        assert distance == pytest.approx(linear.TRIANGLE_SIDE_M)
-    centroid = tuple(
-        sum(vertex[index] for vertex in vertices) / 3.0
-        for index in range(3)
+    assert move_calls[0]["start_pose"] == start
+    assert move_calls[0]["end_pose"] == end
+    assert math.dist(start[:3], end[:3]) == pytest.approx(
+        linear.LINE_DISTANCE_M
     )
-    assert centroid == pytest.approx(center[:3])
-    assert (vertices[0][1] - center[1]) * outward_sign > 0.0
+    assert end[1] - start[1] == pytest.approx(expected_y_delta)
 
 
 def test_linear_example_reports_runtime_fault(
@@ -240,6 +246,7 @@ def test_linear_example_reports_runtime_fault(
     class FakeRobot:
         def __init__(self, *, control_mode: str) -> None:
             assert control_mode == "pv"
+            self.state_reads = 0
 
         def connect(self) -> None:
             pass
@@ -254,7 +261,13 @@ def test_linear_example_reports_runtime_fault(
             calls.append(("move",))
 
         def read_state(self):
-            return SimpleNamespace(motion_arrived=False)
+            states = (
+                SimpleNamespace(sequence=50, motion_arrived=True),
+                SimpleNamespace(sequence=51, motion_arrived=False),
+            )
+            state = states[min(self.state_reads, len(states) - 1)]
+            self.state_reads += 1
+            return state
 
         def get_health(self):
             return _health(

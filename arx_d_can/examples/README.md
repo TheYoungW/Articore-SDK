@@ -40,10 +40,8 @@ python -m arx_d_can.examples.control.example_03_send_position_pv \
 python -m arx_d_can.examples.control.example_04_send_position_mit \
   --left "0,0,0,20,0,-20,0" \
   --right "0,0,0,20,0,-20,0" \
-  --kp 20 \
-  --kd 1 \
-  --max-step-deg 2 \
-  --step-interval 0.5
+  --kp "40,40,35,30,25,20,15" \
+  --kd "2,2,1.8,1.5,1.2,1.0,0.8"
 
 # 遥操/高频控制接口：上层每次收到新目标时重复调用
 # 安全警告：只使用小角度连续目标；请勿提交与当前姿态差异过大的目标
@@ -138,14 +136,14 @@ PV 单点控制使用 `velocity=1..100` 的 `set_joint_pv()`；默认 50。调�
 Runtime 逐关节默认值。SDK 不对 `velocity` 重复缩放，也不静默裁剪 Runtime 拒绝的配置。
 SDK 不公开 Raw/流式 PV，不生成 P 步进、速度包络或轨迹重采样。
 
-标准 MIT 使用 `set_joint_mit()`，显式传入双臂 `q/dq/tau_ff` 和 `kp/kd`；
-`kp/kd` 可以是广播标量或 14 轴数组，SDK 不选择控制增益。快速 MIT 使用
+标准 MIT 使用 `set_joint_mit()`，显式传入双臂 `q/dq/tau_ff` 和单臂 7 轴
+`kp/kd`；7 轴增益按相同关节顺序应用到左右双臂，SDK 不选择控制增益。快速 MIT 使用
 `set_joint_mit_fast(left=..., right=..., velocity=1..100)`，传角度和参考步进速度
 百分比；固定增益、`dq=0`、`tau_ff=0` 由 C++ Runtime 负责，100 对应 5 rad/s。
-`example_04` 会先读取当前反馈，再按默认最大 `2°`、每段 `0.5 s` 把绝对目标
-等比例拆分，并以默认 `100 Hz` 重复发送每段完整 MIT 帧，避免触发流式命令
-看门狗；默认拒绝任何关节相对反馈超过 `20°` 的总目标。`--kp/--kd` 必须由
-用户明确提供，SDK 不选择控制增益。
+`example_04` 会先读取当前反馈并执行最大角差检查，然后只提交一次完整双臂 MIT 帧；
+默认拒绝任何关节相对反馈超过 `20°` 的总目标。示例的 J1..J7 默认 Kp 为
+`[40,40,35,30,25,20,15]`，默认 Kd 为 `[2,2,1.8,1.5,1.2,1,0.8]`；也可通过
+`--kp/--kd` 显式覆盖。通用 SDK 接口本身仍不选择控制增益。
 
 末端位姿控制包含四个 PV 示例：`example_07_cartesian_ptp`、
 `example_09_cartesian_linear_trajectory`、`example_10_cartesian_circular_trajectory` 和
@@ -153,10 +151,9 @@ SDK 不公开 Raw/流式 PV，不生成 P 步进、速度包络或轨迹重采�
 `solve_ik()` 求左右镜像 tool0 目标，再调用一次 `set_joint_pv()`，使双臂到达
 `J4=90°、其余关节=0°` 对应位姿；IK 阶段不使能也不运动。普通 PV 默认速度为
 50。`move_pose()` 使用 Runtime 有限轨迹规划。
-Linear 根据 `--side` 选择镜像路径，以原默认起点作为中心，
-通过四次独立的板端直线请求画边长 14 cm 的左右镜像等边三角形。
-应用等待每段 `motion_arrived` 后再提交下一段，所以机器人会在每个尖角停止；Python
-不生成或插值 Runtime 内部轨迹点。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
+Linear 根据 `--side` 选择镜像路径，从默认起点沿 `base_link` 横向向外移动 15 cm
+（原 10 cm 路径的 1.5 倍），只提交一次板端直线请求；Python 不生成或插值
+Runtime 内部轨迹点。Circular 同样根据侧别选择 `YZ` 平面的镜像路径，
 等待第一段到位后再提交返回半圆，执行半径 10 cm 的完整圆并返回起点。`move_pose()`、
 Linear 和 Circular 均可用命令行参数覆盖默认位姿。
 两个轨迹示例使用 `--speed 1..100` 调用 `set_speed_percent()`，不接收 duration。

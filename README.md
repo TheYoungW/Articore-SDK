@@ -132,8 +132,8 @@ robot.set_joint_mit(
     right_positions=right_q,
     left_velocities=left_dq,
     right_velocities=right_dq,
-    kp=20.0,
-    kd=1.0,
+    kp=[20.0] * 7,
+    kd=[1.0] * 7,
     left_feedforward_torques=[0.0] * 7,
     right_feedforward_torques=[0.0] * 7,
 )

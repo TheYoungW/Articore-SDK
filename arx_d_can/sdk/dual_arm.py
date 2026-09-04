@@ -77,8 +77,12 @@ def _gain_frame(value: float | Sequence[float], name: str) -> tuple[float, ...]:
     if isinstance(value, Real):
         return (float(value),) * 14
     values = tuple(float(item) for item in value)
+    if len(values) == 7:
+        return values + values
     if len(values) != 14:
-        raise ValueError(f"{name} must be a scalar or contain exactly 14 values")
+        raise ValueError(
+            f"{name} must be a scalar or contain exactly 7 or 14 values"
+        )
     return values
 
 
@@ -214,7 +218,7 @@ class ArxDCanDualArm:
         left_feedforward_torques: Sequence[float],
         right_feedforward_torques: Sequence[float],
     ) -> None:
-        """提交用户完整声明的标准 MIT 帧；新帧原子覆盖旧帧。"""
+        """提交用户完整声明的标准 MIT 帧；7 轴增益应用到左右双臂。"""
         if self._runtime.control_mode is not RuntimeControlMode.MIT:
             raise RuntimeError("set_joint_mit() requires MIT mode")
         self._runtime.set_joint_mit(

@@ -144,8 +144,8 @@ def test_pv_and_mit_frames_keep_left_then_right_wire_order() -> None:
         right_positions=(1.0,) * 7,
         left_velocities=(2.0,) * 7,
         right_velocities=(3.0,) * 7,
-        kp=10.0,
-        kd=1.0,
+        kp=(10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0),
+        kd=(1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6),
         left_feedforward_torques=(4.0,) * 7,
         right_feedforward_torques=(5.0,) * 7,
     )
@@ -153,8 +153,8 @@ def test_pv_and_mit_frames_keep_left_then_right_wire_order() -> None:
     assert call[0] == "mit"
     assert call[1] == (0.0,) * 7 + (1.0,) * 7
     assert call[2] == (2.0,) * 7 + (3.0,) * 7
-    assert call[3] == (10.0,) * 14
-    assert call[4] == (1.0,) * 14
+    assert call[3] == tuple(float(value) for value in range(10, 17)) * 2
+    assert call[4] == pytest.approx((1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6) * 2)
     assert call[5] == (4.0,) * 7 + (5.0,) * 7
 
 

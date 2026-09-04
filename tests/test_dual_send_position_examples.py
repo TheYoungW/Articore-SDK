@@ -72,7 +72,7 @@ def test_pv_example_exposes_only_velocity_control() -> None:
         parser.parse_args(["--velocity", "0"])
 
 
-def test_ordinary_mit_example_stages_targets_from_feedback(monkeypatch) -> None:
+def test_ordinary_mit_example_submits_one_complete_target(monkeypatch) -> None:
     captured = {"calls": []}
 
     class FakeRobot:
@@ -106,20 +106,12 @@ def test_ordinary_mit_example_stages_targets_from_feedback(monkeypatch) -> None:
         "builtins.input",
         lambda _prompt: captured["calls"].append("input") or "",
     )
-    monkeypatch.setattr(
-        mit_example.time,
-        "sleep",
-        lambda seconds: captured["calls"].append(("sleep", seconds)),
-    )
     args = mit_example.build_parser().parse_args(
         [
             "--left", "5,0,0,0,0,0,0",
             "--right", "0,0,0,0,0,0,0",
-            "--kp", "20",
-            "--kd", "1",
-            "--max-step-deg", "2",
-            "--step-interval", "0.25",
-            "--stream-hz", "4",
+            "--kp", "20,21,22,23,24,25,26",
+            "--kd", "1,1.1,1.2,1.3,1.4,1.5,1.6",
         ]
     )
     mit_example.main(args)
@@ -130,34 +122,28 @@ def test_ordinary_mit_example_stages_targets_from_feedback(monkeypatch) -> None:
         if isinstance(call, tuple) and call[0] == "set_joint_mit"
     ]
     assert captured["mode"] == "mit"
-    assert len(commands) == 3
-    assert [
-        math.degrees(command["left_positions"][0]) for command in commands
-    ] == pytest.approx(
-        [5 / 3, 10 / 3, 5]
+    assert len(commands) == 1
+    assert tuple(
+        math.degrees(value) for value in commands[0]["left_positions"]
+    ) == pytest.approx(
+        (5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     )
-    assert all(
-        command["right_positions"] == pytest.approx((0.0,) * 7)
-        for command in commands
-    )
-    assert all(command["left_velocities"] == (0.0,) * 7 for command in commands)
-    assert all(command["right_velocities"] == (0.0,) * 7 for command in commands)
-    assert all(command["kp"] == 20.0 and command["kd"] == 1.0 for command in commands)
+    command = commands[0]
+    assert command["right_positions"] == pytest.approx((0.0,) * 7)
+    assert command["left_velocities"] == (0.0,) * 7
+    assert command["right_velocities"] == (0.0,) * 7
+    assert command["kp"] == pytest.approx((20, 21, 22, 23, 24, 25, 26))
+    assert command["kd"] == pytest.approx((1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6))
     assert captured["calls"] == [
         "connect",
         "read_state",
         "input",
         "enable",
-        ("set_joint_mit", commands[0]),
-        ("sleep", 0.25),
-        ("set_joint_mit", commands[1]),
-        ("sleep", 0.25),
-        ("set_joint_mit", commands[2]),
-        ("sleep", 0.25),
+        ("set_joint_mit", command),
         "disable",
         "disconnect",
     ]
-    assert all("velocity" not in command for command in commands)
+    assert "velocity" not in command
 
 
 def test_fast_mit_example_forwards_positions_and_speed(monkeypatch) -> None:
@@ -206,7 +192,8 @@ def test_ordinary_mit_example_exposes_no_speed() -> None:
     base = [
         "--left", "0,0,0,0,0,0,0",
         "--right", "0,0,0,0,0,0,0",
-        "--kp", "20", "--kd", "1",
+        "--kp", "20,20,20,20,20,20,20",
+        "--kd", "1,1,1,1,1,1,1",
     ]
     assert not hasattr(parser.parse_args(base), "velocity")
     with pytest.raises(SystemExit):
@@ -240,13 +227,12 @@ def test_fast_mit_example_defaults_both_arms_to_j4_20_and_exposes_speed() -> Non
         parser.parse_args([*base, "--velocity", "0"])
 
 
-def test_ordinary_mit_example_exposes_safe_staging_controls() -> None:
+def test_ordinary_mit_example_exposes_seven_axis_gains_and_total_delta_guard() -> None:
     parser = mit_example.build_parser()
     destinations = {action.dest for action in parser._actions}
     base = [
         "--left", "0,0,0,0,0,0,0",
         "--right", "0,0,0,0,0,0,0",
-        "--kp", "20", "--kd", "1",
     ]
     defaults = parser.parse_args(base)
 
@@ -256,21 +242,25 @@ def test_ordinary_mit_example_exposes_safe_staging_controls() -> None:
         "right",
         "kp",
         "kd",
-        "max_step_deg",
         "max_total_delta_deg",
-        "step_interval",
-        "stream_hz",
     }
-    assert defaults.max_step_deg == pytest.approx(2.0)
+    assert defaults.kp == pytest.approx(mit_example.DEFAULT_KP)
+    assert defaults.kd == pytest.approx(mit_example.DEFAULT_KD)
     assert defaults.max_total_delta_deg == pytest.approx(20.0)
-    assert defaults.step_interval == pytest.approx(0.5)
-    assert defaults.stream_hz == pytest.approx(100.0)
     with pytest.raises(SystemExit):
-        parser.parse_args([*base, "--max-step-deg", "0"])
+        parser.parse_args([
+            "--left", "0,0,0,0,0,0,0",
+            "--right", "0,0,0,0,0,0,0",
+            "--kp", "20",
+            "--kd", "1,1,1,1,1,1,1",
+        ])
     with pytest.raises(SystemExit):
-        parser.parse_args([*base, "--step-interval", "0"])
-    with pytest.raises(SystemExit):
-        parser.parse_args([*base, "--stream-hz", "0"])
+        parser.parse_args([
+            "--left", "0,0,0,0,0,0,0",
+            "--right", "0,0,0,0,0,0,0",
+            "--kp", "20,20,20,20,20,20,20",
+            "--kd", "1,1,1,1,1,1,6",
+        ])
     with pytest.raises(SystemExit):
         parser.parse_args([*base, "--max-total-delta-deg", "0"])
 
@@ -301,8 +291,8 @@ def test_ordinary_mit_example_rejects_large_total_delta_before_enable(
             [
                 "--left", "30,0,0,0,0,0,0",
                 "--right", "0,0,0,0,0,0,0",
-                "--kp", "20",
-                "--kd", "1",
+                "--kp", "20,20,20,20,20,20,20",
+                "--kd", "1,1,1,1,1,1,1",
             ]
     )
 
@@ -310,3 +300,55 @@ def test_ordinary_mit_example_rejects_large_total_delta_before_enable(
         mit_example.main(args)
 
     assert captured["calls"] == ["connect", "read_state", "disconnect"]
+
+
+def test_ordinary_mit_example_disconnects_when_disable_fails(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class FakeRobot:
+        def connect(self):
+            calls.append("connect")
+
+        def read_state(self):
+            arm = SimpleNamespace(positions=(0.0,) * 7)
+            return SimpleNamespace(left=arm, right=arm)
+
+        def enable(self):
+            calls.append("enable")
+            return True
+
+        def set_joint_mit(self, **_kwargs):
+            calls.append("set_joint_mit")
+
+        def disable(self):
+            calls.append("disable")
+            raise RuntimeError("feedback confirmation failed")
+
+        def disconnect(self):
+            calls.append("disconnect")
+
+    monkeypatch.setattr(
+        mit_example,
+        "ArxDCanDualArm",
+        lambda **_kwargs: FakeRobot(),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    args = mit_example.build_parser().parse_args(
+        [
+            "--left", "0,0,0,0,0,0,0",
+            "--right", "0,0,0,0,0,0,0",
+            "--kp", "20,20,20,20,20,20,20",
+            "--kd", "1,1,1,1,1,1,1",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="feedback confirmation failed"):
+        mit_example.main(args)
+
+    assert calls == [
+        "connect",
+        "enable",
+        "set_joint_mit",
+        "disable",
+        "disconnect",
+    ]

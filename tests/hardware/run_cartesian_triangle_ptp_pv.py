@@ -8,12 +8,41 @@ import time
 
 from arx_d_can import ArxDCanDualArm, SafetyState
 from arx_d_can.examples.common import positive_duration_s, speed_percent
-from arx_d_can.examples.control.example_09_cartesian_linear_trajectory import (
-    DEFAULT_LEFT_CENTER_POSE,
-    DEFAULT_RIGHT_CENTER_POSE,
-    TRIANGLE_SIDE_M,
-    _triangle_vertices,
+
+
+# 保留该历史硬件诊断的原始三角形参数，不依赖正式 Linear 示例的路径定义。
+TRIANGLE_SIDE_M = 0.14
+DEFAULT_LEFT_CENTER_POSE = (
+    0.403537,
+    0.231892,
+    0.381638,
+    0.0,
+    -1.570796,
+    0.0,
 )
+DEFAULT_RIGHT_CENTER_POSE = (
+    0.403537,
+    -0.231889,
+    0.381639,
+    0.0,
+    -1.570796,
+    0.0,
+)
+
+
+def _triangle_vertices(
+    center: tuple[float, ...], side: str
+) -> tuple[tuple[float, ...], ...]:
+    x, y, z, roll, pitch, yaw = center
+    outward_sign = 1.0 if side == "left" else -1.0
+    circumradius = TRIANGLE_SIDE_M / math.sqrt(3.0)
+    inner_y = y - outward_sign * circumradius / 2.0
+    orientation = (roll, pitch, yaw)
+    return (
+        (x, y + outward_sign * circumradius, z, *orientation),
+        (x, inner_y, z + TRIANGLE_SIDE_M / 2.0, *orientation),
+        (x, inner_y, z - TRIANGLE_SIDE_M / 2.0, *orientation),
+    )
 
 
 def _rotation_from_rpy(pose: tuple[float, ...] | list[float]):
